@@ -272,18 +272,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
         '${two(date.hour)}:${two(date.minute)}';
   }
 
-  void _openDocument(PdfDocument document) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PdfReaderScreen(
-          database: widget.database,
-          documentId: document.documentId,
-          filePath: document.filePath,
-          title: document.name,
-        ),
+void _openDocument(PdfDocument document) {
+  Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => PdfReaderScreen(
+        database: widget.database,
+        documentId: document.documentId,
+        filePath: document.filePath,
+        title: document.name,
       ),
-    );
-  }
+    ),
+  );
+}
 
   @override
   Widget build(BuildContext context) {

@@ -1,12 +1,11 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
+import 'package:pdfrx/pdfrx.dart' as pdfrx;
 
 import '../../../infrastructure/database/app_database.dart';
 import '../../notes/data/note_repository.dart';
-import 'pdf_notes_panel.dart';
+import 'pdf_sidecar_notes_canvas.dart';
 
 class PdfReaderScreen extends StatefulWidget {
   final AppDatabase database;
@@ -27,80 +26,189 @@ class PdfReaderScreen extends StatefulWidget {
 }
 
 class _PdfReaderScreenState extends State<PdfReaderScreen> {
-  final PdfViewerController _controller = PdfViewerController();
+  final pdfrx.PdfViewerController _controller = pdfrx.PdfViewerController();
 
   late final NoteRepository _noteRepository;
 
-  Timer? _positionTimer;
-
   int _currentPage = 1;
-  Offset _currentScrollOffset = Offset.zero;
+  int _pageCount = 1;
+
   double _currentZoomLevel = 1.0;
+  Rect _pdfVisibleRect = Rect.zero;
+  Size _pdfDocumentSize = Size.zero;
 
   String? _selectedText;
 
   double _pdfPaneFraction = 0.5;
 
+  int _selectionRequestId = 0;
+
   static const double _dividerWidth = 8.0;
-  static const double _minPaneWidth = 240.0;
+  static const double _minPaneWidth = 280.0;
 
   @override
   void initState() {
     super.initState();
 
     _noteRepository = NoteRepository(widget.database);
-
-    _positionTimer = Timer.periodic(
-      const Duration(milliseconds: 500),
-      (_) => _capturePosition(),
-    );
+    _controller.addListener(_handleViewerChanged);
   }
 
   @override
   void dispose() {
-    _positionTimer?.cancel();
+    _controller.removeListener(_handleViewerChanged);
     super.dispose();
   }
 
-  void _capturePosition() {
-    final scrollOffset = _controller.scrollOffset;
-    final zoomLevel = _controller.zoomLevel;
+  void _handleViewerReady(
+    pdfrx.PdfDocument document,
+    pdfrx.PdfViewerController controller,
+  ) {
+    if (!mounted) return;
 
-    if (scrollOffset == _currentScrollOffset && zoomLevel == _currentZoomLevel) {
+    setState(() {
+      _pageCount = document.pages.isEmpty ? 1 : document.pages.length;
+      _currentPage = controller.pageNumber ?? 1;
+      _currentZoomLevel = controller.currentZoom;
+      _pdfVisibleRect = controller.visibleRect;
+      _pdfDocumentSize = controller.documentSize;
+    });
+  }
+
+  void _handleViewerChanged() {
+    if (!_controller.isReady || !mounted) {
+      return;
+    }
+
+    final nextPage = _controller.pageNumber ?? _currentPage;
+    final nextPageCount = _controller.pageCount <= 0 ? 1 : _controller.pageCount;
+    final nextZoom = _controller.currentZoom;
+    final nextVisibleRect = _controller.visibleRect;
+    final nextDocumentSize = _controller.documentSize;
+
+    final changed = nextPage != _currentPage ||
+        nextPageCount != _pageCount ||
+        nextZoom != _currentZoomLevel ||
+        nextVisibleRect != _pdfVisibleRect ||
+        nextDocumentSize != _pdfDocumentSize;
+
+    if (!changed) {
       return;
     }
 
     setState(() {
-      _currentScrollOffset = scrollOffset;
-      _currentZoomLevel = zoomLevel;
+      _currentPage = nextPage;
+      _pageCount = nextPageCount;
+      _currentZoomLevel = nextZoom;
+      _pdfVisibleRect = nextVisibleRect;
+      _pdfDocumentSize = nextDocumentSize;
     });
+  }
 
-    debugPrint(
-      'document=${widget.documentId}, '
-      'page=$_currentPage, '
-      'scrollX=${scrollOffset.dx}, '
-      'scrollY=${scrollOffset.dy}, '
-      'zoom=$zoomLevel',
+  void _handlePageChanged(int? pageNumber) {
+    if (!mounted) return;
+
+    setState(() {
+      _currentPage = pageNumber ?? 1;
+      _selectedText = null;
+      _selectionRequestId++;
+    });
+  }
+
+  void _handleTextSelectionChange(pdfrx.PdfTextSelection textSelection) {
+    final requestId = ++_selectionRequestId;
+
+    if (!textSelection.hasSelectedText) {
+      if (!mounted) return;
+
+      setState(() {
+        _selectedText = null;
+      });
+
+      return;
+    }
+
+    unawaited(
+      textSelection.getSelectedText().then((selectedText) {
+        if (!mounted || requestId != _selectionRequestId) {
+          return;
+        }
+
+        final trimmed = selectedText.trim();
+
+        setState(() {
+          _selectedText = trimmed.isEmpty ? null : trimmed;
+        });
+      }).catchError((error) {
+        debugPrint('Could not read selected PDF text: $error');
+      }),
     );
   }
 
   Widget _buildPdfViewer() {
-    return SfPdfViewer.file(
-      File(widget.filePath),
+    return pdfrx.PdfViewer.file(
+      widget.filePath,
+      key: ValueKey(widget.filePath),
       controller: _controller,
-      pageLayoutMode: PdfPageLayoutMode.continuous,
-      scrollDirection: PdfScrollDirection.vertical,
-      onPageChanged: (details) {
-        setState(() {
-          _currentPage = details.newPageNumber;
-          _selectedText = null;
-        });
-      },
-      onTextSelectionChanged: (details) {
-        setState(() {
-          _selectedText = details.selectedText;
-        });
-      },
+      initialPageNumber: _currentPage,
+      params: pdfrx.PdfViewerParams(
+        margin: 8,
+        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+        pageAnchor: pdfrx.PdfPageAnchor.top,
+        pageAnchorEnd: pdfrx.PdfPageAnchor.bottom,
+        maxScale: 8,
+        minScale: 0.1,
+        scrollByMouseWheel: 0.18,
+        enableKeyboardNavigation: true,
+        textSelectionParams: pdfrx.PdfTextSelectionParams(
+          enabled: true,
+          showContextMenuAutomatically: true,
+          onTextSelectionChange: _handleTextSelectionChange,
+        ),
+        onViewerReady: _handleViewerReady,
+        onPageChanged: _handlePageChanged,
+        loadingBannerBuilder: (context, bytesDownloaded, totalBytes) {
+          if (totalBytes == null || totalBytes <= 0) {
+            return const Center(
+              child: CircularProgressIndicator(),
+            );
+          }
+
+          return Center(
+            child: CircularProgressIndicator(
+              value: bytesDownloaded / totalBytes,
+            ),
+          );
+        },
+        errorBannerBuilder: (context, error, stackTrace, documentRef) {
+          return Center(
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 520),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.error_outline, size: 48),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Could not open PDF',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        error.toString(),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -164,11 +272,14 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             ),
             SizedBox(
               width: notesPaneWidth,
-              child: PdfNotesPanel(
+              child: PdfSidecarNotesCanvas(
                 noteRepository: _noteRepository,
                 documentId: widget.documentId,
                 currentPage: _currentPage,
+                pageCount: _pageCount,
                 selectedText: _selectedText,
+                pdfVisibleRect: _pdfVisibleRect,
+                pdfDocumentSize: _pdfDocumentSize,
               ),
             ),
           ],
@@ -177,18 +288,34 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     );
   }
 
+  bool get _hasActiveSelection {
+    return _selectedText != null && _selectedText!.trim().isNotEmpty;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final visibleTop = _pdfVisibleRect == Rect.zero ? 0.0 : _pdfVisibleRect.top;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title),
         actions: [
+          if (_hasActiveSelection)
+            const Padding(
+              padding: EdgeInsets.only(right: 12),
+              child: Center(
+                child: Chip(
+                  avatar: Icon(Icons.format_quote, size: 16),
+                  label: Text('Selection active'),
+                ),
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.only(right: 16),
             child: Center(
               child: Text(
-                'Page $_currentPage | '
-                'Y ${_currentScrollOffset.dy.toStringAsFixed(0)} | '
+                'Page $_currentPage / $_pageCount | '
+                'Y ${visibleTop.toStringAsFixed(0)} | '
                 'Zoom ${_currentZoomLevel.toStringAsFixed(2)}',
               ),
             ),
