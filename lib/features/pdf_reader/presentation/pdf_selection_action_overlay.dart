@@ -4,25 +4,35 @@ import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart' as pdfrx;
 
 import '../../notes/data/note_repository.dart';
+import 'pdf_reader_toolbar.dart';
 import 'sidecar/note_creation_type.dart';
 
-typedef PdfSelectionCreateNoteCallback = void Function({
-  required NoteCreationType creationType,
-  required int pageNumber,
-  required double normalizedY,
-});
+typedef PdfSelectionCreateNoteCallback =
+    void Function({
+      required NoteCreationType creationType,
+      required int pageNumber,
+      required double normalizedY,
+    });
 
-typedef PdfSelectionHighlightCallback = void Function({
-  required int pageNumber,
-});
+typedef PdfSelectionHighlightCallback =
+    void Function({required int pageNumber});
+
+typedef PdfSelectionDocumentReferenceCallback =
+    void Function({required int pageNumber});
+
+typedef PdfSelectionTodoCallback = void Function({required int pageNumber});
 
 class PdfSelectionActionOverlay extends StatelessWidget {
   final String? selectedText;
   final List<PdfSourceRect> selectedSourceRects;
   final Rect pageRectInViewer;
   final pdfrx.PdfPage page;
+  final PdfReaderTool activeTool;
+  final int activeHighlightColorValue;
   final PdfSelectionCreateNoteCallback onCreateNote;
   final PdfSelectionHighlightCallback onCreateHighlight;
+  final PdfSelectionDocumentReferenceCallback onAddToDocumentNote;
+  final PdfSelectionTodoCallback onCreateTodo;
 
   const PdfSelectionActionOverlay({
     super.key,
@@ -30,8 +40,12 @@ class PdfSelectionActionOverlay extends StatelessWidget {
     required this.selectedSourceRects,
     required this.pageRectInViewer,
     required this.page,
+    required this.activeTool,
+    required this.activeHighlightColorValue,
     required this.onCreateNote,
     required this.onCreateHighlight,
+    required this.onAddToDocumentNote,
+    required this.onCreateTodo,
   });
 
   bool get _hasSelection {
@@ -42,14 +56,12 @@ class PdfSelectionActionOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!_hasSelection) {
+    if (!_hasSelection || activeTool == PdfReaderTool.eraser) {
       return const SizedBox.shrink();
     }
 
     final rectsForPage = selectedSourceRects
-        .where(
-          (rect) => rect.pageNumber == page.pageNumber && rect.isValid,
-        )
+        .where((rect) => rect.pageNumber == page.pageNumber && rect.isValid)
         .toList();
 
     if (rectsForPage.isEmpty) {
@@ -70,24 +82,18 @@ class PdfSelectionActionOverlay extends StatelessWidget {
 
     final firstRect = localRects.first;
 
-    const paletteWidth = 318.0;
+    final paletteWidth = _SelectionPalette.estimatedWidth(activeTool);
     const paletteHeight = 42.0;
 
     final pageWidth = math.max(1.0, pageRectInViewer.width);
     final pageHeight = math.max(1.0, pageRectInViewer.height);
 
     final left = firstRect.left
-        .clamp(
-          8.0,
-          math.max(8.0, pageWidth - paletteWidth - 8.0),
-        )
+        .clamp(8.0, math.max(8.0, pageWidth - paletteWidth - 8.0))
         .toDouble();
 
     final top = (firstRect.top - paletteHeight - 8)
-        .clamp(
-          8.0,
-          math.max(8.0, pageHeight - paletteHeight - 8.0),
-        )
+        .clamp(8.0, math.max(8.0, pageHeight - paletteHeight - 8.0))
         .toDouble();
 
     final normalizedY = (firstRect.center.dy / pageHeight)
@@ -101,8 +107,16 @@ class PdfSelectionActionOverlay extends StatelessWidget {
             left: left,
             top: top,
             child: _SelectionPalette(
+              activeTool: activeTool,
+              activeHighlightColorValue: activeHighlightColorValue,
               onHighlight: () {
                 onCreateHighlight(pageNumber: page.pageNumber);
+              },
+              onAddToDocumentNote: () {
+                onAddToDocumentNote(pageNumber: page.pageNumber);
+              },
+              onCreateTodo: () {
+                onCreateTodo(pageNumber: page.pageNumber);
               },
               onCreateNote: (type) {
                 onCreateNote(
@@ -135,10 +149,7 @@ class PdfSelectionActionOverlay extends StatelessWidget {
       );
 
       final localRect = rectInViewer.shift(
-        Offset(
-          -pageRectInViewer.left,
-          -pageRectInViewer.top,
-        ),
+        Offset(-pageRectInViewer.left, -pageRectInViewer.top),
       );
 
       final normalized = Rect.fromLTRB(
@@ -160,13 +171,35 @@ class PdfSelectionActionOverlay extends StatelessWidget {
 }
 
 class _SelectionPalette extends StatelessWidget {
+  final PdfReaderTool activeTool;
+  final int activeHighlightColorValue;
   final VoidCallback onHighlight;
+  final VoidCallback onAddToDocumentNote;
+  final VoidCallback onCreateTodo;
   final ValueChanged<NoteCreationType> onCreateNote;
 
   const _SelectionPalette({
+    required this.activeTool,
+    required this.activeHighlightColorValue,
     required this.onHighlight,
+    required this.onAddToDocumentNote,
+    required this.onCreateTodo,
     required this.onCreateNote,
   });
+
+  static double estimatedWidth(PdfReaderTool activeTool) {
+    switch (activeTool) {
+      case PdfReaderTool.highlight:
+        return 158;
+      case PdfReaderTool.note:
+      case PdfReaderTool.citation:
+        return 150;
+      case PdfReaderTool.cursor:
+        return 418;
+      case PdfReaderTool.eraser:
+        return 0;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -175,77 +208,153 @@ class _SelectionPalette extends StatelessWidget {
     return Material(
       elevation: 8,
       borderRadius: BorderRadius.circular(999),
-      color: theme.colorScheme.surface.withOpacity(0.96),
+      color: theme.colorScheme.surface.withValues(alpha: 0.96),
       child: Container(
         height: 42,
         padding: const EdgeInsets.symmetric(horizontal: 6),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(
-            color: theme.colorScheme.outlineVariant,
-          ),
+          border: Border.all(color: theme.colorScheme.outlineVariant),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _PaletteButton(
-              tooltip: 'Highlight selection',
-              icon: Icons.highlight,
-              onPressed: onHighlight,
-            ),
-            _PaletteButton(
-              tooltip: 'Create note',
-              icon: Icons.notes,
-              onPressed: () => onCreateNote(NoteCreationType.note),
-            ),
-            _PaletteButton(
-              tooltip: 'Create question',
-              icon: Icons.help_outline,
-              onPressed: () => onCreateNote(NoteCreationType.question),
-            ),
-            _PaletteButton(
-              tooltip: 'Create citation',
-              icon: Icons.format_quote,
-              onPressed: () => onCreateNote(NoteCreationType.citation),
-            ),
-            _PaletteButton(
-              tooltip: 'Create summary',
-              icon: Icons.subject,
-              onPressed: () => onCreateNote(NoteCreationType.summary),
-            ),
-            _PaletteButton(
-              tooltip: 'Create definition',
-              icon: Icons.bookmark_border,
-              onPressed: () => onCreateNote(NoteCreationType.definition),
-            ),
-          ],
-        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: _buildButtons()),
       ),
     );
+  }
+
+  List<Widget> _buildButtons() {
+    switch (activeTool) {
+      case PdfReaderTool.highlight:
+        return [
+          _PaletteButton(
+            tooltip: 'Highlight selection',
+            icon: Icons.highlight,
+            label: 'Highlight',
+            colorValue: activeHighlightColorValue,
+            onPressed: onHighlight,
+          ),
+        ];
+      case PdfReaderTool.note:
+        return [
+          _PaletteButton(
+            tooltip: 'Create note from selection',
+            icon: Icons.notes,
+            label: 'Note',
+            onPressed: () => onCreateNote(NoteCreationType.note),
+          ),
+        ];
+      case PdfReaderTool.citation:
+        return [
+          _PaletteButton(
+            tooltip: 'Create citation from selection',
+            icon: Icons.format_quote,
+            label: 'Citation',
+            onPressed: () => onCreateNote(NoteCreationType.citation),
+          ),
+        ];
+      case PdfReaderTool.cursor:
+        return [
+          _PaletteButton(
+            tooltip: 'Highlight selection',
+            icon: Icons.highlight,
+            colorValue: activeHighlightColorValue,
+            onPressed: onHighlight,
+          ),
+          _PaletteButton(
+            tooltip: 'Add selection to document note',
+            icon: Icons.article_outlined,
+            onPressed: onAddToDocumentNote,
+          ),
+          _PaletteButton(
+            tooltip: 'Create TODO from selection',
+            icon: Icons.task_alt,
+            onPressed: onCreateTodo,
+          ),
+          _PaletteButton(
+            tooltip: 'Create note',
+            icon: Icons.notes,
+            onPressed: () => onCreateNote(NoteCreationType.note),
+          ),
+          _PaletteButton(
+            tooltip: 'Create question',
+            icon: Icons.help_outline,
+            onPressed: () => onCreateNote(NoteCreationType.question),
+          ),
+          _PaletteButton(
+            tooltip: 'Create citation',
+            icon: Icons.format_quote,
+            onPressed: () => onCreateNote(NoteCreationType.citation),
+          ),
+          _PaletteButton(
+            tooltip: 'Create summary',
+            icon: Icons.subject,
+            onPressed: () => onCreateNote(NoteCreationType.summary),
+          ),
+          _PaletteButton(
+            tooltip: 'Create definition',
+            icon: Icons.bookmark_border,
+            onPressed: () => onCreateNote(NoteCreationType.definition),
+          ),
+        ];
+      case PdfReaderTool.eraser:
+        return const [];
+    }
   }
 }
 
 class _PaletteButton extends StatelessWidget {
   final String tooltip;
   final IconData icon;
+  final String? label;
+  final int? colorValue;
   final VoidCallback onPressed;
 
   const _PaletteButton({
     required this.tooltip,
     required this.icon,
     required this.onPressed,
+    this.label,
+    this.colorValue,
   });
 
   @override
   Widget build(BuildContext context) {
+    final color = colorValue == null ? null : Color(colorValue!);
+
     return Tooltip(
       message: tooltip,
       waitDuration: const Duration(milliseconds: 350),
-      child: IconButton(
-        visualDensity: VisualDensity.compact,
-        tooltip: tooltip,
+      child: TextButton.icon(
+        style: TextButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          padding: label == null
+              ? const EdgeInsets.symmetric(horizontal: 8)
+              : const EdgeInsets.symmetric(horizontal: 10),
+          minimumSize: const Size(34, 34),
+        ),
         onPressed: onPressed,
-        icon: Icon(icon, size: 18),
+        icon: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18),
+            if (color != null) ...[
+              const SizedBox(width: 4),
+              Container(
+                width: 9,
+                height: 9,
+                decoration: BoxDecoration(
+                  color: color,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.outline.withValues(alpha: 0.45),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+        label: label == null ? const SizedBox.shrink() : Text(label!),
       ),
     );
   }

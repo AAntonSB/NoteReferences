@@ -22,7 +22,6 @@ class PdfSessionRepository {
     return database.upsertPdfSession(
       PdfSessionsCompanion(
         documentId: Value(documentId),
-        filePath: Value(filePath),
         pageNumber: Value(pageNumber),
         scrollX: Value(scrollX),
         scrollY: Value(scrollY),

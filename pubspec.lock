@@ -41,6 +41,15 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.13.1"
+  attributed_text:
+    dependency: "direct overridden"
+    description:
+      path: attributed_text
+      ref: stable
+      resolved-ref: e8f1d41b419a2cd3af568892f688d8846419b2b5
+      url: "https://github.com/Flutter-Bounty-Hunters/super_editor.git"
+    source: git
+    version: "0.3.2"
   boolean_selector:
     dependency: transitive
     description:
@@ -153,6 +162,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.0"
+  code_builder:
+    dependency: transitive
+    description:
+      name: code_builder
+      sha256: "6a6cab2ba4680d6423f34a9b972a4c9a94ebe1b62ecec4e1a1f2cba91fd1319d"
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.11.1"
   collection:
     dependency: transitive
     description:
@@ -201,6 +218,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.9"
+  dart_quill_delta:
+    dependency: transitive
+    description:
+      name: dart_quill_delta
+      sha256: "6aa89f0903ca3e70f5ceeb1d75d722f6ca583e87a2a8893c7b9f42f7a947f6e5"
+      url: "https://pub.dev"
+    source: hosted
+    version: "9.6.0"
   dart_style:
     dependency: transitive
     description:
@@ -225,6 +250,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.7.1"
+  diff_match_patch:
+    dependency: transitive
+    description:
+      name: diff_match_patch
+      sha256: "2efc9e6e8f449d0abe15be240e2c2a3bcd977c8d126cfd70598aee60af35c0a4"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.4.1"
   drift:
     dependency: "direct main"
     description:
@@ -302,6 +335,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.0.0"
+  flutter_math_fork:
+    dependency: "direct main"
+    description:
+      name: flutter_math_fork
+      sha256: "6d5f2f1aa57ae539ffb0a04bb39d2da67af74601d685a161aff7ce5bda5fa407"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.7.4"
   flutter_plugin_android_lifecycle:
     dependency: transitive
     description:
@@ -318,16 +359,48 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.3.1"
+  flutter_svg:
+    dependency: transitive
+    description:
+      name: flutter_svg
+      sha256: "1ded017b39c8e15c8948ea855070a5ff8ff8b3d5e83f3446e02d6bb12add7ad9"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.2.4"
   flutter_test:
     dependency: "direct dev"
     description: flutter
     source: sdk
     version: "0.0.0"
+  flutter_test_robots:
+    dependency: transitive
+    description:
+      name: flutter_test_robots
+      sha256: "3b00f2081148bde55190997c2772f934ad2f4529cbcfc4ccfa593f8ddc117a28"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.0.24"
+  flutter_test_runners:
+    dependency: transitive
+    description:
+      name: flutter_test_runners
+      sha256: cc575117ed66a79185a26995399d7048341517a1bd21188cb43753739627832d
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.0.4"
   flutter_web_plugins:
     dependency: transitive
     description: flutter
     source: sdk
     version: "0.0.0"
+  follow_the_leader:
+    dependency: transitive
+    description:
+      name: follow_the_leader
+      sha256: "5cc5676008b786e8a34725874c750489c778431d2f9c423f0cc3c18527535236"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.5.3"
   frontend_server_client:
     dependency: transitive
     description:
@@ -344,6 +417,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.1.3"
+  golden_toolkit:
+    dependency: transitive
+    description:
+      name: golden_toolkit
+      sha256: "8f74adab33154fe7b731395782797021f97d2edc52f7bfb85ff4f1b5c4a215f0"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.15.0"
   graphs:
     dependency: transitive
     description:
@@ -456,6 +537,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.2"
+  linkify:
+    dependency: transitive
+    description:
+      name: linkify
+      sha256: "4139ea77f4651ab9c315b577da2dd108d9aa0bd84b5d03d33323f1970c645832"
+      url: "https://pub.dev"
+    source: hosted
+    version: "5.0.0"
   lints:
     dependency: transitive
     description:
@@ -472,6 +561,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.3.0"
+  markdown:
+    dependency: transitive
+    description:
+      name: markdown
+      sha256: ee85086ad7698b42522c6ad42fe195f1b9898e4d974a1af4576c1a3a176cada9
+      url: "https://pub.dev"
+    source: hosted
+    version: "7.3.1"
   matcher:
     dependency: transitive
     description:
@@ -504,6 +601,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.0.0"
+  mockito:
+    dependency: transitive
+    description:
+      name: mockito
+      sha256: eff30d002f0c8bf073b6f929df4483b543133fcafce056870163587b03f1d422
+      url: "https://pub.dev"
+    source: hosted
+    version: "5.6.4"
   native_toolchain_c:
     dependency: transitive
     description:
@@ -512,6 +617,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.17.6"
+  nested:
+    dependency: transitive
+    description:
+      name: nested
+      sha256: "03bac4c528c64c95c722ec99280375a6f2fc708eec17c7b3f07253b626cd2a20"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.0"
   node_preamble:
     dependency: transitive
     description:
@@ -528,6 +641,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "9.3.0"
+  overlord:
+    dependency: transitive
+    description:
+      name: overlord
+      sha256: "532f5685ac09ee805d97ce89794a4eeda41672c32955b4a835bdfce93e720a05"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.4.2"
   package_config:
     dependency: transitive
     description:
@@ -544,6 +665,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.9.1"
+  path_parsing:
+    dependency: transitive
+    description:
+      name: path_parsing
+      sha256: "883402936929eac138ee0a45da5b0f2c80f89913e6dc3bf77eb65b84b409c6ca"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.1.0"
   path_provider:
     dependency: "direct main"
     description:
@@ -664,6 +793,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "6.5.0"
+  provider:
+    dependency: transitive
+    description:
+      name: provider
+      sha256: "4e82183fa20e5ca25703ead7e05de9e4cceed1fbd1eadc1ac3cb6f565a09f272"
+      url: "https://pub.dev"
+    source: hosted
+    version: "6.1.5+1"
   pub_semver:
     dependency: transitive
     description:
@@ -680,6 +817,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.5.0"
+  quiver:
+    dependency: transitive
+    description:
+      name: quiver
+      sha256: ea0b925899e64ecdfbf9c7becb60d5b50e706ade44a85b2363be2a22d88117d2
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.2.2"
   recase:
     dependency: transitive
     description:
@@ -853,6 +998,32 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.4.1"
+  super_editor:
+    dependency: "direct main"
+    description:
+      path: super_editor
+      ref: stable
+      resolved-ref: e8f1d41b419a2cd3af568892f688d8846419b2b5
+      url: "https://github.com/Flutter-Bounty-Hunters/super_editor.git"
+    source: git
+    version: "0.3.0-dev.10"
+  super_keyboard:
+    dependency: transitive
+    description:
+      name: super_keyboard
+      sha256: b5381ca46cf2cbc8cae79f8304e848f83363a8f47c1851125133c8af87d0f488
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.4.0"
+  super_text_layout:
+    dependency: "direct overridden"
+    description:
+      path: super_text_layout
+      ref: stable
+      resolved-ref: e8f1d41b419a2cd3af568892f688d8846419b2b5
+      url: "https://github.com/Flutter-Bounty-Hunters/super_editor.git"
+    source: git
+    version: "0.1.15"
   syncfusion_flutter_core:
     dependency: transitive
     description:
@@ -909,6 +1080,22 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.6.16"
+  text_table:
+    dependency: transitive
+    description:
+      name: text_table
+      sha256: a42b35675be614274b884ee482d4bdf4bdf707bc65de18cb8f1ad288c1beb1f4
+      url: "https://pub.dev"
+    source: hosted
+    version: "4.0.3"
+  tuple:
+    dependency: transitive
+    description:
+      name: tuple
+      sha256: a97ce2013f240b2f3807bcbaf218765b6f301c3eff91092bcfa23a039e7dd151
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.0.2"
   typed_data:
     dependency: transitive
     description:
@@ -997,6 +1184,30 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.5.3"
+  vector_graphics:
+    dependency: transitive
+    description:
+      name: vector_graphics
+      sha256: "6409a25046024f0f8c5d8a59fec314081e81f9d436b66ca4015a8b49772bf445"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.2.0"
+  vector_graphics_codec:
+    dependency: transitive
+    description:
+      name: vector_graphics_codec
+      sha256: "99fd9fbd34d9f9a32efd7b6a6aae14125d8237b10403b422a6a6dfeac2806146"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.1.13"
+  vector_graphics_compiler:
+    dependency: transitive
+    description:
+      name: vector_graphics_compiler
+      sha256: "5a88dd14c0954a5398af544651c7fb51b457a2a556949bfb25369b210ef73a74"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.2.0"
   vector_math:
     dependency: transitive
     description:

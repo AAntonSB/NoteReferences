@@ -8,6 +8,8 @@ class NotesOutlinePanel extends StatefulWidget {
   final List<NoteWithAnchor> notes;
   final ValueChanged<NoteWithAnchor> onSelectNote;
   final VoidCallback onClose;
+  final VoidCallback? onPointerEnterPanel;
+  final VoidCallback? onPointerExitPanel;
   final ValueListenable<int>? searchFocusRequestListenable;
 
   const NotesOutlinePanel({
@@ -15,6 +17,8 @@ class NotesOutlinePanel extends StatefulWidget {
     required this.notes,
     required this.onSelectNote,
     required this.onClose,
+    this.onPointerEnterPanel,
+    this.onPointerExitPanel,
     this.searchFocusRequestListenable,
   });
 
@@ -25,6 +29,8 @@ class NotesOutlinePanel extends StatefulWidget {
 class _NotesOutlinePanelState extends State<NotesOutlinePanel> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
+  final ScrollController _typeFilterScrollController = ScrollController();
+  final ScrollController _notesScrollController = ScrollController();
 
   String _query = '';
   String _typeFilter = 'all';
@@ -67,6 +73,8 @@ class _NotesOutlinePanelState extends State<NotesOutlinePanel> {
     widget.searchFocusRequestListenable?.removeListener(
       _handleSearchFocusRequest,
     );
+    _typeFilterScrollController.dispose();
+    _notesScrollController.dispose();
     _searchFocusNode.dispose();
     _searchController.dispose();
     super.dispose();
@@ -93,18 +101,17 @@ class _NotesOutlinePanelState extends State<NotesOutlinePanel> {
   }
 
   List<NoteWithAnchor> _filteredNotes() {
-    final visibleNotes = widget.notes
-        .where((note) => note.noteType != 'highlight')
-        .toList()
-      ..sort((a, b) {
-        final pageCompare = a.sidecarPlacement.pageNumber.compareTo(
-          b.sidecarPlacement.pageNumber,
-        );
+    final visibleNotes =
+        widget.notes.where((note) => note.noteType != 'highlight').toList()
+          ..sort((a, b) {
+            final pageCompare = a.sidecarPlacement.pageNumber.compareTo(
+              b.sidecarPlacement.pageNumber,
+            );
 
-        if (pageCompare != 0) return pageCompare;
+            if (pageCompare != 0) return pageCompare;
 
-        return a.sidecarPlacement.y.compareTo(b.sidecarPlacement.y);
-      });
+            return a.sidecarPlacement.y.compareTo(b.sidecarPlacement.y);
+          });
 
     return visibleNotes.where((note) {
       if (_typeFilter != 'all' && note.noteType != _typeFilter) {
@@ -134,12 +141,13 @@ class _NotesOutlinePanelState extends State<NotesOutlinePanel> {
   }
 
   List<String> _availableTypes() {
-    final types = widget.notes
-        .where((note) => note.noteType != 'highlight')
-        .map((note) => note.noteType)
-        .toSet()
-        .toList()
-      ..sort();
+    final types =
+        widget.notes
+            .where((note) => note.noteType != 'highlight')
+            .map((note) => note.noteType)
+            .toSet()
+            .toList()
+          ..sort();
 
     return types;
   }
@@ -160,142 +168,163 @@ class _NotesOutlinePanelState extends State<NotesOutlinePanel> {
     final filteredNotes = _filteredNotes();
     final availableTypes = _availableTypes();
 
-    return Align(
-      alignment: Alignment.centerRight,
-      child: Material(
-        elevation: 8,
-        borderRadius: BorderRadius.circular(16),
-        color: theme.colorScheme.surface,
-        child: Container(
-          width: 360,
-          constraints: const BoxConstraints(
-            maxHeight: 680,
-          ),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: theme.colorScheme.outlineVariant,
-            ),
-          ),
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(14, 10, 8, 6),
-                child: Row(
-                  children: [
-                    const Icon(Icons.view_sidebar_outlined, size: 18),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Notes outline',
-                      style: theme.textTheme.titleSmall,
-                    ),
-                    const Spacer(),
-                    Text(
-                      '${filteredNotes.length}',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: 'Close',
-                      onPressed: widget.onClose,
-                      icon: const Icon(Icons.close, size: 18),
-                    ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                child: TextField(
-                  controller: _searchController,
-                  focusNode: _searchFocusNode,
-                  onSubmitted: _handleSearchSubmitted,
-                  decoration: InputDecoration(
-                    isDense: true,
-                    prefixIcon: const Icon(Icons.search, size: 18),
-                    suffixIcon: _query.isEmpty
-                        ? null
-                        : IconButton(
-                            tooltip: 'Clear search',
-                            onPressed: _searchController.clear,
-                            icon: const Icon(Icons.close, size: 18),
-                          ),
-                    hintText: 'Search notes, quotes, tags...',
-                    border: const OutlineInputBorder(),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : 360.0;
+        final panelWidth = availableWidth < 360.0 ? availableWidth : 360.0;
+
+        return Align(
+          alignment: Alignment.centerRight,
+          child: MouseRegion(
+            onEnter: (_) => widget.onPointerEnterPanel?.call(),
+            onExit: (_) => widget.onPointerExitPanel?.call(),
+            child: Material(
+              elevation: 8,
+              borderRadius: BorderRadius.circular(16),
+              color: theme.colorScheme.surface,
+              child: SizedBox(
+                width: panelWidth,
+                child: Container(
+                  constraints: const BoxConstraints(maxHeight: 680),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: theme.colorScheme.outlineVariant),
                   ),
-                ),
-              ),
-              if (availableTypes.isNotEmpty)
-                SizedBox(
-                  height: 40,
-                  child: ListView(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Column(
                     children: [
                       Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: ChoiceChip(
-                          label: const Text('All'),
-                          selected: _typeFilter == 'all',
-                          onSelected: (_) {
-                            setState(() {
-                              _typeFilter = 'all';
-                            });
-                          },
+                        padding: const EdgeInsets.fromLTRB(14, 10, 8, 6),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.view_sidebar_outlined, size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Notes outline',
+                              style: theme.textTheme.titleSmall,
+                            ),
+                            const Spacer(),
+                            Text(
+                              '${filteredNotes.length}',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Close',
+                              onPressed: widget.onClose,
+                              icon: const Icon(Icons.close, size: 18),
+                            ),
+                          ],
                         ),
                       ),
-                      for (final type in availableTypes)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 6),
-                          child: ChoiceChip(
-                            label: Text(
-                              NoteTypePresentation.fromType(type, theme).label,
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                        child: TextField(
+                          controller: _searchController,
+                          focusNode: _searchFocusNode,
+                          onSubmitted: _handleSearchSubmitted,
+                          decoration: InputDecoration(
+                            isDense: true,
+                            prefixIcon: const Icon(Icons.search, size: 18),
+                            suffixIcon: _query.isEmpty
+                                ? null
+                                : IconButton(
+                                    tooltip: 'Clear search',
+                                    onPressed: _searchController.clear,
+                                    icon: const Icon(Icons.close, size: 18),
+                                  ),
+                            hintText: 'Search notes, quotes, tags...',
+                            border: const OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      if (availableTypes.isNotEmpty)
+                        SizedBox(
+                          height: 40,
+                          child: ListView(
+                            controller: _typeFilterScrollController,
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.only(right: 6),
+                                child: ChoiceChip(
+                                  label: const Text('All'),
+                                  selected: _typeFilter == 'all',
+                                  onSelected: (_) {
+                                    setState(() {
+                                      _typeFilter = 'all';
+                                    });
+                                  },
+                                ),
+                              ),
+                              for (final type in availableTypes)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 6),
+                                  child: ChoiceChip(
+                                    label: Text(
+                                      NoteTypePresentation.fromType(
+                                        type,
+                                        theme,
+                                      ).label,
+                                    ),
+                                    selected: _typeFilter == type,
+                                    onSelected: (_) {
+                                      setState(() {
+                                        _typeFilter = type;
+                                      });
+                                    },
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      const Divider(height: 1),
+                      if (filteredNotes.isEmpty)
+                        Expanded(
+                          child: Center(
+                            child: Text(
+                              _query.isEmpty
+                                  ? 'No notes yet.'
+                                  : 'No matching notes.',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
                             ),
-                            selected: _typeFilter == type,
-                            onSelected: (_) {
-                              setState(() {
-                                _typeFilter = type;
-                              });
-                            },
+                          ),
+                        )
+                      else
+                        Expanded(
+                          child: Scrollbar(
+                            controller: _notesScrollController,
+                            thumbVisibility: true,
+                            child: ListView.separated(
+                              controller: _notesScrollController,
+                              primary: false,
+                              padding: const EdgeInsets.all(8),
+                              itemCount: filteredNotes.length,
+                              separatorBuilder: (context, index) =>
+                                  const SizedBox(height: 4),
+                              itemBuilder: (context, index) {
+                                final note = filteredNotes[index];
+                                return _OutlineNoteTile(
+                                  note: note,
+                                  onTap: () => widget.onSelectNote(note),
+                                );
+                              },
+                            ),
                           ),
                         ),
                     ],
                   ),
                 ),
-              const Divider(height: 1),
-              if (filteredNotes.isEmpty)
-                Expanded(
-                  child: Center(
-                    child: Text(
-                      _query.isEmpty ? 'No notes yet.' : 'No matching notes.',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-                )
-              else
-                Expanded(
-                  child: Scrollbar(
-                    thumbVisibility: true,
-                    child: ListView.separated(
-                      padding: const EdgeInsets.all(8),
-                      itemCount: filteredNotes.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 4),
-                      itemBuilder: (context, index) {
-                        final note = filteredNotes[index];
-                        return _OutlineNoteTile(
-                          note: note,
-                          onTap: () => widget.onSelectNote(note),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-            ],
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
@@ -304,10 +333,7 @@ class _OutlineNoteTile extends StatelessWidget {
   final NoteWithAnchor note;
   final VoidCallback onTap;
 
-  const _OutlineNoteTile({
-    required this.note,
-    required this.onTap,
-  });
+  const _OutlineNoteTile({required this.note, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -320,8 +346,8 @@ class _OutlineNoteTile extends StatelessWidget {
     final snippet = body.isNotEmpty
         ? body
         : quote != null && quote.isNotEmpty
-            ? '“$quote”'
-            : 'Empty note';
+        ? '“$quote”'
+        : 'Empty note';
 
     return InkWell(
       borderRadius: BorderRadius.circular(10),
@@ -331,7 +357,7 @@ class _OutlineNoteTile extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
-            color: theme.colorScheme.outlineVariant.withOpacity(0.7),
+            color: theme.colorScheme.outlineVariant.withValues(alpha: 0.7),
           ),
         ),
         child: Row(
@@ -408,27 +434,19 @@ class _OutlineNoteTile extends StatelessWidget {
 class _MiniBadge extends StatelessWidget {
   final String label;
 
-  const _MiniBadge({
-    required this.label,
-  });
+  const _MiniBadge({required this.label});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
     return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 6,
-        vertical: 2,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(999),
       ),
-      child: Text(
-        label,
-        style: theme.textTheme.labelSmall,
-      ),
+      child: Text(label, style: theme.textTheme.labelSmall),
     );
   }
 }

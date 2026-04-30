@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -17,6 +18,7 @@ class MarginNoteCard extends StatefulWidget {
   final ValueChanged<String> onChanged;
   final ValueChanged<String> onTypeChanged;
   final ValueChanged<NoteMetadata> onMetadataChanged;
+  final ValueChanged<bool>? onTodoCompletedChanged;
   final ValueChanged<bool>? onEditingChanged;
   final ValueChanged<bool>? onHoverChanged;
   final ValueChanged<Offset>? onDragDelta;
@@ -36,6 +38,7 @@ class MarginNoteCard extends StatefulWidget {
     required this.onArchiveIfEmpty,
     required this.onArchive,
     this.onJumpToSource,
+    this.onTodoCompletedChanged,
     this.onEditingChanged,
     this.onHoverChanged,
     this.onDragDelta,
@@ -119,7 +122,8 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
         _localNoteType = widget.item.noteType;
       }
 
-      if (widget.item.anchor.geometryJson != oldWidget.item.anchor.geometryJson) {
+      if (widget.item.anchor.geometryJson !=
+          oldWidget.item.anchor.geometryJson) {
         _localMetadata = widget.item.metadata;
       }
     }
@@ -230,10 +234,7 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
     widget.onMetadataChanged(result);
   }
 
-  KeyEventResult _handleEditorKeyEvent(
-    FocusNode node,
-    KeyEvent event,
-  ) {
+  KeyEventResult _handleEditorKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) {
       return KeyEventResult.ignored;
     }
@@ -244,7 +245,8 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
       return KeyEventResult.handled;
     }
 
-    final isControlEnter = event.logicalKey == LogicalKeyboardKey.enter &&
+    final isControlEnter =
+        event.logicalKey == LogicalKeyboardKey.enter &&
         HardwareKeyboard.instance.isControlPressed;
 
     if (isControlEnter) {
@@ -256,13 +258,63 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
     return KeyEventResult.ignored;
   }
 
+  Map<String, dynamic> _todoMetadata() {
+    final json = widget.item.firstBlock?.contentJson;
+    if (json == null || json.trim().isEmpty) return {};
+
+    try {
+      final decoded = jsonDecode(json);
+      if (decoded is Map<String, dynamic>) return decoded;
+      if (decoded is Map) {
+        return decoded.map((key, value) => MapEntry(key.toString(), value));
+      }
+    } catch (_) {
+      return {};
+    }
+
+    return {};
+  }
+
+  bool get _isTodo {
+    return _localNoteType == kTodoNoteType;
+  }
+
+  bool get _todoCompleted {
+    final value = _todoMetadata()['isCompleted'];
+    if (value is bool) return value;
+    if (value is String) return value.toLowerCase() == 'true';
+    if (value is num) return value != 0;
+    return false;
+  }
+
+  String get _todoPriority {
+    final value = _todoMetadata()['priority'];
+    if (value == kTodoPriorityLow || value == kTodoPriorityHigh) {
+      return value as String;
+    }
+    return kTodoPriorityMedium;
+  }
+
+  Color _todoPriorityColor(ThemeData theme) {
+    switch (_todoPriority) {
+      case kTodoPriorityHigh:
+        return theme.colorScheme.error;
+      case kTodoPriorityLow:
+        return theme.colorScheme.primary;
+      case kTodoPriorityMedium:
+      default:
+        return Colors.orange.shade700;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final presentation = NoteTypePresentation.fromType(
-      _localNoteType,
-      theme,
-    );
+    final presentation = NoteTypePresentation.fromType(_localNoteType, theme);
+
+    final isTodo = _isTodo;
+    final isTodoCompleted = _todoCompleted;
+    final todoColor = _todoPriorityColor(theme);
 
     final selectedText = widget.item.anchor.selectedText?.trim();
     final hasSelectedText = selectedText != null && selectedText.isNotEmpty;
@@ -274,10 +326,10 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
     final borderColor = widget.isRevealed
         ? theme.colorScheme.primary
         : _isEditing
-            ? presentation.accentColor
-            : showChrome
-                ? theme.colorScheme.outlineVariant
-                : Colors.transparent;
+        ? (isTodo ? todoColor : presentation.accentColor)
+        : showChrome
+        ? theme.colorScheme.outlineVariant
+        : Colors.transparent;
 
     return MouseRegion(
       onEnter: (_) {
@@ -309,9 +361,11 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
           duration: const Duration(milliseconds: 140),
           curve: Curves.easeOut,
           decoration: BoxDecoration(
-            color: showChrome
-                ? theme.colorScheme.surface.withOpacity(0.96)
-                : theme.colorScheme.surface.withOpacity(0.50),
+            color: isTodo
+                ? todoColor.withValues(alpha: showChrome ? 0.10 : 0.07)
+                : showChrome
+                ? theme.colorScheme.surface.withValues(alpha: 0.96)
+                : theme.colorScheme.surface.withValues(alpha: 0.50),
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
               color: borderColor,
@@ -320,8 +374,8 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
             boxShadow: showChrome
                 ? [
                     BoxShadow(
-                      color: Colors.black.withOpacity(
-                        widget.isRevealed ? 0.14 : 0.08,
+                      color: Colors.black.withValues(
+                        alpha: widget.isRevealed ? 0.14 : 0.08,
                       ),
                       blurRadius: widget.isRevealed ? 16 : 10,
                       offset: const Offset(0, 4),
@@ -339,6 +393,8 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
                 decoration: BoxDecoration(
                   color: widget.isRevealed
                       ? theme.colorScheme.primary
+                      : isTodo
+                      ? todoColor
                       : presentation.accentColor,
                   borderRadius: const BorderRadius.only(
                     topLeft: Radius.circular(8),
@@ -363,6 +419,49 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
                         onDragDelta: widget.onDragDelta,
                         onDragEnd: widget.onDragEnd,
                       ),
+                      if (isTodo)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4, bottom: 6),
+                          child: Row(
+                            children: [
+                              Checkbox(
+                                value: isTodoCompleted,
+                                visualDensity: VisualDensity.compact,
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                                onChanged: widget.onTodoCompletedChanged == null
+                                    ? null
+                                    : (value) {
+                                        widget.onTodoCompletedChanged!(
+                                          value ?? false,
+                                        );
+                                      },
+                              ),
+                              const SizedBox(width: 4),
+                              Icon(
+                                Icons.flag_outlined,
+                                size: 14,
+                                color: todoColor,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                _todoPriority.toUpperCase(),
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: todoColor,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const Spacer(),
+                              if (isTodoCompleted)
+                                Text(
+                                  'Done',
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
                       if (hasSelectedText)
                         LinkedSelectionPreview(
                           selectedText: selectedText,
@@ -384,7 +483,8 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
                                   ),
                                   decoration: BoxDecoration(
                                     color: theme
-                                        .colorScheme.surfaceContainerHighest,
+                                        .colorScheme
+                                        .surfaceContainerHighest,
                                     borderRadius: BorderRadius.circular(999),
                                   ),
                                   child: Text(
@@ -422,10 +522,15 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
                           style: theme.textTheme.bodyMedium?.copyWith(
                             color: bodyTextTrimmed.isEmpty
                                 ? theme.colorScheme.onSurfaceVariant
+                                : isTodoCompleted
+                                ? theme.colorScheme.onSurfaceVariant
                                 : theme.colorScheme.onSurface,
                             fontStyle: bodyTextTrimmed.isEmpty
                                 ? FontStyle.italic
                                 : FontStyle.normal,
+                            decoration: isTodoCompleted
+                                ? TextDecoration.lineThrough
+                                : TextDecoration.none,
                           ),
                         ),
                     ],
@@ -516,10 +621,8 @@ class _NoteDetailsDialogState extends State<_NoteDetailsDialog> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-              value: _status,
-              decoration: const InputDecoration(
-                labelText: 'Status',
-              ),
+              initialValue: _status,
+              decoration: const InputDecoration(labelText: 'Status'),
               items: const [
                 DropdownMenuItem(value: 'none', child: Text('None')),
                 DropdownMenuItem(value: 'open', child: Text('Open')),
@@ -535,10 +638,8 @@ class _NoteDetailsDialogState extends State<_NoteDetailsDialog> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-              value: _importance,
-              decoration: const InputDecoration(
-                labelText: 'Importance',
-              ),
+              initialValue: _importance,
+              decoration: const InputDecoration(labelText: 'Importance'),
               items: const [
                 DropdownMenuItem(value: 'normal', child: Text('Normal')),
                 DropdownMenuItem(value: 'key', child: Text('Key')),
@@ -573,10 +674,7 @@ class _NoteDetailsDialogState extends State<_NoteDetailsDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cancel'),
         ),
-        FilledButton(
-          onPressed: _save,
-          child: const Text('Save'),
-        ),
+        FilledButton(onPressed: _save, child: const Text('Save')),
       ],
     );
   }

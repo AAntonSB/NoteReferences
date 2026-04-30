@@ -24,8 +24,8 @@ class LinkedSelectionPreview extends StatelessWidget {
         vertical: compact ? 4 : 6,
       ),
       decoration: BoxDecoration(
-        color: theme.colorScheme.primaryContainer.withOpacity(
-          compact ? 0.22 : 0.38,
+        color: theme.colorScheme.primaryContainer.withValues(
+          alpha: compact ? 0.22 : 0.38,
         ),
         borderRadius: BorderRadius.circular(6),
       ),

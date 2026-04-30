@@ -8,11 +8,13 @@ import '../../notes/data/note_repository.dart';
 
 class PdfHoverHighlightOverlay extends StatelessWidget {
   final ValueListenable<List<PdfLinkedHighlightRegion>>
-      persistentRegionsListenable;
+  persistentRegionsListenable;
   final ValueListenable<List<PdfSourceRect>> hoverSourceRectsListenable;
   final Rect pageRectInViewer;
   final pdfrx.PdfPage page;
-  final ValueChanged<String>? onLinkedHighlightActivated;
+  final bool eraseMode;
+  final ValueChanged<PdfLinkedHighlightRegion>? onHighlightActivated;
+  final ValueChanged<PdfLinkedHighlightRegion>? onHighlightLongPressed;
 
   const PdfHoverHighlightOverlay({
     super.key,
@@ -20,7 +22,9 @@ class PdfHoverHighlightOverlay extends StatelessWidget {
     required this.hoverSourceRectsListenable,
     required this.pageRectInViewer,
     required this.page,
-    this.onLinkedHighlightActivated,
+    this.eraseMode = false,
+    this.onHighlightActivated,
+    this.onHighlightLongPressed,
   });
 
   @override
@@ -69,19 +73,28 @@ class PdfHoverHighlightOverlay extends StatelessWidget {
                     ),
                   ),
                   for (final band in hitBands)
+                    if (band.region.noteType == kTodoNoteType)
+                      Positioned(
+                        left: math.max(0, band.rect.right + 3),
+                        top: math.max(0, band.rect.top - 2),
+                        child: _TodoPdfMarker(
+                          color: Color(band.region.highlightColorValue),
+                        ),
+                      ),
+                  for (final band in hitBands)
                     Positioned.fromRect(
                       rect: band.rect.inflate(3),
                       child: MouseRegion(
-                        cursor: band.region.hasSidecarNote
+                        cursor: eraseMode
                             ? SystemMouseCursors.click
-                            : MouseCursor.defer,
+                            : SystemMouseCursors.click,
                         child: GestureDetector(
                           behavior: HitTestBehavior.translucent,
-                          onTap: band.region.hasSidecarNote
-                              ? () => onLinkedHighlightActivated?.call(
-                                    band.region.noteId,
-                                  )
-                              : null,
+                          onTap: () => onHighlightActivated?.call(band.region),
+                          onLongPress: () =>
+                              onHighlightLongPressed?.call(band.region),
+                          onSecondaryTap: () =>
+                              onHighlightLongPressed?.call(band.region),
                           child: const SizedBox.expand(),
                         ),
                       ),
@@ -101,14 +114,8 @@ class PdfHoverHighlightOverlay extends StatelessWidget {
     final bands = <_HighlightHitBand>[];
 
     for (final region in regions) {
-      if (!region.hasSidecarNote) {
-        continue;
-      }
-
       final rectsForPage = region.sourceRects
-          .where(
-            (rect) => rect.pageNumber == page.pageNumber && rect.isValid,
-          )
+          .where((rect) => rect.pageNumber == page.pageNumber && rect.isValid)
           .toList();
 
       if (rectsForPage.isEmpty) {
@@ -118,12 +125,7 @@ class PdfHoverHighlightOverlay extends StatelessWidget {
       final localRects = _toLocalFlutterRects(rectsForPage);
 
       for (final rect in _mergeRectsIntoLineBands(localRects)) {
-        bands.add(
-          _HighlightHitBand(
-            rect: rect,
-            region: region,
-          ),
-        );
+        bands.add(_HighlightHitBand(rect: rect, region: region));
       }
     }
 
@@ -147,10 +149,7 @@ class PdfHoverHighlightOverlay extends StatelessWidget {
       );
 
       final localRect = rectInViewer.shift(
-        Offset(
-          -pageRectInViewer.left,
-          -pageRectInViewer.top,
-        ),
+        Offset(-pageRectInViewer.left, -pageRectInViewer.top),
       );
 
       final normalized = Rect.fromLTRB(
@@ -195,10 +194,7 @@ class PdfHoverHighlightOverlay extends StatelessWidget {
 
     for (final rect in filtered) {
       final normalized = _normalizeTextRect(rect);
-      final candidate = _findCompatibleBand(
-        bands: bands,
-        rect: normalized,
-      );
+      final candidate = _findCompatibleBand(bands: bands, rect: normalized);
 
       if (candidate == null) {
         bands.add(_MutableHighlightBand(normalized));
@@ -243,8 +239,8 @@ class PdfHoverHighlightOverlay extends StatelessWidget {
       final horizontalGap = rect.left > band.rect.right
           ? rect.left - band.rect.right
           : band.rect.left > rect.right
-              ? band.rect.left - rect.right
-              : 0.0;
+          ? band.rect.left - rect.right
+          : 0.0;
 
       final maxWordGap = math.max(
         18.0,
@@ -259,6 +255,33 @@ class PdfHoverHighlightOverlay extends StatelessWidget {
     }
 
     return null;
+  }
+}
+
+class _TodoPdfMarker extends StatelessWidget {
+  final Color color;
+
+  const _TodoPdfMarker({required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(999),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.14),
+            blurRadius: 3,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: const Padding(
+        padding: EdgeInsets.all(2.5),
+        child: Icon(Icons.task_alt, size: 13, color: Colors.white),
+      ),
+    );
   }
 }
 
@@ -281,24 +304,26 @@ class PdfHighlightPainter extends CustomPainter {
       return;
     }
 
-    final persistentRects = [
-      for (final region in persistentRegions)
-        for (final rect in region.sourceRects)
-          if (rect.pageNumber == page.pageNumber && rect.isValid) rect,
-    ];
+    for (final region in persistentRegions) {
+      final rectsForPage = region.sourceRects
+          .where((rect) => rect.pageNumber == page.pageNumber && rect.isValid)
+          .toList();
 
-    _paintRects(
-      canvas: canvas,
-      size: size,
-      sourceRects: persistentRects,
-      opacity: 0.22,
-      softOpacity: 0.09,
-    );
+      _paintRects(
+        canvas: canvas,
+        size: size,
+        sourceRects: rectsForPage,
+        color: Color(region.highlightColorValue),
+        opacity: region.highlightOpacity,
+        softOpacity: math.max(0.04, region.highlightOpacity * 0.42),
+      );
+    }
 
     _paintRects(
       canvas: canvas,
       size: size,
       sourceRects: hoverSourceRects,
+      color: const Color(0xFFFFD54F),
       opacity: 0.38,
       softOpacity: 0.16,
     );
@@ -308,6 +333,7 @@ class PdfHighlightPainter extends CustomPainter {
     required Canvas canvas,
     required Size size,
     required List<PdfSourceRect> sourceRects,
+    required Color color,
     required double opacity,
     required double softOpacity,
   }) {
@@ -327,13 +353,16 @@ class PdfHighlightPainter extends CustomPainter {
       return;
     }
 
+    final safeOpacity = opacity.clamp(0.05, 0.75).toDouble();
+    final safeSoftOpacity = softOpacity.clamp(0.02, 0.40).toDouble();
+
     final mainPaint = Paint()
-      ..color = const Color(0xFFFFD54F).withOpacity(opacity)
+      ..color = color.withValues(alpha: safeOpacity)
       ..style = PaintingStyle.fill
       ..isAntiAlias = true;
 
     final softPaint = Paint()
-      ..color = const Color(0xFFFFF176).withOpacity(softOpacity)
+      ..color = color.withValues(alpha: safeSoftOpacity)
       ..style = PaintingStyle.fill
       ..isAntiAlias = true;
 
@@ -347,19 +376,11 @@ class PdfHighlightPainter extends CustomPainter {
       final markerRect = _toMarkerStrokeRect(visibleBand);
       final softRect = markerRect.inflate(1.8);
 
-      final radius = Radius.circular(
-        math.max(2.0, markerRect.height * 0.28),
-      );
+      final radius = Radius.circular(math.max(2.0, markerRect.height * 0.28));
 
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(softRect, radius),
-        softPaint,
-      );
+      canvas.drawRRect(RRect.fromRectAndRadius(softRect, radius), softPaint);
 
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(markerRect, radius),
-        mainPaint,
-      );
+      canvas.drawRRect(RRect.fromRectAndRadius(markerRect, radius), mainPaint);
     }
   }
 
@@ -380,10 +401,7 @@ class PdfHighlightPainter extends CustomPainter {
       );
 
       final localRect = rectInViewer.shift(
-        Offset(
-          -pageRectInViewer.left,
-          -pageRectInViewer.top,
-        ),
+        Offset(-pageRectInViewer.left, -pageRectInViewer.top),
       );
 
       final normalized = Rect.fromLTRB(
@@ -432,10 +450,7 @@ class PdfHighlightPainter extends CustomPainter {
 
     for (final rect in filtered) {
       final normalized = _normalizeTextRect(rect);
-      final candidate = _findCompatibleBand(
-        bands: bands,
-        rect: normalized,
-      );
+      final candidate = _findCompatibleBand(bands: bands, rect: normalized);
 
       if (candidate == null) {
         bands.add(_MutableHighlightBand(normalized));
@@ -480,8 +495,8 @@ class PdfHighlightPainter extends CustomPainter {
       final horizontalGap = rect.left > band.rect.right
           ? rect.left - band.rect.right
           : band.rect.left > rect.right
-              ? band.rect.left - rect.right
-              : 0.0;
+          ? band.rect.left - rect.right
+          : 0.0;
 
       final maxWordGap = math.max(
         18.0,
@@ -525,10 +540,7 @@ class _HighlightHitBand {
   final Rect rect;
   final PdfLinkedHighlightRegion region;
 
-  const _HighlightHitBand({
-    required this.rect,
-    required this.region,
-  });
+  const _HighlightHitBand({required this.rect, required this.region});
 }
 
 class _MutableHighlightBand {

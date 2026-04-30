@@ -27,32 +27,34 @@ class NotesPageCanvas extends StatelessWidget {
     required NoteCreationType creationType,
     required Offset localPosition,
     required Size size,
-  }) onCreateNote;
+  })
+  onCreateNote;
   final void Function({
     required String noteId,
     required String blockId,
     required String text,
-  }) onUpdateNote;
-  final void Function({
-    required String noteId,
-    required String noteType,
-  }) onUpdateNoteType;
+  })
+  onUpdateNote;
+  final void Function({required String noteId, required String noteType})
+  onUpdateNoteType;
+  final void Function({required String todoId, required bool isCompleted})
+  onUpdateTodoCompleted;
   final void Function({
     required String anchorId,
     required NoteMetadata metadata,
-  }) onUpdateMetadata;
+  })
+  onUpdateMetadata;
   final void Function({
     required String anchorId,
     required int pageNumber,
     required double x,
     required double y,
     required double width,
-  }) onMoveNote;
+  })
+  onMoveNote;
   final ValueChanged<List<PdfSourceRect>>? onHoverSourceRectsChanged;
-  final void Function({
-    required String noteId,
-    required String blockId,
-  }) onArchiveIfEmpty;
+  final void Function({required String noteId, required String blockId})
+  onArchiveIfEmpty;
   final void Function(String noteId) onArchive;
 
   const NotesPageCanvas({
@@ -72,6 +74,7 @@ class NotesPageCanvas extends StatelessWidget {
     required this.onCreateNote,
     required this.onUpdateNote,
     required this.onUpdateNoteType,
+    required this.onUpdateTodoCompleted,
     required this.onUpdateMetadata,
     required this.onMoveNote,
     required this.onArchiveIfEmpty,
@@ -135,9 +138,7 @@ class NotesPageCanvas extends StatelessWidget {
     );
   }
 
-  List<NoteCreationType> _creationOptions({
-    required bool hasSelectedText,
-  }) {
+  List<NoteCreationType> _creationOptions({required bool hasSelectedText}) {
     if (hasSelectedText) {
       return const [
         NoteCreationType.note,
@@ -217,9 +218,9 @@ class NotesPageCanvas extends StatelessWidget {
               border: Border.all(
                 color: debugEnabled
                     ? isCurrentPage
-                        ? theme.colorScheme.primary.withOpacity(0.50)
-                        : theme.colorScheme.outlineVariant
-                    : theme.colorScheme.outlineVariant.withOpacity(0.12),
+                          ? theme.colorScheme.primary.withValues(alpha: 0.50)
+                          : theme.colorScheme.outlineVariant
+                    : theme.colorScheme.outlineVariant.withValues(alpha: 0.12),
               ),
               borderRadius: BorderRadius.circular(4),
             ),
@@ -257,6 +258,7 @@ class NotesPageCanvas extends StatelessWidget {
                     onRequestPdfJumpToDocumentY: onRequestPdfJumpToDocumentY,
                     onUpdateNote: onUpdateNote,
                     onUpdateNoteType: onUpdateNoteType,
+                    onUpdateTodoCompleted: onUpdateTodoCompleted,
                     onUpdateMetadata: onUpdateMetadata,
                     onMoveNote: onMoveNote,
                     onHoverSourceRectsChanged: onHoverSourceRectsChanged,
@@ -286,27 +288,28 @@ class _PositionedNote extends StatefulWidget {
     required String noteId,
     required String blockId,
     required String text,
-  }) onUpdateNote;
-  final void Function({
-    required String noteId,
-    required String noteType,
-  }) onUpdateNoteType;
+  })
+  onUpdateNote;
+  final void Function({required String noteId, required String noteType})
+  onUpdateNoteType;
+  final void Function({required String todoId, required bool isCompleted})
+  onUpdateTodoCompleted;
   final void Function({
     required String anchorId,
     required NoteMetadata metadata,
-  }) onUpdateMetadata;
+  })
+  onUpdateMetadata;
   final void Function({
     required String anchorId,
     required int pageNumber,
     required double x,
     required double y,
     required double width,
-  }) onMoveNote;
+  })
+  onMoveNote;
   final ValueChanged<List<PdfSourceRect>>? onHoverSourceRectsChanged;
-  final void Function({
-    required String noteId,
-    required String blockId,
-  }) onArchiveIfEmpty;
+  final void Function({required String noteId, required String blockId})
+  onArchiveIfEmpty;
   final void Function(String noteId) onArchive;
 
   const _PositionedNote({
@@ -320,6 +323,7 @@ class _PositionedNote extends StatefulWidget {
     required this.onEditingNoteChanged,
     required this.onUpdateNote,
     required this.onUpdateNoteType,
+    required this.onUpdateTodoCompleted,
     required this.onUpdateMetadata,
     required this.onMoveNote,
     required this.onArchiveIfEmpty,
@@ -358,10 +362,7 @@ class _PositionedNoteState extends State<_PositionedNote> {
     final preferredWidth = placement.width * widget.canvasWidth;
 
     final minWidth = math.min(160.0, availableWidth);
-    final maxWidth = math.max(
-      minWidth,
-      math.min(420.0, availableWidth),
-    );
+    final maxWidth = math.max(minWidth, math.min(420.0, availableWidth));
 
     final noteWidth = preferredWidth.clamp(minWidth, maxWidth).toDouble();
 
@@ -373,9 +374,7 @@ class _PositionedNoteState extends State<_PositionedNote> {
 
     final rawTop = placement.y * widget.pageHeight;
     final maxTop = math.max(8.0, widget.pageHeight - 80.0);
-    final baseTop = maxTop <= 8.0
-        ? 8.0
-        : rawTop.clamp(8.0, maxTop).toDouble();
+    final baseTop = maxTop <= 8.0 ? 8.0 : rawTop.clamp(8.0, maxTop).toDouble();
 
     final left = _dragLeft ?? baseLeft;
     final top = _dragTop ?? baseTop;
@@ -420,13 +419,12 @@ class _PositionedNoteState extends State<_PositionedNote> {
 
       if (sourceRects.isNotEmpty) {
         final source = sourceRects.first;
-        localPageY = source.top.clamp(
-          0.0,
-          math.max(1.0, widget.pdfPageRect.height),
-        ).toDouble();
+        localPageY = source.top
+            .clamp(0.0, math.max(1.0, widget.pdfPageRect.height))
+            .toDouble();
       } else {
-        localPageY = placement.y.clamp(0.0, 1.0).toDouble() *
-            widget.pdfPageRect.height;
+        localPageY =
+            placement.y.clamp(0.0, 1.0).toDouble() * widget.pdfPageRect.height;
       }
 
       widget.onRequestPdfJumpToDocumentY?.call(
@@ -446,9 +444,7 @@ class _PositionedNoteState extends State<_PositionedNote> {
         onFocusConsumed: widget.onFocusConsumed,
         onJumpToSource: widget.item.sourceRects.isEmpty ? null : jumpToSource,
         onEditingChanged: (isEditing) {
-          widget.onEditingNoteChanged(
-            isEditing ? widget.item.note.id : null,
-          );
+          widget.onEditingNoteChanged(isEditing ? widget.item.note.id : null);
         },
         onHoverChanged: (isHovered) {
           widget.onHoverSourceRectsChanged?.call(
@@ -468,6 +464,12 @@ class _PositionedNoteState extends State<_PositionedNote> {
           widget.onUpdateNoteType(
             noteId: widget.item.note.id,
             noteType: noteType,
+          );
+        },
+        onTodoCompletedChanged: (isCompleted) {
+          widget.onUpdateTodoCompleted(
+            todoId: widget.item.note.id,
+            isCompleted: isCompleted,
           );
         },
         onMetadataChanged: (metadata) {

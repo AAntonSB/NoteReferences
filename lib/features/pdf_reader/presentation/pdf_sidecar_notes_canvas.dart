@@ -24,7 +24,7 @@ class PdfSidecarNotesCanvas extends StatefulWidget {
   final String? selectedText;
   final List<PdfSourceRect> selectedSourceRects;
   final ValueListenable<SidecarExternalCreateRequest?>?
-      externalCreateRequestListenable;
+  externalCreateRequestListenable;
   final ValueListenable<SidecarRevealNoteRequest?>? revealNoteRequestListenable;
   final ValueListenable<int>? outlineSearchFocusRequestListenable;
   final bool initialOutlineOpen;
@@ -32,10 +32,8 @@ class PdfSidecarNotesCanvas extends StatefulWidget {
   final ValueChanged<List<PdfSourceRect>>? onHoveredSourceRectsChanged;
   final ValueChanged<Offset>? onSidecarScrollDelta;
   final ValueChanged<double>? onRequestPdfJumpToDocumentY;
-  final void Function({
-    required bool outlineOpen,
-    required bool debugEnabled,
-  })? onSidecarPreferencesChanged;
+  final void Function({required bool outlineOpen, required bool debugEnabled})?
+  onSidecarPreferencesChanged;
 
   const PdfSidecarNotesCanvas({
     super.key,
@@ -95,12 +93,12 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
     _outlineOpen = widget.initialOutlineOpen;
     _latestViewport = widget.viewportListenable.value;
 
+    widget.viewportListenable.addListener(_handleViewportChanged);
+
     widget.externalCreateRequestListenable?.addListener(
       _handleExternalCreateRequest,
     );
-    widget.revealNoteRequestListenable?.addListener(
-      _handleRevealNoteRequest,
-    );
+    widget.revealNoteRequestListenable?.addListener(_handleRevealNoteRequest);
     widget.outlineSearchFocusRequestListenable?.addListener(
       _handleOutlineSearchFocusRequest,
     );
@@ -117,6 +115,13 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
   void didUpdateWidget(covariant PdfSidecarNotesCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
 
+    if (oldWidget.viewportListenable != widget.viewportListenable) {
+      oldWidget.viewportListenable.removeListener(_handleViewportChanged);
+      widget.viewportListenable.addListener(_handleViewportChanged);
+      _latestViewport = widget.viewportListenable.value;
+      _scheduleSyncToPdf();
+    }
+
     if (oldWidget.externalCreateRequestListenable !=
         widget.externalCreateRequestListenable) {
       oldWidget.externalCreateRequestListenable?.removeListener(
@@ -132,9 +137,7 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
       oldWidget.revealNoteRequestListenable?.removeListener(
         _handleRevealNoteRequest,
       );
-      widget.revealNoteRequestListenable?.addListener(
-        _handleRevealNoteRequest,
-      );
+      widget.revealNoteRequestListenable?.addListener(_handleRevealNoteRequest);
     }
 
     if (oldWidget.outlineSearchFocusRequestListenable !=
@@ -151,6 +154,7 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
   @override
   void dispose() {
     _revealTimer?.cancel();
+    widget.viewportListenable.removeListener(_handleViewportChanged);
     widget.externalCreateRequestListenable?.removeListener(
       _handleExternalCreateRequest,
     );
@@ -165,7 +169,19 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
   }
 
   bool get _hasSelectedText {
-    return widget.selectedText != null && widget.selectedText!.trim().isNotEmpty;
+    return widget.selectedText != null &&
+        widget.selectedText!.trim().isNotEmpty;
+  }
+
+  void _handleViewportChanged() {
+    final next = widget.viewportListenable.value;
+
+    if (_latestViewport.isEquivalentTo(next)) {
+      return;
+    }
+
+    _latestViewport = next;
+    _scheduleSyncToPdf();
   }
 
   void _notifyPreferencesChanged() {
@@ -282,8 +298,7 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
     }
 
     final x = (localPosition.dx / pageSize.width).clamp(0.02, 0.92).toDouble();
-    final y =
-        (localPosition.dy / pageSize.height).clamp(0.02, 0.94).toDouble();
+    final y = (localPosition.dy / pageSize.height).clamp(0.02, 0.94).toDouble();
 
     final note = await widget.noteRepository.createSidecarTextNote(
       documentId: widget.documentId,
@@ -329,7 +344,8 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
     }
 
     if (metric != null) {
-      final documentY = metric.pdfPageRect.top +
+      final documentY =
+          metric.pdfPageRect.top +
           placement.y.clamp(0.0, 1.0).toDouble() * metric.pdfPageRect.height;
 
       widget.onRequestPdfJumpToDocumentY?.call(documentY);
@@ -393,27 +409,42 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
     }
 
     final metrics = <SidecarPageMetrics>[];
+    var sidecarTop = 0.0;
 
     for (var index = 0; index < pageCount; index++) {
       final pdfRect = usableRects[index];
 
-      final renderedTop = pdfRect.top * zoom;
+      if (index > 0) {
+        final previousPdfRect = usableRects[index - 1];
+        final pdfGap = math.max(0.0, pdfRect.top - previousPdfRect.bottom);
+        final previousMetric = metrics.last;
+        final previousScale = previousMetric.pdfPageRect.height <= 0
+            ? 1.0
+            : previousMetric.height / previousMetric.pdfPageRect.height;
+        final scaledGap = pdfGap * previousScale;
+        sidecarTop += math.max(20.0, scaledGap);
+      }
+
       final renderedWidth = math.max(1.0, pdfRect.width * zoom);
       final renderedHeight = math.max(1.0, pdfRect.height * zoom);
+      final scale = math.min(1.0, safeCanvasWidth / renderedWidth);
 
-      final safeWidth = math.min(renderedWidth, safeCanvasWidth);
-      final left = math.max(0.0, (safeCanvasWidth - safeWidth) / 2);
+      final sidecarWidth = math.max(1.0, renderedWidth * scale);
+      final sidecarHeight = math.max(1.0, renderedHeight * scale);
+      final left = math.max(0.0, (safeCanvasWidth - sidecarWidth) / 2);
 
       metrics.add(
         SidecarPageMetrics(
           pageNumber: index + 1,
           left: left,
-          top: renderedTop,
-          width: safeWidth,
-          height: renderedHeight,
+          top: sidecarTop,
+          width: sidecarWidth,
+          height: sidecarHeight,
           pdfPageRect: pdfRect,
         ),
       );
+
+      sidecarTop += sidecarHeight;
     }
 
     return metrics;
@@ -438,12 +469,7 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
           top: top,
           width: pageWidth,
           height: _fallbackPageHeight,
-          pdfPageRect: Rect.fromLTWH(
-            0,
-            top,
-            pageWidth,
-            _fallbackPageHeight,
-          ),
+          pdfPageRect: Rect.fromLTWH(0, top, pageWidth, _fallbackPageHeight),
         ),
       );
 
@@ -494,7 +520,9 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
 
     final maxExtent = _scrollController.position.maxScrollExtent;
 
-    final targetOffset = syncTarget.targetOffset.clamp(0.0, maxExtent).toDouble();
+    final targetOffset = syncTarget.targetOffset
+        .clamp(0.0, maxExtent)
+        .toDouble();
 
     final actualBefore = _scrollController.offset;
     final correctionBeforeJump = targetOffset - actualBefore;
@@ -578,8 +606,6 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
 
     final pageRects = viewport.pageRects.take(count).toList();
     final sidecarMetrics = metrics.take(count).toList();
-    final zoom = viewport.zoom <= 0 ? 1.0 : viewport.zoom;
-
     final firstPdfPage = pageRects.first;
     final firstSidecarPage = sidecarMetrics.first;
 
@@ -602,8 +628,8 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
         final progress = pdfPage.height <= 0
             ? 0.0
             : ((pdfY - pdfPage.top) / pdfPage.height)
-                .clamp(0.0, 1.0)
-                .toDouble();
+                  .clamp(0.0, 1.0)
+                  .toDouble();
 
         return MappedSidecarY(
           mode: 'continuous-page',
@@ -629,12 +655,7 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
 
           final progress = pdfGapHeight <= 0
               ? 1.0
-              : ((pdfY - pdfGapTop) / pdfGapHeight)
-                  .clamp(0.0, 1.0)
-                  .toDouble();
-
-          final sidecarGapTop = pdfGapTop * zoom;
-          final sidecarGapBottom = pdfGapBottom * zoom;
+              : ((pdfY - pdfGapTop) / pdfGapHeight).clamp(0.0, 1.0).toDouble();
 
           return MappedSidecarY(
             mode: 'continuous-gap',
@@ -643,8 +664,8 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
             pdfSegmentHeight: pdfGapHeight,
             segmentProgress: progress,
             sidecarY: _lerpDouble(
-              sidecarGapTop,
-              sidecarGapBottom,
+              sidecarPage.bottom,
+              nextSidecarPage.top,
               progress,
             ),
           );
@@ -740,7 +761,8 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
   Widget build(BuildContext context) {
     return Listener(
       onPointerSignal: (event) {
-        if (event is PointerScrollEvent && !_pointerInsideOutline) {
+        if (event is PointerScrollEvent &&
+            (!_outlineOpen || !_pointerInsideOutline)) {
           widget.onSidecarScrollDelta?.call(event.scrollDelta);
         }
       },
@@ -786,8 +808,7 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
                                 thumbVisibility: true,
                                 child: SingleChildScrollView(
                                   controller: _scrollController,
-                                  physics:
-                                      const NeverScrollableScrollPhysics(),
+                                  physics: const NeverScrollableScrollPhysics(),
                                   child: SizedBox(
                                     height: totalHeight,
                                     width: constraints.maxWidth,
@@ -803,17 +824,17 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
                                               pageNumber: metric.pageNumber,
                                               isCurrentPage:
                                                   metric.pageNumber ==
-                                                      viewport.safeCurrentPage,
+                                                  viewport.safeCurrentPage,
                                               debugEnabled: _debugEnabled,
                                               pageHeight: metric.height,
                                               pdfPageRect: metric.pdfPageRect,
-                                              hasSelectedText:
-                                                  _hasSelectedText,
+                                              hasSelectedText: _hasSelectedText,
                                               activeEditingNoteId:
                                                   _activeEditingNoteId,
                                               revealedNoteId: _revealedNoteId,
-                                              notes: notesByPage[
-                                                      metric.pageNumber] ??
+                                              notes:
+                                                  notesByPage[metric
+                                                      .pageNumber] ??
                                                   const [],
                                               noteIdToFocus: _noteIdToFocus,
                                               onFocusConsumed: () {
@@ -827,82 +848,103 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
                                                   _handleEditingNoteChanged,
                                               onRequestPdfJumpToDocumentY: widget
                                                   .onRequestPdfJumpToDocumentY,
-                                              onCreateNote: ({
-                                                required creationType,
-                                                required localPosition,
-                                                required size,
-                                              }) {
-                                                _createNoteAt(
-                                                  pageNumber:
-                                                      metric.pageNumber,
-                                                  localPosition:
-                                                      localPosition,
-                                                  pageSize: size,
-                                                  creationType: creationType,
-                                                );
-                                              },
-                                              onUpdateNote: ({
-                                                required noteId,
-                                                required blockId,
-                                                required text,
-                                              }) {
-                                                widget.noteRepository
-                                                    .updateTextBlock(
-                                                  noteId: noteId,
-                                                  blockId: blockId,
-                                                  body: text,
-                                                );
-                                              },
-                                              onUpdateNoteType: ({
-                                                required noteId,
-                                                required noteType,
-                                              }) {
-                                                widget.noteRepository
-                                                    .updateNoteType(
-                                                  noteId: noteId,
-                                                  noteType: noteType,
-                                                );
-                                              },
-                                              onUpdateMetadata: ({
-                                                required anchorId,
-                                                required metadata,
-                                              }) {
-                                                widget.noteRepository
-                                                    .updateNoteMetadata(
-                                                  anchorId: anchorId,
-                                                  metadata: metadata,
-                                                );
-                                              },
-                                              onMoveNote: ({
-                                                required anchorId,
-                                                required pageNumber,
-                                                required x,
-                                                required y,
-                                                required width,
-                                              }) {
-                                                widget.noteRepository
-                                                    .moveSidecarNote(
-                                                  anchorId: anchorId,
-                                                  pageNumber: pageNumber,
-                                                  x: x,
-                                                  y: y,
-                                                  width: width,
-                                                );
-                                              },
+                                              onCreateNote:
+                                                  ({
+                                                    required creationType,
+                                                    required localPosition,
+                                                    required size,
+                                                  }) {
+                                                    _createNoteAt(
+                                                      pageNumber:
+                                                          metric.pageNumber,
+                                                      localPosition:
+                                                          localPosition,
+                                                      pageSize: size,
+                                                      creationType:
+                                                          creationType,
+                                                    );
+                                                  },
+                                              onUpdateNote:
+                                                  ({
+                                                    required noteId,
+                                                    required blockId,
+                                                    required text,
+                                                  }) {
+                                                    widget.noteRepository
+                                                        .updateTextBlock(
+                                                          noteId: noteId,
+                                                          blockId: blockId,
+                                                          body: text,
+                                                        );
+                                                  },
+                                              onUpdateNoteType:
+                                                  ({
+                                                    required noteId,
+                                                    required noteType,
+                                                  }) {
+                                                    widget.noteRepository
+                                                        .updateNoteType(
+                                                          noteId: noteId,
+                                                          noteType: noteType,
+                                                        );
+                                                  },
+                                              onUpdateTodoCompleted:
+                                                  ({
+                                                    required todoId,
+                                                    required isCompleted,
+                                                  }) {
+                                                    widget.noteRepository
+                                                        .updateTodoCompleted(
+                                                          todoId: todoId,
+                                                          isCompleted:
+                                                              isCompleted,
+                                                        );
+                                                  },
+                                              onUpdateMetadata:
+                                                  ({
+                                                    required anchorId,
+                                                    required metadata,
+                                                  }) {
+                                                    widget.noteRepository
+                                                        .updateNoteMetadata(
+                                                          anchorId: anchorId,
+                                                          metadata: metadata,
+                                                        );
+                                                  },
+                                              onMoveNote:
+                                                  ({
+                                                    required anchorId,
+                                                    required pageNumber,
+                                                    required x,
+                                                    required y,
+                                                    required width,
+                                                  }) {
+                                                    widget.noteRepository
+                                                        .moveSidecarNote(
+                                                          anchorId: anchorId,
+                                                          pageNumber:
+                                                              pageNumber,
+                                                          x: x,
+                                                          y: y,
+                                                          width: width,
+                                                        );
+                                                  },
                                               onHoverSourceRectsChanged: widget
                                                   .onHoveredSourceRectsChanged,
-                                              onArchiveIfEmpty: ({
-                                                required noteId,
-                                                required blockId,
-                                              }) {
-                                                widget.noteRepository
-                                                    .archiveNoteIfEmpty(
-                                                  noteId: noteId,
-                                                  blockId: blockId,
-                                                );
-                                              },
+                                              onArchiveIfEmpty:
+                                                  ({
+                                                    required noteId,
+                                                    required blockId,
+                                                  }) {
+                                                    widget.noteRepository
+                                                        .archiveNoteIfEmpty(
+                                                          noteId: noteId,
+                                                          blockId: blockId,
+                                                        );
+                                                  },
                                               onArchive: widget
-                                                  .noteRepository.archiveNote,
+                                                  .noteRepository
+                                                  .archiveNote,
                                             ),
                                           ),
                                       ],
@@ -914,9 +956,7 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
                                 Positioned(
                                   right: 16,
                                   bottom: 16,
-                                  child: SyncDebugOverlay(
-                                    state: _debugState!,
-                                  ),
+                                  child: SyncDebugOverlay(state: _debugState!),
                                 ),
                             ],
                           );
@@ -953,32 +993,33 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
                     if (_outlineOpen)
                       Positioned(
                         top: 58,
+                        left: 12,
                         right: 12,
                         bottom: 12,
-                        child: MouseRegion(
-                          onEnter: (_) {
+                        child: NotesOutlinePanel(
+                          notes: notes,
+                          searchFocusRequestListenable:
+                              widget.outlineSearchFocusRequestListenable,
+                          onPointerEnterPanel: () {
+                            if (_pointerInsideOutline) return;
                             setState(() {
                               _pointerInsideOutline = true;
                             });
                           },
-                          onExit: (_) {
+                          onPointerExitPanel: () {
+                            if (!_pointerInsideOutline) return;
                             setState(() {
                               _pointerInsideOutline = false;
                             });
                           },
-                          child: NotesOutlinePanel(
-                            notes: notes,
-                            searchFocusRequestListenable:
-                                widget.outlineSearchFocusRequestListenable,
-                            onClose: () {
-                              setState(() {
-                                _outlineOpen = false;
-                                _pointerInsideOutline = false;
-                              });
-                              _notifyPreferencesChanged();
-                            },
-                            onSelectNote: _selectOutlineNote,
-                          ),
+                          onClose: () {
+                            setState(() {
+                              _outlineOpen = false;
+                              _pointerInsideOutline = false;
+                            });
+                            _notifyPreferencesChanged();
+                          },
+                          onSelectNote: _selectOutlineNote,
                         ),
                       ),
                   ],

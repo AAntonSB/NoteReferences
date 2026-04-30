@@ -38,3 +38,14 @@ class _NotesAppState extends State<NotesApp> {
     );
   }
 }
+
+// Backward-compatible wrapper for the generated widget test.
+// Prefer NotesApp in app code.
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const NotesApp();
+  }
+}

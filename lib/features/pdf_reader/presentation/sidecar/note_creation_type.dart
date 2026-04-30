@@ -26,9 +26,9 @@ enum NoteCreationType {
     icon: Icons.bookmark_border,
   ),
   task(
-    id: 'task',
-    label: 'Task',
-    description: 'Follow-up action',
+    id: 'todo',
+    label: 'TODO',
+    description: 'Action item',
     icon: Icons.check_box_outlined,
   ),
   citation(

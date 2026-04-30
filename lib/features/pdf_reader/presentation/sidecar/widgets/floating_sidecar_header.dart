@@ -31,24 +31,26 @@ class FloatingSidecarHeader extends StatelessWidget {
       child: Material(
         elevation: 4,
         borderRadius: BorderRadius.circular(999),
-        color: theme.colorScheme.surface.withOpacity(0.92),
+        color: theme.colorScheme.surface.withValues(alpha: 0.92),
         child: Container(
           height: 40,
           padding: const EdgeInsets.only(left: 6, right: 4),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(999),
-            border: Border.all(
-              color: theme.colorScheme.outlineVariant,
-            ),
+            border: Border.all(color: theme.colorScheme.outlineVariant),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               IconButton(
-                tooltip: outlineOpen ? 'Hide notes outline' : 'Show notes outline',
+                tooltip: outlineOpen
+                    ? 'Hide notes outline'
+                    : 'Show notes outline',
                 onPressed: onToggleOutline,
                 icon: Icon(
-                  outlineOpen ? Icons.view_sidebar : Icons.view_sidebar_outlined,
+                  outlineOpen
+                      ? Icons.view_sidebar
+                      : Icons.view_sidebar_outlined,
                   size: 18,
                 ),
               ),
@@ -70,7 +72,9 @@ class FloatingSidecarHeader extends StatelessWidget {
                 const SizedBox(width: 4),
               ],
               IconButton(
-                tooltip: debugEnabled ? 'Disable debug view' : 'Enable debug view',
+                tooltip: debugEnabled
+                    ? 'Disable debug view'
+                    : 'Enable debug view',
                 onPressed: onToggleDebug,
                 icon: Icon(
                   debugEnabled ? Icons.bug_report : Icons.bug_report_outlined,

@@ -56,15 +56,13 @@ class PdfSearchBar extends StatelessWidget {
     return Material(
       elevation: 8,
       borderRadius: BorderRadius.circular(14),
-      color: theme.colorScheme.surface.withOpacity(0.96),
+      color: theme.colorScheme.surface.withValues(alpha: 0.96),
       child: Container(
         width: 460,
         padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: theme.colorScheme.outlineVariant,
-          ),
+          border: Border.all(color: theme.colorScheme.outlineVariant),
         ),
         child: ListenableBuilder(
           listenable: textSearcher,
@@ -75,10 +73,10 @@ class PdfSearchBar extends StatelessWidget {
             final matchText = controller.text.trim().isEmpty
                 ? ''
                 : textSearcher.isSearching
-                    ? 'Searching…'
-                    : matchCount == 0
-                        ? 'No matches'
-                        : '${(currentIndex ?? 0) + 1} / $matchCount';
+                ? 'Searching…'
+                : matchCount == 0
+                ? 'No matches'
+                : '${(currentIndex ?? 0) + 1} / $matchCount';
 
             return Column(
               mainAxisSize: MainAxisSize.min,

@@ -33,6 +33,12 @@ class NoteTypePresentation {
           icon: Icons.bookmark_border,
           accentColor: scheme.primary,
         );
+      case 'todo':
+        return NoteTypePresentation(
+          label: 'TODO',
+          icon: Icons.check_box_outlined,
+          accentColor: scheme.error,
+        );
       case 'task':
         return NoteTypePresentation(
           label: 'Task',

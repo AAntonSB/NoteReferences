@@ -15,3 +15,14 @@ void main() {
 
   runApp(const ProviderScope(child: NotesApp()));
 }
+
+// Backward-compatible wrapper for the generated widget test, which imports
+// main.dart and expects a concrete MyApp class.
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const ProviderScope(child: NotesApp());
+  }
+}
