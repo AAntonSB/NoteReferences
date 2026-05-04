@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../notes/data/note_repository.dart';
+import '../../../../settings/data/app_settings_controller.dart';
 import '../note_type_presentation.dart';
 import 'linked_selection_preview.dart';
 import 'margin_note_toolbar.dart';
@@ -25,6 +26,7 @@ class MarginNoteCard extends StatefulWidget {
   final VoidCallback? onDragEnd;
   final VoidCallback onArchiveIfEmpty;
   final VoidCallback onArchive;
+  final AppSettings appSettings;
 
   const MarginNoteCard({
     super.key,
@@ -37,6 +39,7 @@ class MarginNoteCard extends StatefulWidget {
     required this.onMetadataChanged,
     required this.onArchiveIfEmpty,
     required this.onArchive,
+    required this.appSettings,
     this.onJumpToSource,
     this.onTodoCompletedChanged,
     this.onEditingChanged,
@@ -57,6 +60,8 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
 
   bool _isHovered = false;
   bool _isEditing = false;
+  bool _isShiftDragging = false;
+  bool _isHandleDragging = false;
 
   late String _localNoteType;
   late NoteMetadata _localMetadata;
@@ -307,6 +312,77 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
     }
   }
 
+  bool get _dragKeyPressed {
+    final keyboard = HardwareKeyboard.instance;
+
+    switch (widget.appSettings.sidecarDragKeybind) {
+      case SidecarDragKeybind.shift:
+        return keyboard.isShiftPressed;
+      case SidecarDragKeybind.alt:
+        return keyboard.isAltPressed;
+      case SidecarDragKeybind.control:
+        return keyboard.isControlPressed;
+    }
+  }
+
+  void _handleShiftDragStart(DragStartDetails details) {
+    _isShiftDragging = _dragKeyPressed && widget.onDragDelta != null;
+    if (_isShiftDragging && _isEditing) {
+      _focusNode.unfocus();
+    }
+
+    if (_isShiftDragging && mounted) {
+      setState(() {});
+    }
+  }
+
+  void _handleShiftDragUpdate(DragUpdateDetails details) {
+    if (!_isShiftDragging) return;
+    widget.onDragDelta?.call(details.delta);
+  }
+
+  void _handleShiftDragEnd([Object? _]) {
+    if (!_isShiftDragging) return;
+    _isShiftDragging = false;
+    if (mounted) {
+      setState(() {});
+    }
+    widget.onDragEnd?.call();
+  }
+
+  void _handleDirectDragStart() {
+    if (widget.onDragDelta == null) return;
+
+    if (_isEditing) {
+      _focusNode.unfocus();
+    }
+
+    if (!_isHandleDragging) {
+      setState(() {
+        _isHandleDragging = true;
+      });
+    }
+  }
+
+  void _handleDirectDragUpdate(Offset delta) {
+    if (widget.onDragDelta == null) return;
+    if (!_isHandleDragging) {
+      _handleDirectDragStart();
+    }
+
+    widget.onDragDelta?.call(delta);
+  }
+
+  void _handleDirectDragEnd() {
+    if (!_isHandleDragging) return;
+
+    setState(() {
+      _isHandleDragging = false;
+    });
+
+    widget.onDragEnd?.call();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -319,12 +395,16 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
     final selectedText = widget.item.anchor.selectedText?.trim();
     final hasSelectedText = selectedText != null && selectedText.isNotEmpty;
 
-    final showChrome = _isHovered || _isEditing || widget.isRevealed;
+    final showChrome = _isHovered || _isEditing || widget.isRevealed || _isHandleDragging || _isShiftDragging;
     final bodyText = _controller.text;
     final bodyTextTrimmed = bodyText.trim();
+    final isCreatingEmptyNote = _isEditing && bodyTextTrimmed.isEmpty;
+    final showActionHeader = !isCreatingEmptyNote && showChrome;
 
     final borderColor = widget.isRevealed
         ? theme.colorScheme.primary
+        : isCreatingEmptyNote
+        ? presentation.accentColor.withValues(alpha: 0.72)
         : _isEditing
         ? (isTodo ? todoColor : presentation.accentColor)
         : showChrome
@@ -352,7 +432,12 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
       },
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
+        onPanStart: _handleShiftDragStart,
+        onPanUpdate: _handleShiftDragUpdate,
+        onPanEnd: (_) => _handleShiftDragEnd(),
+        onPanCancel: _handleShiftDragEnd,
         onTap: () {
+          if (_dragKeyPressed) return;
           if (!_isEditing) {
             _enterEditing();
           }
@@ -362,187 +447,234 @@ class _MarginNoteCardState extends State<MarginNoteCard> {
           curve: Curves.easeOut,
           decoration: BoxDecoration(
             color: isTodo
-                ? todoColor.withValues(alpha: showChrome ? 0.10 : 0.07)
+                ? todoColor.withValues(alpha: showChrome ? 0.09 : 0.055)
                 : showChrome
                 ? theme.colorScheme.surface.withValues(alpha: 0.96)
-                : theme.colorScheme.surface.withValues(alpha: 0.50),
-            borderRadius: BorderRadius.circular(8),
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: borderColor,
-              width: widget.isRevealed ? 1.6 : 1,
+              width: widget.isRevealed || _isShiftDragging ? 1.6 : 1,
             ),
-            boxShadow: showChrome
+            boxShadow: widget.isRevealed
                 ? [
                     BoxShadow(
-                      color: Colors.black.withValues(
-                        alpha: widget.isRevealed ? 0.14 : 0.08,
-                      ),
-                      blurRadius: widget.isRevealed ? 16 : 10,
-                      offset: const Offset(0, 4),
+                      color: theme.colorScheme.primary.withValues(alpha: 0.12),
+                      blurRadius: 14,
+                      offset: const Offset(0, 3),
                     ),
                   ]
                 : const [],
           ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Stack(
+            clipBehavior: Clip.none,
             children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                width: 3,
-                constraints: const BoxConstraints(minHeight: 54),
-                decoration: BoxDecoration(
-                  color: widget.isRevealed
-                      ? theme.colorScheme.primary
-                      : isTodo
-                      ? todoColor
-                      : presentation.accentColor,
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(8),
-                    bottomLeft: Radius.circular(8),
-                  ),
-                ),
-              ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 6, 6, 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      MarginNoteToolbar(
-                        presentation: presentation,
-                        currentType: _localNoteType,
-                        showActions: showChrome,
-                        onTypeChanged: _changeNoteType,
-                        onArchive: widget.onArchive,
-                        onEditDetails: _editDetails,
-                        onDragDelta: widget.onDragDelta,
-                        onDragEnd: widget.onDragEnd,
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  MouseRegion(
+                    cursor: widget.onDragDelta == null
+                        ? SystemMouseCursors.basic
+                        : SystemMouseCursors.move,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onPanStart: (_) => _handleDirectDragStart(),
+                      onPanUpdate: (details) {
+                        _handleDirectDragUpdate(details.delta);
+                      },
+                      onPanEnd: (_) => _handleDirectDragEnd(),
+                      onPanCancel: _handleDirectDragEnd,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 140),
+                        width: showChrome ? 4 : 3,
+                        constraints: const BoxConstraints(minHeight: 32),
+                        decoration: BoxDecoration(
+                          color: widget.isRevealed
+                              ? theme.colorScheme.primary
+                              : isTodo
+                              ? todoColor
+                              : presentation.accentColor,
+                          borderRadius: const BorderRadius.only(
+                            topLeft: Radius.circular(12),
+                            bottomLeft: Radius.circular(12),
+                          ),
+                        ),
                       ),
-                      if (isTodo)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4, bottom: 6),
-                          child: Row(
-                            children: [
-                              Checkbox(
-                                value: isTodoCompleted,
-                                visualDensity: VisualDensity.compact,
-                                materialTapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap,
-                                onChanged: widget.onTodoCompletedChanged == null
-                                    ? null
-                                    : (value) {
-                                        widget.onTodoCompletedChanged!(
-                                          value ?? false,
-                                        );
-                                      },
+                    ),
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(9, 5, 7, 6),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (isTodo)
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                top: 4,
+                                bottom: 6,
                               ),
-                              const SizedBox(width: 4),
-                              Icon(
-                                Icons.flag_outlined,
-                                size: 14,
-                                color: todoColor,
+                              child: Row(
+                                children: [
+                                  Checkbox(
+                                    value: isTodoCompleted,
+                                    visualDensity: VisualDensity.compact,
+                                    materialTapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap,
+                                    onChanged:
+                                        widget.onTodoCompletedChanged == null
+                                        ? null
+                                        : (value) {
+                                            widget.onTodoCompletedChanged!(
+                                              value ?? false,
+                                            );
+                                          },
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Icon(
+                                    Icons.flag_outlined,
+                                    size: 14,
+                                    color: todoColor,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    _todoPriority.toUpperCase(),
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: todoColor,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  if (isTodoCompleted)
+                                    Text(
+                                      'Done',
+                                      style: theme.textTheme.labelSmall
+                                          ?.copyWith(
+                                            color: theme
+                                                .colorScheme
+                                                .onSurfaceVariant,
+                                          ),
+                                    ),
+                                ],
                               ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _todoPriority.toUpperCase(),
-                                style: theme.textTheme.labelSmall?.copyWith(
-                                  color: todoColor,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              const Spacer(),
-                              if (isTodoCompleted)
-                                Text(
-                                  'Done',
-                                  style: theme.textTheme.labelSmall?.copyWith(
-                                    color: theme.colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      if (hasSelectedText)
-                        LinkedSelectionPreview(
-                          selectedText: selectedText,
-                          compact: !showChrome,
-                          onTap: widget.onJumpToSource,
-                        ),
-                      if (_localMetadata.tags.isNotEmpty && showChrome)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: Wrap(
-                            spacing: 4,
-                            runSpacing: 4,
-                            children: [
-                              for (final tag in _localMetadata.tags.take(5))
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: theme
-                                        .colorScheme
-                                        .surfaceContainerHighest,
-                                    borderRadius: BorderRadius.circular(999),
-                                  ),
-                                  child: Text(
-                                    tag,
-                                    style: theme.textTheme.labelSmall,
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      if (_isEditing)
-                        Focus(
-                          onKeyEvent: _handleEditorKeyEvent,
-                          child: TextField(
-                            controller: _controller,
-                            focusNode: _focusNode,
-                            keyboardType: TextInputType.multiline,
-                            minLines: 1,
-                            maxLines: null,
-                            onChanged: _onTextChanged,
-                            decoration: const InputDecoration(
-                              isDense: true,
-                              border: InputBorder.none,
-                              hintText: 'Type here...',
-                              contentPadding: EdgeInsets.zero,
                             ),
-                            style: theme.textTheme.bodyMedium,
-                          ),
-                        )
-                      else
-                        Text(
-                          bodyTextTrimmed.isEmpty
-                              ? 'Click to write...'
-                              : bodyText,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: bodyTextTrimmed.isEmpty
-                                ? theme.colorScheme.onSurfaceVariant
-                                : isTodoCompleted
-                                ? theme.colorScheme.onSurfaceVariant
-                                : theme.colorScheme.onSurface,
-                            fontStyle: bodyTextTrimmed.isEmpty
-                                ? FontStyle.italic
-                                : FontStyle.normal,
-                            decoration: isTodoCompleted
-                                ? TextDecoration.lineThrough
-                                : TextDecoration.none,
-                          ),
-                        ),
-                    ],
+                          if (hasSelectedText)
+                            LinkedSelectionPreview(
+                              selectedText: selectedText,
+                              compact: !showChrome,
+                              pageNumber:
+                                  widget.item.sidecarPlacement.pageNumber,
+                              sourceIsCurrentPage: true,
+                              onTap: widget.onJumpToSource,
+                            ),
+                          if (_localMetadata.tags.isNotEmpty && showChrome)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: Wrap(
+                                spacing: 4,
+                                runSpacing: 4,
+                                children: [
+                                  for (final tag in _localMetadata.tags.take(5))
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: theme
+                                            .colorScheme
+                                            .surfaceContainerHighest,
+                                        borderRadius: BorderRadius.circular(999),
+                                      ),
+                                      child: Text(
+                                        tag,
+                                        style: theme.textTheme.labelSmall,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          if (_isEditing)
+                            Focus(
+                              onKeyEvent: _handleEditorKeyEvent,
+                              child: TextField(
+                                controller: _controller,
+                                focusNode: _focusNode,
+                                keyboardType: TextInputType.multiline,
+                                minLines: 1,
+                                maxLines: null,
+                                onChanged: _onTextChanged,
+                                decoration: const InputDecoration(
+                                  isDense: true,
+                                  border: InputBorder.none,
+                                  hintText: 'Type here...',
+                                  contentPadding: EdgeInsets.zero,
+                                ),
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  height: 1.25,
+                                ),
+                              ),
+                            )
+                          else
+                            Text(
+                              bodyTextTrimmed.isEmpty
+                                  ? 'Click to write...'
+                                  : bodyText,
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: bodyTextTrimmed.isEmpty
+                                    ? theme.colorScheme.onSurfaceVariant
+                                    : isTodoCompleted
+                                    ? theme.colorScheme.onSurfaceVariant
+                                    : theme.colorScheme.onSurface,
+                                fontStyle: bodyTextTrimmed.isEmpty
+                                    ? FontStyle.italic
+                                    : FontStyle.normal,
+                                decoration: isTodoCompleted
+                                    ? TextDecoration.lineThrough
+                                    : TextDecoration.none,
+                                height: 1.25,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              if (showActionHeader)
+                Positioned(
+                  top: 4,
+                  right: 6,
+                  child: MouseRegion(
+                    onEnter: (_) {
+                      if (_isHovered) return;
+                      setState(() {
+                        _isHovered = true;
+                      });
+                    },
+                    child: MarginNoteToolbar(
+                      presentation: presentation,
+                      currentType: _localNoteType,
+                      showActions: true,
+                      showMoveHandle:
+                          widget.appSettings.sidecarDraggableHeaderEnabled,
+                      onTypeChanged: _changeNoteType,
+                      onArchive: widget.onArchive,
+                      onEditDetails: _editDetails,
+                      onDragStart: _handleDirectDragStart,
+                      onDragDelta: _handleDirectDragUpdate,
+                      onDragEnd: _handleDirectDragEnd,
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
         ),
       ),
     );
   }
+
 }
 
 class _NoteDetailsDialog extends StatefulWidget {

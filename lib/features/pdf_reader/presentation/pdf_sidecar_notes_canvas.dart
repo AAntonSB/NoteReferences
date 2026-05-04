@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import '../../notes/data/note_repository.dart';
 import '../domain/pdf_viewport_state.dart';
+import '../../settings/data/app_settings_controller.dart';
 import 'sidecar/note_creation_type.dart';
 import 'sidecar/sidecar_external_create_request.dart';
 import 'sidecar/sidecar_page_metrics.dart';
@@ -34,6 +35,7 @@ class PdfSidecarNotesCanvas extends StatefulWidget {
   final ValueChanged<double>? onRequestPdfJumpToDocumentY;
   final void Function({required bool outlineOpen, required bool debugEnabled})?
   onSidecarPreferencesChanged;
+  final AppSettings appSettings;
 
   const PdfSidecarNotesCanvas({
     super.key,
@@ -51,6 +53,7 @@ class PdfSidecarNotesCanvas extends StatefulWidget {
     this.onSidecarScrollDelta,
     this.onRequestPdfJumpToDocumentY,
     this.onSidecarPreferencesChanged,
+    required this.appSettings,
   });
 
   @override
@@ -81,7 +84,7 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
 
   double _latestSidecarViewportHeight = 0;
 
-  static const double _defaultNoteWidth = 0.42;
+  static const double _defaultNoteWidth = 0.28;
   static const double _fallbackPageHeight = 1200.0;
   static const double _syncAnchorViewportFraction = 0.5;
 
@@ -90,7 +93,9 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
     super.initState();
 
     _debugEnabled = widget.initialDebugEnabled;
-    _outlineOpen = widget.initialOutlineOpen;
+    _outlineOpen = false;
+    _lastHandledOutlineFocusRequest =
+        widget.outlineSearchFocusRequestListenable?.value;
     _latestViewport = widget.viewportListenable.value;
 
     widget.viewportListenable.addListener(_handleViewportChanged);
@@ -148,6 +153,8 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
       widget.outlineSearchFocusRequestListenable?.addListener(
         _handleOutlineSearchFocusRequest,
       );
+      _lastHandledOutlineFocusRequest =
+          widget.outlineSearchFocusRequestListenable?.value;
     }
   }
 
@@ -389,7 +396,6 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
     required double canvasWidth,
   }) {
     final pageCount = viewport.safePageCount;
-    final zoom = viewport.zoom <= 0 ? 1.0 : viewport.zoom;
     final safeCanvasWidth = math.max(1.0, canvasWidth);
 
     if (!viewport.hasUsablePageLayout || viewport.pageRects.isEmpty) {
@@ -413,30 +419,23 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
 
     for (var index = 0; index < pageCount; index++) {
       final pdfRect = usableRects[index];
+      final pdfWidth = math.max(1.0, pdfRect.width);
+      final pdfHeight = math.max(1.0, pdfRect.height);
 
-      if (index > 0) {
-        final previousPdfRect = usableRects[index - 1];
-        final pdfGap = math.max(0.0, pdfRect.top - previousPdfRect.bottom);
-        final previousMetric = metrics.last;
-        final previousScale = previousMetric.pdfPageRect.height <= 0
-            ? 1.0
-            : previousMetric.height / previousMetric.pdfPageRect.height;
-        final scaledGap = pdfGap * previousScale;
-        sidecarTop += math.max(20.0, scaledGap);
-      }
-
-      final renderedWidth = math.max(1.0, pdfRect.width * zoom);
-      final renderedHeight = math.max(1.0, pdfRect.height * zoom);
-      final scale = math.min(1.0, safeCanvasWidth / renderedWidth);
-
-      final sidecarWidth = math.max(1.0, renderedWidth * scale);
-      final sidecarHeight = math.max(1.0, renderedHeight * scale);
-      final left = math.max(0.0, (safeCanvasWidth - sidecarWidth) / 2);
+      // The sidecar is not a PDF preview. It should keep the PDF's vertical
+      // reading rhythm, but it should use the whole note column horizontally.
+      // This removes the large left/right dead zones caused by mirroring the
+      // rendered PDF page width.
+      final sidecarWidth = safeCanvasWidth;
+      final sidecarHeight = math.max(
+        1.0,
+        pdfHeight * (sidecarWidth / pdfWidth),
+      );
 
       metrics.add(
         SidecarPageMetrics(
           pageNumber: index + 1,
-          left: left,
+          left: 0,
           top: sidecarTop,
           width: sidecarWidth,
           height: sidecarHeight,
@@ -444,6 +443,8 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
         ),
       );
 
+      // Pages sit directly after each other in the sidecar. The page boundary
+      // label is enough separation, and this avoids a fake PDF-shaped gap.
       sidecarTop += sidecarHeight;
     }
 
@@ -455,17 +456,15 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
     required double canvasWidth,
   }) {
     final metrics = <SidecarPageMetrics>[];
+    final pageWidth = math.max(1.0, canvasWidth);
 
     var top = 0.0;
 
     for (var page = 1; page <= pageCount; page++) {
-      final pageWidth = math.max(1.0, canvasWidth * 0.82);
-      final left = math.max(0.0, (canvasWidth - pageWidth) / 2);
-
       metrics.add(
         SidecarPageMetrics(
           pageNumber: page,
-          left: left,
+          left: 0,
           top: top,
           width: pageWidth,
           height: _fallbackPageHeight,
@@ -836,6 +835,11 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
                                                   notesByPage[metric
                                                       .pageNumber] ??
                                                   const [],
+                                              showOnboardingTip:
+                                                  notes.isEmpty &&
+                                                  metric.pageNumber ==
+                                                      viewport.safeCurrentPage,
+                                              appSettings: widget.appSettings,
                                               noteIdToFocus: _noteIdToFocus,
                                               onFocusConsumed: () {
                                                 if (!mounted) return;

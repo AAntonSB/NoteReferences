@@ -3,8 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../../../notes/data/note_repository.dart';
+import '../../../../settings/data/app_settings_controller.dart';
 import '../note_creation_type.dart';
-import '../painters/notebook_line_painter.dart';
 import 'create_note_menu_item.dart';
 import 'margin_note_card.dart';
 import 'page_label.dart';
@@ -19,6 +19,8 @@ class NotesPageCanvas extends StatelessWidget {
   final String? activeEditingNoteId;
   final String? revealedNoteId;
   final List<NoteWithAnchor> notes;
+  final bool showOnboardingTip;
+  final AppSettings appSettings;
   final String? noteIdToFocus;
   final VoidCallback onFocusConsumed;
   final ValueChanged<String?> onEditingNoteChanged;
@@ -68,6 +70,8 @@ class NotesPageCanvas extends StatelessWidget {
     required this.activeEditingNoteId,
     required this.revealedNoteId,
     required this.notes,
+    required this.showOnboardingTip,
+    required this.appSettings,
     required this.noteIdToFocus,
     required this.onFocusConsumed,
     required this.onEditingNoteChanged,
@@ -91,8 +95,8 @@ class NotesPageCanvas extends StatelessWidget {
   }) async {
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
 
-    const menuWidth = 300.0;
-    const menuHeight = 500.0;
+    const menuWidth = 244.0;
+    const menuHeight = 320.0;
 
     final maxLeft = math.max(8.0, overlay.size.width - menuWidth - 8.0);
     final left = (globalPosition.dx - menuWidth).clamp(8.0, maxLeft).toDouble();
@@ -108,20 +112,29 @@ class NotesPageCanvas extends StatelessWidget {
         overlay.size.width - left - menuWidth,
         overlay.size.height - top,
       ),
+      color: Theme.of(context).colorScheme.surface,
+      elevation: 10,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
       items: [
         PopupMenuItem<NoteCreationType>(
           enabled: false,
-          height: 36,
+          height: 34,
           child: Text(
-            hasSelectedText ? 'Create from selection' : 'Create note',
-            style: Theme.of(context).textTheme.labelLarge,
+            hasSelectedText ? 'Use selected text' : 'Add to margin',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.2,
+            ),
           ),
         ),
-        const PopupMenuDivider(),
         for (final type in _creationOptions(hasSelectedText: hasSelectedText))
           PopupMenuItem<NoteCreationType>(
             value: type,
-            height: 64,
+            height: 46,
             child: CreateNoteMenuItem(type: type),
           ),
       ],
@@ -143,10 +156,7 @@ class NotesPageCanvas extends StatelessWidget {
       return const [
         NoteCreationType.note,
         NoteCreationType.citation,
-        NoteCreationType.highlight,
         NoteCreationType.question,
-        NoteCreationType.definition,
-        NoteCreationType.summary,
         NoteCreationType.task,
       ];
     }
@@ -154,10 +164,7 @@ class NotesPageCanvas extends StatelessWidget {
     return const [
       NoteCreationType.note,
       NoteCreationType.question,
-      NoteCreationType.summary,
-      NoteCreationType.definition,
       NoteCreationType.task,
-      NoteCreationType.citation,
     ];
   }
 
@@ -214,15 +221,17 @@ class NotesPageCanvas extends StatelessWidget {
             decoration: BoxDecoration(
               color: debugEnabled && isCurrentPage
                   ? theme.colorScheme.surfaceContainerHighest
-                  : theme.colorScheme.surface,
-              border: Border.all(
-                color: debugEnabled
-                    ? isCurrentPage
+                  : theme.colorScheme.surfaceContainerLowest.withValues(
+                      alpha: 0.40,
+                    ),
+              border: debugEnabled
+                  ? Border.all(
+                      color: isCurrentPage
                           ? theme.colorScheme.primary.withValues(alpha: 0.50)
-                          : theme.colorScheme.outlineVariant
-                    : theme.colorScheme.outlineVariant.withValues(alpha: 0.12),
-              ),
-              borderRadius: BorderRadius.circular(4),
+                          : theme.colorScheme.outlineVariant,
+                    )
+                  : null,
+              borderRadius: debugEnabled ? BorderRadius.circular(8) : null,
             ),
             child: Stack(
               children: [
@@ -235,16 +244,13 @@ class NotesPageCanvas extends StatelessWidget {
                       isCurrentPage: isCurrentPage,
                     ),
                   ),
-                Positioned.fill(
-                  child: IgnorePointer(
-                    ignoring: true,
-                    child: CustomPaint(
-                      painter: NotebookLinePainter(
-                        lineColor: theme.colorScheme.outlineVariant,
-                      ),
-                    ),
+                if (showOnboardingTip && !debugEnabled)
+                  const Positioned(
+                    left: 18,
+                    right: 18,
+                    top: 22,
+                    child: _EmptySidecarTipCard(),
                   ),
-                ),
                 for (final item in notes)
                   _PositionedNote(
                     item: item,
@@ -264,12 +270,61 @@ class NotesPageCanvas extends StatelessWidget {
                     onHoverSourceRectsChanged: onHoverSourceRectsChanged,
                     onArchiveIfEmpty: onArchiveIfEmpty,
                     onArchive: onArchive,
+                    appSettings: appSettings,
                   ),
               ],
             ),
           ),
         );
       },
+    );
+  }
+}
+
+class _EmptySidecarTipCard extends StatelessWidget {
+  const _EmptySidecarTipCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return IgnorePointer(
+      child: AnimatedOpacity(
+        opacity: 1,
+        duration: const Duration(milliseconds: 180),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface.withValues(alpha: 0.58),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: theme.colorScheme.outlineVariant.withValues(alpha: 0.40),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  Icons.edit_note_outlined,
+                  size: 18,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Tip: click the margin to add a note, or select PDF text to link one.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -308,6 +363,7 @@ class _PositionedNote extends StatefulWidget {
   })
   onMoveNote;
   final ValueChanged<List<PdfSourceRect>>? onHoverSourceRectsChanged;
+  final AppSettings appSettings;
   final void Function({required String noteId, required String blockId})
   onArchiveIfEmpty;
   final void Function(String noteId) onArchive;
@@ -326,6 +382,7 @@ class _PositionedNote extends StatefulWidget {
     required this.onUpdateTodoCompleted,
     required this.onUpdateMetadata,
     required this.onMoveNote,
+    required this.appSettings,
     required this.onArchiveIfEmpty,
     required this.onArchive,
     this.onRequestPdfJumpToDocumentY,
@@ -361,8 +418,8 @@ class _PositionedNoteState extends State<_PositionedNote> {
     final availableWidth = math.max(1.0, widget.canvasWidth - 8);
     final preferredWidth = placement.width * widget.canvasWidth;
 
-    final minWidth = math.min(160.0, availableWidth);
-    final maxWidth = math.max(minWidth, math.min(420.0, availableWidth));
+    final minWidth = math.min(96.0, availableWidth);
+    final maxWidth = math.max(minWidth, math.min(360.0, availableWidth));
 
     final noteWidth = preferredWidth.clamp(minWidth, maxWidth).toDouble();
 
@@ -478,6 +535,7 @@ class _PositionedNoteState extends State<_PositionedNote> {
             metadata: metadata,
           );
         },
+        appSettings: widget.appSettings,
         onArchiveIfEmpty: () {
           widget.onArchiveIfEmpty(
             noteId: widget.item.note.id,

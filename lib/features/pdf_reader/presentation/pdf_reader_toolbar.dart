@@ -81,7 +81,15 @@ class PdfReaderToolbar extends StatelessWidget {
   final VoidCallback onOpenPdfSearch;
   final VoidCallback onOpenNotesOutlineSearch;
   final ValueChanged<BuildContext> onOpenTodos;
+  final VoidCallback onOpenSettings;
+  final ValueChanged<BuildContext> onOpenProjects;
+  final VoidCallback onOpenCalendar;
+  final VoidCallback onOpenToday;
+  final VoidCallback onEndSession;
   final int activeTodoCount;
+  final int activeProjectCount;
+  final int nextSessionCount;
+  final String? assignedProjectTitle;
 
   const PdfReaderToolbar({
     super.key,
@@ -93,7 +101,15 @@ class PdfReaderToolbar extends StatelessWidget {
     required this.onOpenPdfSearch,
     required this.onOpenNotesOutlineSearch,
     required this.onOpenTodos,
+    required this.onOpenSettings,
+    required this.onOpenProjects,
+    required this.onOpenCalendar,
+    required this.onOpenToday,
+    required this.onEndSession,
     this.activeTodoCount = 0,
+    this.activeProjectCount = 0,
+    this.nextSessionCount = 0,
+    this.assignedProjectTitle,
   });
 
   @override
@@ -176,6 +192,33 @@ class PdfReaderToolbar extends StatelessWidget {
           _HeaderTodoButton(
             activeTodoCount: activeTodoCount,
             onPressed: onOpenTodos,
+          ),
+          _HeaderIconButton(
+            tooltip: 'Today briefing',
+            icon: Icons.today_rounded,
+            onPressed: onOpenToday,
+          ),
+          _HeaderIconButton(
+            tooltip: 'Calendar overview',
+            icon: Icons.calendar_month_rounded,
+            onPressed: onOpenCalendar,
+          ),
+          if (assignedProjectTitle?.trim().isNotEmpty == true) ...[
+            const SizedBox(width: 4),
+            _EndSessionButton(
+              projectTitle: assignedProjectTitle!,
+              onPressed: onEndSession,
+            ),
+          ],
+          _HeaderProjectButton(
+            activeProjectCount: activeProjectCount,
+            nextSessionCount: nextSessionCount,
+            onPressed: onOpenProjects,
+          ),
+          _HeaderIconButton(
+            tooltip: 'Settings',
+            icon: Icons.settings_outlined,
+            onPressed: onOpenSettings,
           ),
         ],
       ),
@@ -328,6 +371,87 @@ class _HeaderIconButton extends StatelessWidget {
       tooltip: tooltip,
       onPressed: onPressed,
       icon: Icon(icon, size: 19),
+    );
+  }
+}
+
+
+
+class _EndSessionButton extends StatelessWidget {
+  final String projectTitle;
+  final VoidCallback onPressed;
+
+  const _EndSessionButton({required this.projectTitle, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'End session for $projectTitle',
+      child: FilledButton.tonalIcon(
+        style: FilledButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+        ),
+        onPressed: onPressed,
+        icon: const Icon(Icons.flag_circle_outlined, size: 18),
+        label: const Text('End session'),
+      ),
+    );
+  }
+}
+
+class _HeaderProjectButton extends StatelessWidget {
+  final int activeProjectCount;
+  final int nextSessionCount;
+  final ValueChanged<BuildContext> onPressed;
+
+  const _HeaderProjectButton({
+    required this.activeProjectCount,
+    required this.nextSessionCount,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final badgeCount = nextSessionCount > 0 ? nextSessionCount : activeProjectCount;
+    final hasNextSession = nextSessionCount > 0;
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        _HeaderIconButton(
+          tooltip: 'Study projects and next session',
+          icon: Icons.dashboard_customize_outlined,
+          onPressed: () => onPressed(context),
+        ),
+        if (badgeCount > 0)
+          Positioned(
+            right: 2,
+            top: 2,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: hasNextSession
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.secondary,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                child: Text(
+                  badgeCount > 99 ? '99+' : '$badgeCount',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: hasNextSession
+                        ? theme.colorScheme.onPrimary
+                        : theme.colorScheme.onSecondary,
+                    fontSize: 10,
+                    height: 1.0,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

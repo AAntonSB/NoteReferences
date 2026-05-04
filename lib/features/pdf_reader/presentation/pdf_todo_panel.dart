@@ -22,6 +22,7 @@ class PdfTodoPanel extends StatefulWidget {
   final NoteRepository noteRepository;
   final String currentDocumentId;
   final ValueChanged<TodoItem> onJumpToTodo;
+  final ValueChanged<TodoItem>? onConvertToProjectTask;
   final VoidCallback? onClose;
 
   const PdfTodoPanel({
@@ -29,6 +30,7 @@ class PdfTodoPanel extends StatefulWidget {
     required this.noteRepository,
     required this.currentDocumentId,
     required this.onJumpToTodo,
+    this.onConvertToProjectTask,
     this.onClose,
   });
 
@@ -189,8 +191,8 @@ class _PdfTodoPanelState extends State<PdfTodoPanel> {
     final estimatedHeight = isCalendar
         ? 430.0
         : todo.deadline == null
-        ? 106.0
-        : 146.0;
+        ? (widget.onConvertToProjectTask == null ? 106.0 : 146.0)
+        : (widget.onConvertToProjectTask == null ? 146.0 : 186.0);
 
     final left = (anchorRect.right - dropdownWidth)
         .clamp(8.0, panelSize.width - dropdownWidth - 8.0)
@@ -249,6 +251,13 @@ class _PdfTodoPanelState extends State<PdfTodoPanel> {
                       );
                       _closeTodoActionDropdown();
                     },
+                    onConvertToProjectTask: widget.onConvertToProjectTask == null
+                        ? null
+                        : () {
+                            final callback = widget.onConvertToProjectTask;
+                            if (callback != null) callback(todo);
+                            _closeTodoActionDropdown();
+                          },
                     onArchive: () {
                       unawaited(widget.noteRepository.archiveTodo(todo.id));
                       _closeTodoActionDropdown();
@@ -1295,12 +1304,14 @@ class _TodoActionDropdown extends StatelessWidget {
   final bool hasDeadline;
   final VoidCallback onSetDeadline;
   final VoidCallback onClearDeadline;
+  final VoidCallback? onConvertToProjectTask;
   final VoidCallback onArchive;
 
   const _TodoActionDropdown({
     required this.hasDeadline,
     required this.onSetDeadline,
     required this.onClearDeadline,
+    required this.onConvertToProjectTask,
     required this.onArchive,
   });
 
@@ -1321,6 +1332,12 @@ class _TodoActionDropdown extends StatelessWidget {
               icon: Icons.event_busy_outlined,
               label: 'Clear deadline',
               onPressed: onClearDeadline,
+            ),
+          if (onConvertToProjectTask != null)
+            _TodoDropdownAction(
+              icon: Icons.dashboard_customize_outlined,
+              label: 'Make project task',
+              onPressed: onConvertToProjectTask!,
             ),
           const Divider(height: 1),
           _TodoDropdownAction(

@@ -8,8 +8,10 @@ class MarginNoteToolbar extends StatelessWidget {
   final String currentType;
   final bool showActions;
   final ValueChanged<String> onTypeChanged;
+  final bool showMoveHandle;
   final VoidCallback onArchive;
   final VoidCallback onEditDetails;
+  final VoidCallback? onDragStart;
   final ValueChanged<Offset>? onDragDelta;
   final VoidCallback? onDragEnd;
 
@@ -19,8 +21,10 @@ class MarginNoteToolbar extends StatelessWidget {
     required this.currentType,
     required this.showActions,
     required this.onTypeChanged,
+    this.showMoveHandle = true,
     required this.onArchive,
     required this.onEditDetails,
+    this.onDragStart,
     this.onDragDelta,
     this.onDragEnd,
   });
@@ -89,9 +93,9 @@ class MarginNoteToolbar extends StatelessWidget {
           height: 48,
           child: Row(
             children: [
-              Icon(Icons.archive_outlined, size: 18),
+              Icon(Icons.delete_outline, size: 18),
               SizedBox(width: 10),
-              Text('Archive'),
+              Text('Delete note'),
             ],
           ),
         ),
@@ -119,81 +123,137 @@ class MarginNoteToolbar extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return SizedBox(
-      height: 22,
-      child: Row(
-        children: [
-          AnimatedOpacity(
-            opacity: showActions && onDragDelta != null ? 1 : 0,
-            duration: const Duration(milliseconds: 100),
-            child: IgnorePointer(
-              ignoring: !showActions || onDragDelta == null,
-              child: MouseRegion(
-                cursor: SystemMouseCursors.move,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onPanUpdate: (details) {
-                    onDragDelta?.call(details.delta);
-                  },
-                  onPanEnd: (_) {
-                    onDragEnd?.call();
-                  },
-                  onPanCancel: () {
-                    onDragEnd?.call();
-                  },
-                  child: SizedBox(
-                    width: 18,
-                    height: 22,
-                    child: Icon(
-                      Icons.drag_indicator,
-                      size: 16,
-                      color: theme.colorScheme.onSurfaceVariant,
+    return AnimatedOpacity(
+      opacity: showActions ? 1 : 0,
+      duration: const Duration(milliseconds: 110),
+      curve: Curves.easeOut,
+      child: IgnorePointer(
+        ignoring: !showActions,
+        child: Row(
+          children: [
+            if (showMoveHandle)
+              Expanded(
+                child: MouseRegion(
+                  cursor: onDragDelta == null
+                      ? SystemMouseCursors.basic
+                      : SystemMouseCursors.move,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onPanStart: (_) => onDragStart?.call(),
+                    onPanUpdate: (details) {
+                      onDragDelta?.call(details.delta);
+                    },
+                    onPanEnd: (_) {
+                      onDragEnd?.call();
+                    },
+                    onPanCancel: () {
+                      onDragEnd?.call();
+                    },
+                    child: Container(
+                      height: 22,
+                      alignment: Alignment.centerLeft,
+                      padding: const EdgeInsets.only(left: 7, right: 8),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surface.withValues(
+                          alpha: 0.72,
+                        ),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: theme.colorScheme.outlineVariant.withValues(
+                            alpha: 0.42,
+                          ),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.drag_indicator,
+                            size: 14,
+                            color: theme.colorScheme.onSurfaceVariant
+                                .withValues(alpha: 0.76),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            'Move',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              height: 1.0,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
+              )
+            else
+              const Spacer(),
+            const SizedBox(width: 4),
+            _HoverIconButton(
+              tooltip: 'Delete note',
+              icon: Icons.delete_outline,
+              color: theme.colorScheme.error,
+              onTap: onArchive,
+            ),
+            _HoverIconButton(
+              tooltip: 'More actions',
+              icon: Icons.more_horiz,
+              color: theme.colorScheme.onSurfaceVariant,
+              onTapDown: (details) {
+                _showOptionsMenu(context, details.globalPosition);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HoverIconButton extends StatelessWidget {
+  final String tooltip;
+  final IconData icon;
+  final Color color;
+  final VoidCallback? onTap;
+  final GestureTapDownCallback? onTapDown;
+
+  const _HoverIconButton({
+    required this.tooltip,
+    required this.icon,
+    required this.color,
+    this.onTap,
+    this.onTapDown,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 450),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          onTapDown: onTapDown,
+          child: Container(
+            width: 24,
+            height: 22,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface.withValues(alpha: 0.76),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.38),
               ),
             ),
+            child: Icon(icon, size: 15, color: color.withValues(alpha: 0.82)),
           ),
-          Icon(
-            presentation.icon,
-            size: 14,
-            color: presentation.accentColor,
-          ),
-          const SizedBox(width: 5),
-          Flexible(
-            child: Text(
-              presentation.label,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-                height: 1.0,
-              ),
-            ),
-          ),
-          const Spacer(),
-          AnimatedOpacity(
-            opacity: showActions ? 1 : 0,
-            duration: const Duration(milliseconds: 100),
-            child: IgnorePointer(
-              ignoring: !showActions,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapDown: (details) {
-                  _showOptionsMenu(context, details.globalPosition);
-                },
-                child: SizedBox(
-                  width: 24,
-                  height: 22,
-                  child: Icon(
-                    Icons.more_horiz,
-                    size: 18,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

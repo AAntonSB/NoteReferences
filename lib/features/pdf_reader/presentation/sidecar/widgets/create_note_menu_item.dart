@@ -6,10 +6,7 @@ import '../note_type_presentation.dart';
 class CreateNoteMenuItem extends StatelessWidget {
   final NoteCreationType type;
 
-  const CreateNoteMenuItem({
-    super.key,
-    required this.type,
-  });
+  const CreateNoteMenuItem({super.key, required this.type});
 
   @override
   Widget build(BuildContext context) {
@@ -18,28 +15,26 @@ class CreateNoteMenuItem extends StatelessWidget {
 
     return Row(
       children: [
-        Icon(
-          type.icon,
-          size: 20,
-          color: presentation.accentColor,
+        Container(
+          width: 26,
+          height: 26,
+          decoration: BoxDecoration(
+            color: presentation.accentColor.withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          alignment: Alignment.center,
+          child: Icon(type.icon, size: 15, color: presentation.accentColor),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 10),
         Expanded(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(type.label),
-              const SizedBox(height: 2),
-              Text(
-                type.description,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
+          child: Text(
+            type.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+              letterSpacing: -0.1,
+            ),
           ),
         ),
       ],

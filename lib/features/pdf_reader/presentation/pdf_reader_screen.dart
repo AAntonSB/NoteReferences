@@ -8,6 +8,15 @@ import 'package:pdfrx/pdfrx.dart' as pdfrx;
 
 import '../../../infrastructure/database/app_database.dart';
 import '../../notes/data/note_repository.dart';
+import '../../home/presentation/study_home_screen.dart';
+import '../../planning/data/study_planning_repository.dart';
+import '../../planning/presentation/dev_todo_drawer.dart';
+import '../../planning/presentation/document_workspace_screen.dart';
+import '../../planning/presentation/project_quick_access_sheet.dart';
+import '../../planning/presentation/session_handoff_dialog.dart';
+import '../../planning/presentation/workspace_document_editor_screen.dart';
+import '../../settings/data/app_settings_controller.dart';
+import '../../settings/presentation/settings_screen.dart';
 import '../data/pdf_reader_session_state_store.dart';
 import '../domain/pdf_viewport_state.dart';
 import 'pdf_hover_highlight_overlay.dart';
@@ -21,13 +30,14 @@ import 'sidecar/note_creation_type.dart';
 import 'sidecar/sidecar_external_create_request.dart';
 import 'sidecar/sidecar_reveal_note_request.dart';
 
-enum PdfReaderWorkspaceLayout { reader, sidecar, document, synthesis }
+enum PdfReaderWorkspaceLayout { reader, sidecar, document, workspaceDocument, synthesis }
 
 class PdfReaderScreen extends StatefulWidget {
   final AppDatabase database;
   final String documentId;
   final String filePath;
   final String title;
+  final StudyPlanningRepository? planningRepository;
 
   const PdfReaderScreen({
     super.key,
@@ -35,6 +45,7 @@ class PdfReaderScreen extends StatefulWidget {
     required this.documentId,
     required this.filePath,
     required this.title,
+    this.planningRepository,
   });
 
   @override
@@ -77,6 +88,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   late final NoteRepository _noteRepository;
   late final PdfReaderSessionStateStore _sessionStore;
+  late final StudyPlanningRepository _planningRepository;
+  late final bool _ownsPlanningRepository;
 
   pdfrx.PdfTextSearcher? _pdfTextSearcher;
 
@@ -94,11 +107,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   double _pdfPaneFraction = 0.5;
 
   PdfReaderWorkspaceLayout _workspaceLayout = PdfReaderWorkspaceLayout.sidecar;
+  String? _activeWorkspaceDocumentId;
   PdfReaderTool _activeTool = PdfReaderTool.cursor;
   int _activeHighlightColorValue = kDefaultPdfHighlightColorValue;
 
   bool _pdfSearchOpen = false;
   bool _sessionLoaded = false;
+  bool _planningLoaded = false;
   bool _didRestorePdfViewport = false;
   bool _latestOutlineOpen = false;
   bool _latestDebugEnabled = false;
@@ -118,6 +133,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
     _noteRepository = NoteRepository(widget.database);
     _sessionStore = PdfReaderSessionStateStore();
+    _ownsPlanningRepository = widget.planningRepository == null;
+    _planningRepository = widget.planningRepository ?? StudyPlanningRepository();
 
     _controller.addListener(_publishViewportState);
 
@@ -132,6 +149,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         });
 
     _loadReaderSession();
+    unawaited(_loadPlanningRepository());
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -165,6 +183,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     _copiedPdfReferenceNotifier.dispose();
     _documentNoteReferenceInsertionRequestNotifier.dispose();
     _outlineSearchFocusRequestNotifier.dispose();
+    if (_ownsPlanningRepository) {
+      _planningRepository.dispose();
+    }
 
     super.dispose();
   }
@@ -177,10 +198,18 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     setState(() {
       _restoredSession = session;
       _pdfPaneFraction = session?.pdfPaneFraction ?? 0.5;
-      _latestOutlineOpen = session?.outlineOpen ?? false;
+      _latestOutlineOpen = false;
       _latestDebugEnabled = session?.debugEnabled ?? false;
       _sessionLoaded = true;
     });
+  }
+
+  Future<void> _loadPlanningRepository() async {
+    if (!_planningRepository.isLoaded) {
+      await _planningRepository.load();
+    }
+    if (!mounted) return;
+    setState(() => _planningLoaded = true);
   }
 
   void _scheduleReaderSessionSave() {
@@ -408,8 +437,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   void _openNotesOutlineSearch() {
-    if (_workspaceLayout == PdfReaderWorkspaceLayout.reader ||
-        _workspaceLayout == PdfReaderWorkspaceLayout.document) {
+    if (_workspaceLayout != PdfReaderWorkspaceLayout.sidecar &&
+        _workspaceLayout != PdfReaderWorkspaceLayout.synthesis) {
       setState(() {
         _workspaceLayout = PdfReaderWorkspaceLayout.sidecar;
       });
@@ -910,6 +939,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                     noteRepository: _noteRepository,
                     currentDocumentId: widget.documentId,
                     onClose: _closeTodosPanel,
+                    onConvertToProjectTask: _convertPdfTodoToProjectTask,
                     onJumpToTodo: (todo) {
                       _closeTodosPanel();
                       _jumpToTodoSource(todo);
@@ -929,6 +959,35 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   void _closeTodosPanel() {
     _todosOverlayEntry?.remove();
     _todosOverlayEntry = null;
+  }
+
+  Future<void> _convertPdfTodoToProjectTask(TodoItem todo) async {
+    if (!_planningRepository.isLoaded) {
+      await _planningRepository.load();
+      if (!mounted) return;
+      setState(() => _planningLoaded = true);
+    }
+
+    final project = _planningRepository.projectForPdf(widget.documentId);
+    if (project == null) {
+      _showSnackBar('Assign this PDF to a project before converting TODOs into project tasks.');
+      return;
+    }
+
+    final dueDate = _dateOnly(todo.deadline ?? DateTime.now().add(const Duration(days: 1)));
+    await _planningRepository.createPlan(
+      projectId: project.id,
+      title: todo.title.trim().isEmpty ? 'PDF TODO' : todo.title.trim(),
+      unitType: 'task',
+      planKind: StudyPlanKind.singleTask,
+      startDate: dueDate,
+      weekendsOff: false,
+      taskDate: dueDate,
+      deadline: dueDate,
+    );
+
+    if (!mounted) return;
+    _showSnackBar('Added “${todo.title}” to ${project.title} as a project task.');
   }
 
   void _jumpToTodoSource(TodoItem todo) {
@@ -1188,6 +1247,120 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     );
   }
 
+  Future<void> _openProjectsPanel(BuildContext _) async {
+    if (!_planningRepository.isLoaded) {
+      await _planningRepository.load();
+      if (!mounted) return;
+      setState(() => _planningLoaded = true);
+    }
+
+    if (!mounted) return;
+    await showProjectQuickAccessSheet(
+      context: context,
+      planningRepository: _planningRepository,
+      sourceLabel: widget.title,
+    );
+  }
+
+  Future<void> _openCalendarOverview() async {
+    await showStudyCalendarModal(
+      context: context,
+      planningRepository: _planningRepository,
+      noteRepository: _noteRepository,
+      onOpenTodo: _openTodoSourceFromCalendar,
+    );
+  }
+
+  Future<void> _openTodayBriefing() async {
+    await showTodayBriefingModal(
+      context: context,
+      database: widget.database,
+      planningRepository: _planningRepository,
+    );
+  }
+
+  Future<void> _openDevTodos() async {
+    await showDevTodoDrawer(
+      context: context,
+      planningRepository: _planningRepository,
+    );
+  }
+
+  Future<void> _openTodoSourceFromCalendar(TodoItem todo) async {
+    final documentId = todo.note.documentId;
+    if (documentId == null || documentId.trim().isEmpty) {
+      _showSnackBar('This todo is not linked to a PDF yet.');
+      return;
+    }
+
+    final documents = await widget.database.getAllDocuments();
+    PdfDocument? document;
+    for (final candidate in documents) {
+      if (candidate.documentId == documentId) {
+        document = candidate;
+        break;
+      }
+    }
+
+    if (!mounted) return;
+    if (document == null) {
+      _showSnackBar('Could not find the linked document.');
+      return;
+    }
+
+    if (document.documentId == widget.documentId) {
+      _showSnackBar('This todo is linked to the PDF you already have open.');
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PdfReaderScreen(
+          database: widget.database,
+          documentId: document!.documentId,
+          filePath: document!.filePath,
+          title: document!.name,
+          planningRepository: _planningRepository,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _endAssignedProjectSession() async {
+    if (!_planningRepository.isLoaded) {
+      await _planningRepository.load();
+      if (!mounted) return;
+      setState(() => _planningLoaded = true);
+    }
+
+    final project = _planningRepository.projectForPdf(widget.documentId);
+    if (project == null) {
+      _showSnackBar('Assign this PDF to a project before ending a project session.');
+      return;
+    }
+
+    final items = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => EndSessionDialog(projectTitle: project.title),
+    );
+    if (items == null || items.isEmpty) return;
+
+    await _planningRepository.addSessionHandoffItems(
+      projectId: project.id,
+      itemTexts: items,
+    );
+
+    if (!mounted) return;
+    _showSnackBar('Saved ${items.length} next-session ${items.length == 1 ? 'item' : 'items'} for ${project.title}.');
+  }
+
+  Future<void> _openSettings() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => const SettingsScreen(),
+    );
+  }
+
   void _showSnackBar(String message) {
     if (!mounted) {
       return;
@@ -1361,42 +1534,62 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       elevation: 1,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-        child: SegmentedButton<PdfReaderWorkspaceLayout>(
-          segments: const [
-            ButtonSegment<PdfReaderWorkspaceLayout>(
-              value: PdfReaderWorkspaceLayout.reader,
-              icon: Icon(Icons.picture_as_pdf_outlined),
-              label: Text('Reader'),
+        child: Row(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SegmentedButton<PdfReaderWorkspaceLayout>(
+                  segments: const [
+                    ButtonSegment<PdfReaderWorkspaceLayout>(
+                      value: PdfReaderWorkspaceLayout.reader,
+                      icon: Icon(Icons.picture_as_pdf_outlined),
+                      label: Text('Reader'),
+                    ),
+                    ButtonSegment<PdfReaderWorkspaceLayout>(
+                      value: PdfReaderWorkspaceLayout.sidecar,
+                      icon: Icon(Icons.view_sidebar_outlined),
+                      label: Text('Sidecar'),
+                    ),
+                    ButtonSegment<PdfReaderWorkspaceLayout>(
+                      value: PdfReaderWorkspaceLayout.document,
+                      icon: Icon(Icons.article_outlined),
+                      label: Text('Document'),
+                    ),
+                    ButtonSegment<PdfReaderWorkspaceLayout>(
+                      value: PdfReaderWorkspaceLayout.workspaceDocument,
+                      icon: Icon(Icons.edit_document),
+                      label: Text('Writing'),
+                    ),
+                    ButtonSegment<PdfReaderWorkspaceLayout>(
+                      value: PdfReaderWorkspaceLayout.synthesis,
+                      icon: Icon(Icons.view_column_outlined),
+                      label: Text('Synthesis'),
+                    ),
+                  ],
+                  selected: {_workspaceLayout},
+                  onSelectionChanged: (selection) {
+                    setState(() {
+                      _workspaceLayout = selection.first;
+                    });
+
+                    _scheduleReaderSessionSave();
+
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (!mounted) return;
+                      _publishViewportState();
+                    });
+                  },
+                ),
+              ),
             ),
-            ButtonSegment<PdfReaderWorkspaceLayout>(
-              value: PdfReaderWorkspaceLayout.sidecar,
-              icon: Icon(Icons.view_sidebar_outlined),
-              label: Text('Sidecar'),
-            ),
-            ButtonSegment<PdfReaderWorkspaceLayout>(
-              value: PdfReaderWorkspaceLayout.document,
-              icon: Icon(Icons.article_outlined),
-              label: Text('Document'),
-            ),
-            ButtonSegment<PdfReaderWorkspaceLayout>(
-              value: PdfReaderWorkspaceLayout.synthesis,
-              icon: Icon(Icons.view_column_outlined),
-              label: Text('Synthesis'),
+            const SizedBox(width: 10),
+            FilledButton.tonalIcon(
+              onPressed: () => _openProjectsPanel(context),
+              icon: const Icon(Icons.dashboard_customize_outlined),
+              label: const Text('Projects'),
             ),
           ],
-          selected: {_workspaceLayout},
-          onSelectionChanged: (selection) {
-            setState(() {
-              _workspaceLayout = selection.first;
-            });
-
-            _scheduleReaderSessionSave();
-
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              _publishViewportState();
-            });
-          },
         ),
       ),
     );
@@ -1412,12 +1605,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       externalCreateRequestListenable: _sidecarCreateRequestNotifier,
       revealNoteRequestListenable: _revealNoteRequestNotifier,
       outlineSearchFocusRequestListenable: _outlineSearchFocusRequestNotifier,
-      initialOutlineOpen: _latestOutlineOpen,
+      initialOutlineOpen: false,
       initialDebugEnabled: _latestDebugEnabled,
       onSidecarPreferencesChanged: _handleSidecarPreferencesChanged,
       onHoveredSourceRectsChanged: _handleHoveredSourceRectsChanged,
       onSidecarScrollDelta: _handleSidecarScrollDelta,
       onRequestPdfJumpToDocumentY: _handleRequestPdfJumpToDocumentY,
+      appSettings: AppSettingsScope.of(context).settings,
     );
   }
 
@@ -1432,6 +1626,100 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       externalReferenceInsertionListenable:
           _documentNoteReferenceInsertionRequestNotifier,
       onJumpToReference: _jumpToDocumentNoteReference,
+    );
+  }
+
+  Widget _buildWorkspaceDocumentPane() {
+    if (!_planningLoaded) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return AnimatedBuilder(
+      animation: _planningRepository,
+      builder: (context, _) {
+        final project = _planningRepository.projectForPdf(widget.documentId);
+        if (project == null) {
+          return _WorkspaceDocumentEmptyPane(
+            title: 'No project assigned',
+            message: 'Assign this PDF to a project to write project documents beside it.',
+            actionLabel: 'Open projects',
+            onAction: () => _openProjectsPanel(context),
+          );
+        }
+
+        final documents = _planningRepository.documentsForProject(project.id);
+        WorkspaceDocument? selectedDocument;
+        for (final document in documents) {
+          if (document.id == _activeWorkspaceDocumentId) {
+            selectedDocument = document;
+            break;
+          }
+        }
+        selectedDocument ??= documents.isEmpty ? null : documents.first;
+
+        if (selectedDocument == null) {
+          return _WorkspaceDocumentEmptyPane(
+            title: 'No project documents yet',
+            message: 'Create a writing document for notes, drafts, job ads, summaries, or templates. It will stay attached to “${project.title}”.',
+            actionLabel: 'Create document',
+            onAction: () => _createWorkspaceDocumentForProject(project),
+          );
+        }
+
+        final activeDocument = selectedDocument;
+
+        return Column(
+          children: [
+            _WorkspaceDocumentPaneHeader(
+              projectTitle: project.title,
+              documents: documents,
+              selectedDocumentId: activeDocument.id,
+              onDocumentChanged: (documentId) {
+                setState(() => _activeWorkspaceDocumentId = documentId);
+              },
+              onCreateDocument: () => _createWorkspaceDocumentForProject(project),
+              onOpenWorkspace: () => _openDocumentWorkspace(
+                projectId: project.id,
+                initialDocumentId: activeDocument.id,
+              ),
+            ),
+            Expanded(
+              child: WorkspaceDocumentEditorSurface(
+                planningRepository: _planningRepository,
+                documentId: activeDocument.id,
+                embedded: true,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _createWorkspaceDocumentForProject(StudyProject project) async {
+    final document = await _planningRepository.createDocument(
+      title: 'Notes for ${widget.title}',
+      kind: WorkspaceDocumentKind.working,
+      body: '',
+      tags: const <String>['notes'],
+      projectIds: <String>[project.id],
+    );
+    if (!mounted) return;
+    setState(() {
+      _activeWorkspaceDocumentId = document.id;
+      _workspaceLayout = PdfReaderWorkspaceLayout.workspaceDocument;
+    });
+  }
+
+  Future<void> _openDocumentWorkspace({String? projectId, String? initialDocumentId}) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => DocumentWorkspaceScreen(
+          planningRepository: _planningRepository,
+          projectId: projectId,
+          initialDocumentId: initialDocumentId,
+        ),
+      ),
     );
   }
 
@@ -1460,6 +1748,28 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     );
   }
 
+  Widget _buildAssignedProjectHeader() {
+    if (!_planningLoaded) return const SizedBox.shrink();
+    final project = _planningRepository.projectForPdf(widget.documentId);
+    if (project == null) return const SizedBox.shrink();
+
+    final today = _dateOnly(DateTime.now());
+    final requirements = _planningRepository
+        .requirementsForRange(rangeStart: today, rangeEnd: today, now: DateTime.now())
+        .where((requirement) => requirement.project?.id == project.id)
+        .toList(growable: false);
+    final handoffCount = _planningRepository.activeHandoffEntries(projectId: project.id).length;
+
+    return _ReaderProjectContextHeader(
+      projectTitle: project.title,
+      requirements: requirements,
+      handoffCount: handoffCount,
+      onOpenProject: () => _openProjectsPanel(context),
+      onOpenCalendar: _openCalendarOverview,
+      onEndSession: _endAssignedProjectSession,
+    );
+  }
+
   Widget _buildWorkspaceBody() {
     return switch (_workspaceLayout) {
       PdfReaderWorkspaceLayout.reader => _buildPdfPane(),
@@ -1468,6 +1778,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       ),
       PdfReaderWorkspaceLayout.document => _buildTwoPaneBody(
         notesPaneBuilder: _buildDocumentPane,
+      ),
+      PdfReaderWorkspaceLayout.workspaceDocument => _buildTwoPaneBody(
+        notesPaneBuilder: _buildWorkspaceDocumentPane,
       ),
       PdfReaderWorkspaceLayout.synthesis => _buildSynthesisBody(),
     };
@@ -1564,20 +1877,44 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         appBar: AppBar(
           title: Text(widget.title),
           actions: [
+            IconButton(
+              tooltip: 'Dev todos',
+              onPressed: _planningLoaded ? _openDevTodos : null,
+              icon: const Icon(Icons.bug_report_outlined),
+            ),
             StreamBuilder<List<TodoItem>>(
               stream: _noteRepository.watchTodos(includeCompleted: false),
               builder: (context, snapshot) {
-                return PdfReaderToolbar(
-                  activeTool: _activeTool,
-                  activeHighlightColorValue: _activeHighlightColorValue,
-                  hasActiveSelection: _hasActiveSelection,
-                  activeTodoCount: snapshot.data?.length ?? 0,
-                  onToolChanged: _handleReaderToolChanged,
-                  onHighlightColorChanged: _handleHighlightColorChanged,
-                  onOpenPdfSearch: _openPdfSearch,
-                  onOpenNotesOutlineSearch: _openNotesOutlineSearch,
-                  onOpenTodos: (buttonContext) =>
-                      _openTodosPanel(buttonContext),
+                return AnimatedBuilder(
+                  animation: _planningRepository,
+                  builder: (context, _) {
+                    return PdfReaderToolbar(
+                      activeTool: _activeTool,
+                      activeHighlightColorValue: _activeHighlightColorValue,
+                      hasActiveSelection: _hasActiveSelection,
+                      activeTodoCount: snapshot.data?.length ?? 0,
+                      activeProjectCount: _planningLoaded
+                          ? _planningRepository.projects.length
+                          : 0,
+                      nextSessionCount: _planningLoaded
+                          ? _planningRepository.activeHandoffEntries().length
+                          : 0,
+                      assignedProjectTitle: _planningLoaded
+                          ? _planningRepository.projectForPdf(widget.documentId)?.title
+                          : null,
+                      onToolChanged: _handleReaderToolChanged,
+                      onHighlightColorChanged: _handleHighlightColorChanged,
+                      onOpenPdfSearch: _openPdfSearch,
+                      onOpenNotesOutlineSearch: _openNotesOutlineSearch,
+                      onOpenTodos: (buttonContext) =>
+                          _openTodosPanel(buttonContext),
+                      onOpenProjects: _openProjectsPanel,
+                      onOpenCalendar: _openCalendarOverview,
+                      onOpenToday: _openTodayBriefing,
+                      onEndSession: _endAssignedProjectSession,
+                      onOpenSettings: _openSettings,
+                    );
+                  },
                 );
               },
             ),
@@ -1600,8 +1937,157 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         body: Column(
           children: [
             _buildWorkspaceSelector(),
+            AnimatedBuilder(
+              animation: _planningRepository,
+              builder: (context, _) => _buildAssignedProjectHeader(),
+            ),
             Expanded(child: _buildWorkspaceBody()),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+
+class _WorkspaceDocumentPaneHeader extends StatelessWidget {
+  final String projectTitle;
+  final List<WorkspaceDocument> documents;
+  final String selectedDocumentId;
+  final ValueChanged<String> onDocumentChanged;
+  final VoidCallback onCreateDocument;
+  final VoidCallback onOpenWorkspace;
+
+  const _WorkspaceDocumentPaneHeader({
+    required this.projectTitle,
+    required this.documents,
+    required this.selectedDocumentId,
+    required this.onDocumentChanged,
+    required this.onCreateDocument,
+    required this.onOpenWorkspace,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surface,
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        child: Row(
+          children: [
+            Icon(Icons.folder_copy_outlined, color: theme.colorScheme.primary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    projectTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  DropdownButtonFormField<String>(
+                    value: selectedDocumentId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      labelText: 'Open project document',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: documents
+                        .map(
+                          (document) => DropdownMenuItem(
+                            value: document.id,
+                            child: Text(document.title, overflow: TextOverflow.ellipsis),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value != null) onDocumentChanged(value);
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            TextButton.icon(
+              onPressed: onOpenWorkspace,
+              icon: const Icon(Icons.open_in_new_rounded),
+              label: const Text('Workspace'),
+            ),
+            const SizedBox(width: 8),
+            FilledButton.tonalIcon(
+              onPressed: onCreateDocument,
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('New'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WorkspaceDocumentEmptyPane extends StatelessWidget {
+  final String title;
+  final String message;
+  final String actionLabel;
+  final VoidCallback onAction;
+
+  const _WorkspaceDocumentEmptyPane({
+    required this.title,
+    required this.message,
+    required this.actionLabel,
+    required this.onAction,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Card(
+          elevation: 0,
+          color: theme.colorScheme.surfaceContainerHighest.withAlpha(120),
+          child: Padding(
+            padding: const EdgeInsets.all(22),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.edit_document, size: 44, color: theme.colorScheme.primary),
+                const SizedBox(height: 12),
+                Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    height: 1.35,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: onAction,
+                  icon: const Icon(Icons.add_rounded),
+                  label: Text(actionLabel),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1704,3 +2190,149 @@ class _TodoDropdownSurface extends StatelessWidget {
     );
   }
 }
+
+class _ReaderProjectContextHeader extends StatelessWidget {
+  final String projectTitle;
+  final List<StudyPlanRequirement> requirements;
+  final int handoffCount;
+  final VoidCallback onOpenProject;
+  final VoidCallback onOpenCalendar;
+  final VoidCallback onEndSession;
+
+  const _ReaderProjectContextHeader({
+    required this.projectTitle,
+    required this.requirements,
+    required this.handoffCount,
+    required this.onOpenProject,
+    required this.onOpenCalendar,
+    required this.onEndSession,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final visibleRequirements = requirements.take(2).toList(growable: false);
+
+    return Material(
+      color: colorScheme.primaryContainer.withAlpha(72),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: colorScheme.primary.withAlpha(70)),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.dashboard_customize_rounded, color: colorScheme.primary, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Wrap(
+                spacing: 10,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: onOpenProject,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 3),
+                      child: Text(
+                        projectTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          color: colorScheme.primary,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (visibleRequirements.isEmpty)
+                    Text(
+                      'No project work scheduled for today',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    )
+                  else
+                    for (final requirement in visibleRequirements)
+                      _ReaderContextChip(
+                        icon: _readerRequirementIcon(requirement),
+                        label: '${requirement.plan.title} · ${requirement.rangeLabel}',
+                      ),
+                  if (requirements.length > visibleRequirements.length)
+                    _ReaderContextChip(
+                      icon: Icons.more_horiz_rounded,
+                      label: '+${requirements.length - visibleRequirements.length} more today',
+                    ),
+                  if (handoffCount > 0)
+                    _ReaderContextChip(
+                      icon: Icons.psychology_alt_rounded,
+                      label: '$handoffCount next-session ${handoffCount == 1 ? 'note' : 'notes'}',
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            TextButton.icon(
+              onPressed: onOpenCalendar,
+              icon: const Icon(Icons.calendar_month_rounded, size: 18),
+              label: const Text('Calendar'),
+            ),
+            const SizedBox(width: 6),
+            FilledButton.tonalIcon(
+              onPressed: onEndSession,
+              icon: const Icon(Icons.logout_rounded, size: 18),
+              label: const Text('End session'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReaderContextChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _ReaderContextChip({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withAlpha(190),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: theme.colorScheme.onSurfaceVariant),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w800),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+IconData _readerRequirementIcon(StudyPlanRequirement requirement) {
+  if (requirement.plan.isDeadlineMarker) return Icons.flag_rounded;
+  if (requirement.plan.isSingleTask) return Icons.task_alt_rounded;
+  if (requirement.plan.isChecklist) return Icons.fact_check_rounded;
+  if (requirement.plan.isRecurring) return Icons.repeat_rounded;
+  return Icons.route_rounded;
+}
+
+DateTime _dateOnly(DateTime date) => DateTime(date.year, date.month, date.day);

@@ -8,10 +8,17 @@ import 'package:flutter/material.dart';
 
 import '../../../infrastructure/database/app_database.dart';
 import '../../notes/data/note_repository.dart';
+import '../../home/presentation/study_home_screen.dart';
+import '../../planning/data/study_planning_repository.dart';
+import '../../planning/presentation/create_workspace_document_screen.dart';
+import '../../planning/presentation/dev_todo_drawer.dart';
+import '../../planning/presentation/project_quick_access_sheet.dart';
+import '../../planning/presentation/document_workspace_screen.dart';
 import '../../pdf_reader/presentation/pdf_reader_screen.dart';
 import '../../tags/data/tag_repository.dart';
 import '../../tags/presentation/tag_icon_registry.dart';
 import '../../tags/presentation/tag_manager_dialog.dart';
+import '../../settings/presentation/settings_screen.dart';
 import '../data/document_import_service.dart';
 import '../data/pdf_metadata_extractor.dart';
 import '../data/online_metadata_lookup_service.dart';
@@ -20,8 +27,9 @@ enum LibrarySortField { name, authors, addedAt, fileLastModifiedAt, subject }
 
 class LibraryScreen extends StatefulWidget {
   final AppDatabase database;
+  final StudyPlanningRepository? planningRepository;
 
-  const LibraryScreen({super.key, required this.database});
+  const LibraryScreen({super.key, required this.database, this.planningRepository});
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
@@ -43,6 +51,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
   late final DocumentImportService _importService;
   late final OnlineMetadataLookupService _onlineMetadataLookupService;
   late final TagRepository _tagRepository;
+  late final StudyPlanningRepository _planningRepository;
+  late final bool _ownsPlanningRepository;
+  bool _planningLoaded = false;
 
   @override
   void initState() {
@@ -54,6 +65,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
     _onlineMetadataLookupService = OnlineMetadataLookupService();
     _tagRepository = TagRepository(database: widget.database);
+    _ownsPlanningRepository = widget.planningRepository == null;
+    _planningRepository = widget.planningRepository ?? StudyPlanningRepository();
+    _loadPlanning();
 
     _searchController.addListener(() {
       setState(() {
@@ -65,7 +79,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   void dispose() {
     _searchController.dispose();
+    if (_ownsPlanningRepository) {
+      _planningRepository.dispose();
+    }
     super.dispose();
+  }
+
+  Future<void> _loadPlanning() async {
+    await _planningRepository.load();
+    if (!mounted) return;
+    setState(() => _planningLoaded = true);
   }
 
   Future<void> _openTagManager() async {
@@ -73,6 +96,139 @@ class _LibraryScreenState extends State<LibraryScreen> {
       context: context,
       builder: (context) => TagManagerDialog(tagRepository: _tagRepository),
     );
+  }
+
+  Future<void> _openSettings() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => const SettingsScreen(),
+    );
+  }
+
+  Future<void> _openDevTodos() async {
+    await showDevTodoDrawer(
+      context: context,
+      planningRepository: _planningRepository,
+    );
+  }
+
+  Future<void> _createWorkspaceDocument() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => CreateWorkspaceDocumentScreen(
+          planningRepository: _planningRepository,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openWorkspaceDocument(WorkspaceDocument document) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => DocumentWorkspaceScreen(
+          planningRepository: _planningRepository,
+          initialDocumentId: document.id,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openProjectQuickAccess() async {
+    await _planningRepository.load();
+    if (!mounted) return;
+    await showProjectQuickAccessSheet(
+      context: context,
+      planningRepository: _planningRepository,
+      sourceLabel: 'PDF library',
+    );
+  }
+
+  Future<void> _openCalendarOverview() async {
+    final noteRepository = NoteRepository(widget.database);
+    await showStudyCalendarModal(
+      context: context,
+      planningRepository: _planningRepository,
+      noteRepository: noteRepository,
+      onOpenTodo: _openTodoSourceFromCalendar,
+    );
+  }
+
+  Future<void> _openDailyBrief() async {
+    await showTodayBriefingModal(
+      context: context,
+      database: widget.database,
+      planningRepository: _planningRepository,
+    );
+  }
+
+  Future<void> _openTodoSourceFromCalendar(TodoItem todo) async {
+    final documentId = todo.note.documentId;
+    if (documentId == null || documentId.trim().isEmpty) {
+      _showSnackBar('This todo is not linked to a PDF yet.');
+      return;
+    }
+
+    final documents = await widget.database.getAllDocuments();
+    PdfDocument? document;
+    for (final candidate in documents) {
+      if (candidate.documentId == documentId) {
+        document = candidate;
+        break;
+      }
+    }
+
+    if (!mounted) return;
+    if (document == null) {
+      _showSnackBar('Could not find the linked document.');
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PdfReaderScreen(
+          database: widget.database,
+          documentId: document!.documentId,
+          filePath: document!.filePath,
+          title: document!.name,
+          planningRepository: _planningRepository,
+        ),
+      ),
+    );
+  }
+
+  void _showSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
+  }
+
+  Future<void> _openDocumentProjectPicker(PdfDocument document) async {
+    await _planningRepository.load();
+    if (!mounted) return;
+
+    final selectedProjectId = await showDialog<String?>(
+      context: context,
+      builder: (_) => _PdfProjectAssignmentDialog(
+        documentTitle: document.name,
+        projects: _planningRepository.projects,
+        currentProjectId: _planningRepository.pdfProjectIds[document.documentId],
+      ),
+    );
+
+    if (selectedProjectId == null) return;
+
+    if (selectedProjectId.isEmpty) {
+      await _planningRepository.clearPdfProject(document.documentId);
+    } else {
+      await _planningRepository.assignPdfToProject(
+        documentId: document.documentId,
+        projectId: selectedProjectId,
+      );
+    }
+
+    if (!mounted) return;
+    setState(() {});
   }
 
   Future<void> _openDocumentTagPicker(
@@ -467,6 +623,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           documentId: document.documentId,
           filePath: document.filePath,
           title: document.name,
+          planningRepository: _planningRepository,
         ),
       ),
     );
@@ -724,12 +881,22 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('PDF Library'),
+        title: const Text('Library'),
         actions: [
+          IconButton(
+            tooltip: 'Dev todos',
+            onPressed: _planningLoaded ? _openDevTodos : null,
+            icon: const Icon(Icons.bug_report_outlined),
+          ),
           IconButton(
             tooltip: 'Manage tags',
             onPressed: _openTagManager,
             icon: const Icon(Icons.sell_outlined),
+          ),
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: _openSettings,
+            icon: const Icon(Icons.settings_outlined),
           ),
           IconButton(
             tooltip: 'Import PDF',
@@ -805,7 +972,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                   });
                                 },
                                 onManageTags: _openTagManager,
+                                onOpenToday: _openDailyBrief,
+                                onOpenCalendar: _planningLoaded ? _openCalendarOverview : null,
+                                onOpenProjects: _planningLoaded ? _openProjectQuickAccess : null,
+                                onCreateDocument: _planningLoaded ? _createWorkspaceDocument : null,
+                                onOpenDevTodos: _planningLoaded ? _openDevTodos : null,
                               ),
+                              if (_planningLoaded)
+                                _WorkspaceDocumentsStrip(
+                                  documents: _planningRepository.documents,
+                                  onOpenDocument: _openWorkspaceDocument,
+                                  onCreateDocument: _createWorkspaceDocument,
+                                ),
                               const Divider(height: 1),
                               Expanded(
                                 child:
@@ -856,6 +1034,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                                             document,
                                                           ),
                                                   loadImpact: _loadDeleteImpact,
+                                                  assignedProject: _planningRepository.projectForPdf(document.documentId),
                                                   onOpen: () =>
                                                       _openDocument(document),
                                                   onEditMetadata: () =>
@@ -866,6 +1045,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                                       _openDocumentTagPicker(
                                                         document,
                                                         tags,
+                                                      ),
+                                                  onAssignProject: () =>
+                                                      _openDocumentProjectPicker(
+                                                        document,
                                                       ),
                                                   onRefreshLocalMetadata: () =>
                                                       _refreshLocalMetadata(
@@ -935,6 +1118,156 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 }
 
+
+class _WorkspaceDocumentsStrip extends StatelessWidget {
+  final List<WorkspaceDocument> documents;
+  final ValueChanged<WorkspaceDocument> onOpenDocument;
+  final VoidCallback onCreateDocument;
+
+  const _WorkspaceDocumentsStrip({
+    required this.documents,
+    required this.onOpenDocument,
+    required this.onCreateDocument,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final visibleDocuments = documents.take(8).toList();
+    return Container(
+      width: double.infinity,
+      color: theme.colorScheme.surfaceContainerLowest,
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text('Documents', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+              const SizedBox(width: 8),
+              Text(
+                'text, sources, templates, links',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: onCreateDocument,
+                icon: const Icon(Icons.add_rounded),
+                label: const Text('New'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (documents.isEmpty)
+            Material(
+              color: theme.colorScheme.surfaceContainerHighest.withAlpha(90),
+              borderRadius: BorderRadius.circular(18),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(18),
+                onTap: onCreateDocument,
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    children: [
+                      Icon(Icons.note_add_outlined, color: theme.colorScheme.primary),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Create the first generic document. Use it for pasted job ads, letters, CV versions, source text, notes, or templates.',
+                          style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              height: 92,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: visibleDocuments.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 10),
+                itemBuilder: (context, index) {
+                  final document = visibleDocuments[index];
+                  return SizedBox(
+                    width: 260,
+                    child: Card(
+                      elevation: 0,
+                      color: theme.colorScheme.surface,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(18),
+                        side: BorderSide(color: theme.colorScheme.outlineVariant),
+                      ),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(18),
+                        onTap: () => onOpenDocument(document),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Row(
+                            children: [
+                              Icon(_iconForWorkspaceDocument(document), color: theme.colorScheme.primary),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(
+                                      document.title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      WorkspaceDocumentKind.label(document.kind),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                                    ),
+                                    if (document.tags.isNotEmpty)
+                                      Text(
+                                        document.tags.take(3).join(' · '),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.labelSmall,
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+IconData _iconForWorkspaceDocument(WorkspaceDocument document) {
+  switch (WorkspaceDocumentKind.normalize(document.kind)) {
+    case WorkspaceDocumentKind.source:
+      return Icons.article_outlined;
+    case WorkspaceDocumentKind.template:
+      return Icons.dashboard_customize_outlined;
+    case WorkspaceDocumentKind.link:
+      return Icons.link_rounded;
+    case WorkspaceDocumentKind.collection:
+      return Icons.folder_outlined;
+    case WorkspaceDocumentKind.working:
+    default:
+      return Icons.edit_document;
+  }
+}
+
 class _LibraryHeader extends StatelessWidget {
   final TextEditingController searchController;
   final int documentCount;
@@ -951,6 +1284,11 @@ class _LibraryHeader extends StatelessWidget {
   final VoidCallback onClearTagFilters;
   final ValueChanged<bool> onMatchModeChanged;
   final VoidCallback onManageTags;
+  final VoidCallback onOpenToday;
+  final VoidCallback? onOpenCalendar;
+  final VoidCallback? onOpenProjects;
+  final VoidCallback? onCreateDocument;
+  final VoidCallback? onOpenDevTodos;
 
   const _LibraryHeader({
     required this.searchController,
@@ -968,6 +1306,11 @@ class _LibraryHeader extends StatelessWidget {
     required this.onClearTagFilters,
     required this.onMatchModeChanged,
     required this.onManageTags,
+    required this.onOpenToday,
+    required this.onOpenCalendar,
+    required this.onOpenProjects,
+    required this.onCreateDocument,
+    required this.onOpenDevTodos,
   });
 
   @override
@@ -987,14 +1330,14 @@ class _LibraryHeader extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Your PDFs',
+                      'Your library',
                       style: theme.textTheme.headlineSmall?.copyWith(
                         fontWeight: FontWeight.w700,
                       ),
                     ),
                     Text(
                       documentCount == totalDocumentCount
-                          ? '$documentCount document${documentCount == 1 ? '' : 's'} in library'
+                          ? '$documentCount PDF${documentCount == 1 ? '' : 's'} in library'
                           : '$documentCount of $totalDocumentCount documents shown',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
@@ -1004,9 +1347,39 @@ class _LibraryHeader extends StatelessWidget {
                 ),
               ),
               OutlinedButton.icon(
+                onPressed: onOpenToday,
+                icon: const Icon(Icons.today_rounded),
+                label: const Text('Today'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: onOpenCalendar,
+                icon: const Icon(Icons.calendar_month_rounded),
+                label: const Text('Calendar'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: onOpenProjects,
+                icon: const Icon(Icons.dashboard_customize_rounded),
+                label: const Text('Projects'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: onOpenDevTodos,
+                icon: const Icon(Icons.bug_report_outlined),
+                label: const Text('Dev'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
                 onPressed: onManageTags,
                 icon: const Icon(Icons.sell_outlined),
                 label: const Text('Manage tags'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.tonalIcon(
+                onPressed: onCreateDocument,
+                icon: const Icon(Icons.note_add_outlined),
+                label: const Text('New document'),
               ),
               const SizedBox(width: 8),
               FilledButton.icon(
@@ -1197,9 +1570,11 @@ class _PdfDocumentCard extends StatelessWidget {
   final String Function(PdfDocument document) metadataQualityLabel;
   final Color Function(PdfDocument document) metadataQualityColor;
   final Future<_DocumentDeleteImpact> Function(String documentId) loadImpact;
+  final StudyProject? assignedProject;
   final VoidCallback onOpen;
   final VoidCallback onEditMetadata;
   final VoidCallback onEditTags;
+  final VoidCallback onAssignProject;
   final VoidCallback onRefreshLocalMetadata;
   final VoidCallback onOnlineMetadataLookup;
   final VoidCallback onRevealFile;
@@ -1213,9 +1588,11 @@ class _PdfDocumentCard extends StatelessWidget {
     required this.metadataQualityLabel,
     required this.metadataQualityColor,
     required this.loadImpact,
+    required this.assignedProject,
     required this.onOpen,
     required this.onEditMetadata,
     required this.onEditTags,
+    required this.onAssignProject,
     required this.onRefreshLocalMetadata,
     required this.onOnlineMetadataLookup,
     required this.onRevealFile,
@@ -1302,6 +1679,7 @@ class _PdfDocumentCard extends StatelessWidget {
                     _DocumentActionsMenu(
                       onEditMetadata: onEditMetadata,
                       onEditTags: onEditTags,
+                      onAssignProject: onAssignProject,
                       onRefreshLocalMetadata: onRefreshLocalMetadata,
                       onOnlineMetadataLookup: onOnlineMetadataLookup,
                       onRevealFile: onRevealFile,
@@ -1353,6 +1731,10 @@ class _PdfDocumentCard extends StatelessWidget {
               if (tags.isNotEmpty) ...[
                 const SizedBox(height: 5),
                 _DocumentTagSummary(tags: tags),
+              ],
+              if (assignedProject != null) ...[
+                const SizedBox(height: 5),
+                _AssignedProjectChip(project: assignedProject!),
               ],
             ],
           ),
@@ -1445,6 +1827,7 @@ class _PdfDocumentCard extends StatelessWidget {
 class _DocumentActionsMenu extends StatelessWidget {
   final VoidCallback onEditMetadata;
   final VoidCallback onEditTags;
+  final VoidCallback onAssignProject;
   final VoidCallback onRefreshLocalMetadata;
   final VoidCallback onOnlineMetadataLookup;
   final VoidCallback onRevealFile;
@@ -1453,6 +1836,7 @@ class _DocumentActionsMenu extends StatelessWidget {
   const _DocumentActionsMenu({
     required this.onEditMetadata,
     required this.onEditTags,
+    required this.onAssignProject,
     required this.onRefreshLocalMetadata,
     required this.onOnlineMetadataLookup,
     required this.onRevealFile,
@@ -1470,6 +1854,9 @@ class _DocumentActionsMenu extends StatelessWidget {
             return;
           case _DocumentAction.editTags:
             onEditTags();
+            return;
+          case _DocumentAction.assignProject:
+            onAssignProject();
             return;
           case _DocumentAction.refreshLocalMetadata:
             onRefreshLocalMetadata();
@@ -1498,6 +1885,13 @@ class _DocumentActionsMenu extends StatelessWidget {
           child: ListTile(
             leading: Icon(Icons.sell_outlined),
             title: Text('Edit tags'),
+          ),
+        ),
+        PopupMenuItem(
+          value: _DocumentAction.assignProject,
+          child: ListTile(
+            leading: Icon(Icons.dashboard_customize_outlined),
+            title: Text('Assign project'),
           ),
         ),
         PopupMenuItem(
@@ -1538,6 +1932,7 @@ class _DocumentActionsMenu extends StatelessWidget {
 enum _DocumentAction {
   editMetadata,
   editTags,
+  assignProject,
   refreshLocalMetadata,
   onlineMetadataLookup,
   revealFile,
@@ -1557,6 +1952,121 @@ class _MetadataChip extends StatelessWidget {
       label: Text(label),
       side: BorderSide(color: color.withValues(alpha: 0.55)),
       avatar: CircleAvatar(radius: 5, backgroundColor: color),
+    );
+  }
+}
+
+class _AssignedProjectChip extends StatelessWidget {
+  final StudyProject project;
+
+  const _AssignedProjectChip({required this.project});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Chip(
+        visualDensity: VisualDensity.compact,
+        avatar: const Icon(Icons.dashboard_customize_rounded, size: 15),
+        label: Text(
+          project.title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        side: BorderSide(color: theme.colorScheme.primary.withValues(alpha: 0.32)),
+        backgroundColor: theme.colorScheme.primaryContainer.withValues(alpha: 0.38),
+      ),
+    );
+  }
+}
+
+class _PdfProjectAssignmentDialog extends StatefulWidget {
+  final String documentTitle;
+  final List<StudyProject> projects;
+  final String? currentProjectId;
+
+  const _PdfProjectAssignmentDialog({
+    required this.documentTitle,
+    required this.projects,
+    required this.currentProjectId,
+  });
+
+  @override
+  State<_PdfProjectAssignmentDialog> createState() => _PdfProjectAssignmentDialogState();
+}
+
+class _PdfProjectAssignmentDialogState extends State<_PdfProjectAssignmentDialog> {
+  String? _selectedProjectId;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedProjectId = widget.currentProjectId;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AlertDialog(
+      title: const Text('Assign PDF to project'),
+      content: SizedBox(
+        width: 520,
+        child: widget.projects.isEmpty
+            ? Text(
+                'Create a project first, then assign “${widget.documentTitle}” to it from the library.',
+                style: theme.textTheme.bodyMedium,
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.documentTitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    value: _selectedProjectId != null &&
+                            widget.projects.any((project) => project.id == _selectedProjectId)
+                        ? _selectedProjectId
+                        : '',
+                    decoration: const InputDecoration(
+                      labelText: 'Project',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      const DropdownMenuItem<String>(
+                        value: '',
+                        child: Text('No project'),
+                      ),
+                      for (final project in widget.projects)
+                        DropdownMenuItem<String>(
+                          value: project.id,
+                          child: Text(project.title),
+                        ),
+                    ],
+                    onChanged: (value) => setState(() => _selectedProjectId = value),
+                  ),
+                ],
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(null),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: widget.projects.isEmpty
+              ? null
+              : () => Navigator.of(context).pop(_selectedProjectId ?? ''),
+          child: const Text('Save assignment'),
+        ),
+      ],
     );
   }
 }
