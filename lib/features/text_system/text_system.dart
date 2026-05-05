@@ -30,3 +30,4 @@ export 'surfaces/read_only_text_surface.dart';
 export 'surfaces/simple_note_surface.dart';
 export 'surfaces/text_system_rich_text_renderer.dart';
 export 'surfaces/document_text_surface.dart';
+export 'surfaces/text_system_shortcut_reference_panel.dart';

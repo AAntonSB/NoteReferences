@@ -1,9 +1,8 @@
-import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../commands/text_system_command.dart';
-import '../commands/text_system_command_ids.dart';
 import '../commands/text_system_command_registry.dart';
+import '../commands/text_system_shortcut_binding.dart';
 import 'text_system_surface_controller.dart';
 
 /// Shared keyboard shortcut dispatcher for all text-system surfaces.
@@ -18,35 +17,22 @@ class TextSystemKeyboardDispatcher extends StatelessWidget {
     required this.commandRegistry,
     required this.child,
     this.enabled = true,
+    this.shortcutProfile,
   });
 
   final TextSystemSurfaceController surfaceController;
   final TextSystemCommandRegistry commandRegistry;
   final Widget child;
   final bool enabled;
+  final TextSystemShortcutProfile? shortcutProfile;
 
   @override
   Widget build(BuildContext context) {
     if (!enabled || !surfaceController.config.features.shortcuts) return child;
 
+    final profile = shortcutProfile ?? TextSystemShortcutProfile.defaults();
     return CallbackShortcuts(
-      bindings: <ShortcutActivator, VoidCallback>{
-        const SingleActivator(LogicalKeyboardKey.keyB, control: true): () => _execute(TextSystemCommandIds.bold),
-        const SingleActivator(LogicalKeyboardKey.keyB, meta: true): () => _execute(TextSystemCommandIds.bold),
-        const SingleActivator(LogicalKeyboardKey.keyI, control: true): () => _execute(TextSystemCommandIds.italic),
-        const SingleActivator(LogicalKeyboardKey.keyI, meta: true): () => _execute(TextSystemCommandIds.italic),
-        const SingleActivator(LogicalKeyboardKey.keyH, control: true, shift: true): () => _execute(TextSystemCommandIds.highlight),
-        const SingleActivator(LogicalKeyboardKey.keyH, meta: true, shift: true): () => _execute(TextSystemCommandIds.highlight),
-        const SingleActivator(LogicalKeyboardKey.keyK, control: true): () => _execute(TextSystemCommandIds.link),
-        const SingleActivator(LogicalKeyboardKey.keyK, meta: true): () => _execute(TextSystemCommandIds.link),
-        const SingleActivator(LogicalKeyboardKey.keyZ, control: true): () => _execute(TextSystemCommandIds.undo),
-        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): () => _execute(TextSystemCommandIds.undo),
-        const SingleActivator(LogicalKeyboardKey.keyZ, control: true, shift: true): () => _execute(TextSystemCommandIds.redo),
-        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true, shift: true): () => _execute(TextSystemCommandIds.redo),
-        const SingleActivator(LogicalKeyboardKey.keyY, control: true): () => _execute(TextSystemCommandIds.redo),
-        const SingleActivator(LogicalKeyboardKey.keyS, control: true): () => _execute(TextSystemCommandIds.save),
-        const SingleActivator(LogicalKeyboardKey.keyS, meta: true): () => _execute(TextSystemCommandIds.save),
-      },
+      bindings: profile.toCallbackMap(_execute),
       child: child,
     );
   }

@@ -22,8 +22,11 @@ class TextSystemSurfaceToolbar extends StatelessWidget {
     final commands = <String>[
       if (surfaceController.config.features.inlineFormatting) TextSystemCommandIds.bold,
       if (surfaceController.config.features.inlineFormatting) TextSystemCommandIds.italic,
+      if (surfaceController.config.features.inlineFormatting && !compact) TextSystemCommandIds.underline,
+      if (surfaceController.config.features.inlineFormatting && !compact) TextSystemCommandIds.strikethrough,
+      if (surfaceController.config.features.inlineFormatting && !compact) TextSystemCommandIds.inlineCode,
       if (surfaceController.config.features.highlighting) TextSystemCommandIds.highlight,
-      TextSystemCommandIds.link,
+      if (surfaceController.config.features.links) TextSystemCommandIds.link,
       if (surfaceController.config.features.richClipboard) TextSystemCommandIds.copyRich,
       if (surfaceController.config.features.richClipboard) TextSystemCommandIds.pasteRich,
       if (surfaceController.config.features.undoRedo) TextSystemCommandIds.undo,

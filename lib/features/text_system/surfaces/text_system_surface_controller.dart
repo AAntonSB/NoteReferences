@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import '../core/text_clipboard_fragment.dart';
@@ -59,7 +58,8 @@ class TextSystemSurfaceController extends ChangeNotifier {
   bool get canRedo => config.features.undoRedo && textController.canRedo;
   bool get canFormatSelection => !isReadOnly && config.features.inlineFormatting && hasExpandedSelection;
   bool get canHighlightSelection => !isReadOnly && config.features.highlighting && hasExpandedSelection;
-  bool get canUseRichClipboard => config.features.richClipboard;
+  bool get canLinkSelection => !isReadOnly && config.features.links && hasExpandedSelection;
+  bool get canUseRichClipboard => !isReadOnly && config.features.richClipboard;
 
   TextSystemRange? get selectedRange => TextSystemSelectionBridge.rangeFromSelection(
         editingController.selection,

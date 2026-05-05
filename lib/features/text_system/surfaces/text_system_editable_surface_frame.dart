@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../commands/text_system_command_registry.dart';
+import '../commands/text_system_shortcut_binding.dart';
 import 'text_system_keyboard_dispatcher.dart';
 import 'text_system_surface_controller.dart';
 import 'text_system_surface_status_bar.dart';
@@ -22,6 +23,7 @@ class TextSystemEditableSurfaceFrame extends StatelessWidget {
     this.showStatusBar = true,
     this.compactToolbar = false,
     this.padding = const EdgeInsets.all(12),
+    this.shortcutProfile,
   });
 
   final TextSystemSurfaceController surfaceController;
@@ -31,6 +33,7 @@ class TextSystemEditableSurfaceFrame extends StatelessWidget {
   final bool showStatusBar;
   final bool compactToolbar;
   final EdgeInsetsGeometry padding;
+  final TextSystemShortcutProfile? shortcutProfile;
 
   @override
   Widget build(BuildContext context) {
@@ -43,6 +46,7 @@ class TextSystemEditableSurfaceFrame extends StatelessWidget {
         return TextSystemKeyboardDispatcher(
           surfaceController: surfaceController,
           commandRegistry: commandRegistry,
+          shortcutProfile: shortcutProfile,
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: Theme.of(context).colorScheme.surface,

@@ -28,6 +28,28 @@ class TextSystemDefaultCommands {
         execute: () => surface.toggleMark(TextMarkKind.italic),
       ),
       TextSystemCommand(
+        id: TextSystemCommandIds.underline,
+        label: 'Underline',
+        icon: Icons.format_underlined_rounded,
+        defaultShortcutLabel: 'Ctrl/Cmd+U',
+        isAvailable: (_) => surface.canFormatSelection,
+        execute: () => surface.toggleMark(TextMarkKind.underline),
+      ),
+      TextSystemCommand(
+        id: TextSystemCommandIds.strikethrough,
+        label: 'Strikethrough',
+        icon: Icons.strikethrough_s_rounded,
+        isAvailable: (_) => surface.canFormatSelection,
+        execute: () => surface.toggleMark(TextMarkKind.strikethrough),
+      ),
+      TextSystemCommand(
+        id: TextSystemCommandIds.inlineCode,
+        label: 'Inline code',
+        icon: Icons.code_rounded,
+        isAvailable: (_) => surface.canFormatSelection,
+        execute: () => surface.toggleMark(TextMarkKind.code),
+      ),
+      TextSystemCommand(
         id: TextSystemCommandIds.highlight,
         label: 'Highlight',
         icon: Icons.border_color_rounded,
@@ -37,18 +59,18 @@ class TextSystemDefaultCommands {
       ),
       TextSystemCommand(
         id: TextSystemCommandIds.link,
-        label: 'Link',
+        label: 'Link marker',
         icon: Icons.link_rounded,
         defaultShortcutLabel: 'Ctrl/Cmd+K',
-        isAvailable: (_) => surface.hasExpandedSelection,
-        execute: () {},
+        isAvailable: (_) => surface.canLinkSelection,
+        execute: () => surface.toggleMark(TextMarkKind.link),
       ),
       TextSystemCommand(
         id: TextSystemCommandIds.copyRich,
         label: 'Copy rich',
         icon: Icons.copy_rounded,
         defaultShortcutLabel: 'Ctrl/Cmd+C',
-        isAvailable: (_) => surface.hasExpandedSelection,
+        isAvailable: (_) => surface.hasExpandedSelection && surface.canUseRichClipboard,
         execute: () {
           surface.copySelectionToInternalClipboard();
         },

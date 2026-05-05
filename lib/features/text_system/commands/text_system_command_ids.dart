@@ -8,6 +8,9 @@ class TextSystemCommandIds {
 
   static const String bold = 'textSystem.bold';
   static const String italic = 'textSystem.italic';
+  static const String underline = 'textSystem.underline';
+  static const String strikethrough = 'textSystem.strikethrough';
+  static const String inlineCode = 'textSystem.inlineCode';
   static const String highlight = 'textSystem.highlight';
   static const String link = 'textSystem.link';
   static const String copyRich = 'textSystem.copyRich';

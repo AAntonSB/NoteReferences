@@ -9,6 +9,7 @@ import 'text_system_surface_infrastructure_lab_screen.dart';
 import 'text_system_basic_surfaces_lab_screen.dart';
 import 'text_system_simple_note_surface_lab_screen.dart';
 import 'text_system_document_surface_lab_screen.dart';
+import 'text_system_command_shortcut_lab_screen.dart';
 
 class TextSystemTestEnvScreen extends StatefulWidget {
   const TextSystemTestEnvScreen({super.key});
@@ -81,6 +82,12 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
   Future<void> _openDocumentSurfaceLab() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => const TextSystemDocumentSurfaceLabScreen()),
+    );
+  }
+
+  Future<void> _openCommandShortcutLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemCommandShortcutLabScreen()),
     );
   }
 
@@ -206,6 +213,14 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
                     'Phase 7D regular document surface: title editing, multiple blocks, document spacing, headings, basic lists, and read-only preview.',
                 actionLabel: 'Open 7D lab',
                 onPressed: _openDocumentSurfaceLab,
+              ),
+              _TestSurfaceCard(
+                icon: Icons.keyboard_command_key_rounded,
+                title: 'Command and shortcut lab',
+                description:
+                    'Phase 7E hardening pass: shared command ids, shortcut profile, availability rules, link marker placeholder, and final Phase 7 acceptance checks.',
+                actionLabel: 'Open 7E lab',
+                onPressed: _openCommandShortcutLab,
               ),
               const _TestSurfaceCard(
                 icon: Icons.article_outlined,
