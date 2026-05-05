@@ -8,6 +8,7 @@ import 'text_system_persistence_lab_screen.dart';
 import 'text_system_surface_infrastructure_lab_screen.dart';
 import 'text_system_basic_surfaces_lab_screen.dart';
 import 'text_system_simple_note_surface_lab_screen.dart';
+import 'text_system_document_surface_lab_screen.dart';
 
 class TextSystemTestEnvScreen extends StatefulWidget {
   const TextSystemTestEnvScreen({super.key});
@@ -74,6 +75,12 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
   Future<void> _openSimpleNoteSurfaceLab() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => const TextSystemSimpleNoteSurfaceLabScreen()),
+    );
+  }
+
+  Future<void> _openDocumentSurfaceLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemDocumentSurfaceLabScreen()),
     );
   }
 
@@ -191,6 +198,14 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
                     'Phase 7C lightweight multi-line note surface for sidecar notes, observations, comments, and compact project notes.',
                 actionLabel: 'Open 7C lab',
                 onPressed: _openSimpleNoteSurfaceLab,
+              ),
+              _TestSurfaceCard(
+                icon: Icons.article_rounded,
+                title: 'Document text surface lab',
+                description:
+                    'Phase 7D regular document surface: title editing, multiple blocks, document spacing, headings, basic lists, and read-only preview.',
+                actionLabel: 'Open 7D lab',
+                onPressed: _openDocumentSurfaceLab,
               ),
               const _TestSurfaceCard(
                 icon: Icons.article_outlined,
