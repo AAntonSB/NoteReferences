@@ -10,7 +10,7 @@ import '../../planning/data/study_planning_repository.dart';
 import '../../planning/presentation/create_project_screen.dart';
 import '../../planning/presentation/create_study_plan_screen.dart';
 import '../../planning/presentation/project_planning_screen.dart';
-
+import '../../text_system/presentation/text_system_test_env_screen.dart';
 
 Future<void> showTodayBriefingModal({
   required BuildContext context,
@@ -112,6 +112,12 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
     setState(() => _planningLoaded = true);
   }
 
+  Future<void> _openTextSystemTestEnv() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemTestEnvScreen()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -125,6 +131,12 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
         backgroundColor: theme.colorScheme.surfaceContainerLowest,
         surfaceTintColor: Colors.transparent,
         actions: [
+          TextButton.icon(
+            onPressed: _openTextSystemTestEnv,
+            icon: const Icon(Icons.edit_note_rounded),
+            label: const Text('textsys test env'),
+          ),
+          const SizedBox(width: 4),
           TextButton.icon(
             onPressed: _planningLoaded ? _openCalendarOverview : null,
             icon: const Icon(Icons.calendar_month_rounded),

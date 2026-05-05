@@ -5,9 +5,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-
+import '../../source_editor/source_editor.dart';
 import '../data/study_planning_repository.dart';
-import 'latex_document_tools.dart';
 import 'workspace_document_exporter.dart';
 
 class WorkspaceDocumentEditorScreen extends StatelessWidget {
@@ -60,9 +59,12 @@ class _WorkspaceDocumentEditorSurfaceState extends State<WorkspaceDocumentEditor
   Timer? _autosaveDebounce;
   String _kind = WorkspaceDocumentKind.working;
   _DocumentContentMode _contentMode = _DocumentContentMode.plain;
-  LatexWorkspaceMode _latexMode = LatexWorkspaceMode.source;
-  LatexCompileResult? _latexCompileResult;
+  late final SourceDocumentController _sourceDocumentController;
+  final LatexSourceParser _latexParser = LatexSourceParser();
+  SourceEditorConfiguration _sourceEditorConfiguration = const SourceEditorConfiguration();
+  SourceLatexCompileResult? _sourceLatexCompileResult;
   bool _isCompilingLatex = false;
+  bool _isHydratingDocument = false;
   String? _loadedDocumentId;
   String? _lastSavedFingerprint;
   bool _isSaving = false;
@@ -71,6 +73,8 @@ class _WorkspaceDocumentEditorSurfaceState extends State<WorkspaceDocumentEditor
   @override
   void initState() {
     super.initState();
+    _sourceDocumentController = SourceDocumentController();
+    _sourceDocumentController.addListener(_syncBodyFromSourceController);
     _titleController.addListener(_markDirtyAndScheduleSave);
     _tagsController.addListener(_markDirtyAndScheduleSave);
     _languageController.addListener(_markDirtyAndScheduleSave);
@@ -85,6 +89,8 @@ class _WorkspaceDocumentEditorSurfaceState extends State<WorkspaceDocumentEditor
       _autosaveDebounce?.cancel();
       _loadedDocumentId = null;
       _lastSavedFingerprint = null;
+      _sourceEditorConfiguration = const SourceEditorConfiguration();
+      _sourceLatexCompileResult = null;
       _isDirty = false;
     }
   }
@@ -97,6 +103,8 @@ class _WorkspaceDocumentEditorSurfaceState extends State<WorkspaceDocumentEditor
     _languageController.removeListener(_markDirtyAndScheduleSave);
     _sourceUrlController.removeListener(_markDirtyAndScheduleSave);
     _bodyController.removeListener(_markDirtyAndScheduleSave);
+    _sourceDocumentController.removeListener(_syncBodyFromSourceController);
+    _sourceDocumentController.dispose();
     _titleController.dispose();
     _tagsController.dispose();
     _languageController.dispose();
@@ -108,18 +116,33 @@ class _WorkspaceDocumentEditorSurfaceState extends State<WorkspaceDocumentEditor
 
   void _loadDocument(WorkspaceDocument document) {
     if (_loadedDocumentId == document.id) return;
+    _isHydratingDocument = true;
     _loadedDocumentId = document.id;
-    _latexMode = LatexWorkspaceMode.source;
-    _latexCompileResult = null;
+    _sourceEditorConfiguration = const SourceEditorConfiguration();
+    _sourceLatexCompileResult = null;
     _titleController.text = document.title;
     _tagsController.text = document.tags.where((tag) => !tag.startsWith('mode:') && !tag.startsWith('pdf:')).join(', ');
     _languageController.text = document.language ?? '';
     _sourceUrlController.text = document.sourceUrl ?? '';
     _bodyController.text = document.body;
+    _sourceDocumentController.replaceSource(document.body);
     _kind = document.kind;
     _contentMode = _contentModeFromTags(document.tags);
     _lastSavedFingerprint = _fingerprint();
     _isDirty = false;
+    _isHydratingDocument = false;
+    _autosaveDebounce?.cancel();
+  }
+
+  void _syncBodyFromSourceController() {
+    final source = _sourceDocumentController.source;
+    if (_bodyController.text == source) return;
+    final previousSelection = _bodyController.selection;
+    _bodyController.text = source;
+    if (previousSelection.isValid) {
+      final safeOffset = previousSelection.baseOffset.clamp(0, source.length).toInt();
+      _bodyController.selection = TextSelection.collapsed(offset: safeOffset);
+    }
   }
 
   String _fingerprint() {
@@ -135,7 +158,7 @@ class _WorkspaceDocumentEditorSurfaceState extends State<WorkspaceDocumentEditor
   }
 
   void _markDirtyAndScheduleSave() {
-    if (_loadedDocumentId == null) return;
+    if (_loadedDocumentId == null || _isHydratingDocument) return;
     final nextFingerprint = _fingerprint();
     final dirty = nextFingerprint != _lastSavedFingerprint;
     if (_isDirty != dirty && mounted) setState(() => _isDirty = dirty);
@@ -208,9 +231,11 @@ class _WorkspaceDocumentEditorSurfaceState extends State<WorkspaceDocumentEditor
   void _setContentMode(_DocumentContentMode value) {
     setState(() {
       _contentMode = value;
-      if (value != _DocumentContentMode.latex) {
-        _latexMode = LatexWorkspaceMode.source;
-        _latexCompileResult = null;
+      if (value == _DocumentContentMode.latex) {
+        _sourceDocumentController.replaceSource(_bodyController.text);
+      } else {
+        _sourceEditorConfiguration = const SourceEditorConfiguration();
+        _sourceLatexCompileResult = null;
       }
     });
     _markDirtyAndScheduleSave();
@@ -221,19 +246,29 @@ class _WorkspaceDocumentEditorSurfaceState extends State<WorkspaceDocumentEditor
     await _save(showSnackBar: false);
     if (!mounted) return;
     setState(() => _isCompilingLatex = true);
-    final result = await LatexCompilerService.compile(
+    final result = await SourceLatexCompileService.compile(
+      documentId: widget.documentId,
       title: _titleController.text.trim(),
-      source: _bodyController.text,
+      source: _sourceDocumentController.source,
     );
     if (!mounted) return;
     setState(() {
       _isCompilingLatex = false;
-      _latexCompileResult = result;
-      _latexMode = result.success ? LatexWorkspaceMode.pdf : LatexWorkspaceMode.split;
+      _sourceLatexCompileResult = result;
+      _sourceEditorConfiguration = _sourceEditorConfiguration.copyWith(
+        outputMode: result.success ? SourceEditorOutputMode.outputOnly : SourceEditorOutputMode.sideBySide,
+      );
     });
+    if (result.success && result.pdfPath != null) {
+      await widget.planningRepository.updateDocument(
+        documentId: widget.documentId,
+        tags: _saveTags(attachedPdfPath: result.pdfPath),
+      );
+    }
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(result.success ? 'Compiled LaTeX PDF.' : 'LaTeX compile failed. See the PDF/log pane.'),
+        content: Text(result.success ? 'Compiled LaTeX PDF.' : 'LaTeX compile failed. See the output/log pane.'),
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -396,26 +431,28 @@ class _WorkspaceDocumentEditorSurfaceState extends State<WorkspaceDocumentEditor
               onClose: widget.onClose,
             ),
             if (isLatex)
-              LatexModeBar(
-                mode: _latexMode,
-                onModeChanged: (mode) => setState(() => _latexMode = mode),
+              _SourceAwareLatexToolbar(
+                configuration: _sourceEditorConfiguration,
+                onConfigurationChanged: (next) => setState(() => _sourceEditorConfiguration = next),
                 onCompile: _compileLatex,
                 isCompiling: _isCompilingLatex,
-                compileResult: _latexCompileResult,
+                compileResult: _sourceLatexCompileResult,
+                compact: widget.compactChrome,
               ),
             Expanded(
               child: isLatex
-                  ? _LatexDocumentSurface(
+                  ? _SourceAwareWorkspaceDocumentSurface(
                       document: document,
                       titleController: _titleController,
-                      bodyController: _bodyController,
-                      bodyFocusNode: _bodyFocusNode,
-                      embedded: widget.embedded,
-                      compact: widget.compactChrome,
-                      mode: _latexMode,
-                      compileResult: _latexCompileResult,
+                      sourceController: _sourceDocumentController,
+                      parser: _latexParser,
+                      configuration: _sourceEditorConfiguration,
+                      onConfigurationChanged: (next) => setState(() => _sourceEditorConfiguration = next),
+                      compileResult: _sourceLatexCompileResult,
                       isCompiling: _isCompilingLatex,
                       onCompile: _compileLatex,
+                      embedded: widget.embedded,
+                      compact: widget.compactChrome,
                     )
                   : _DocumentWritingSurface(
                       document: document,
@@ -758,93 +795,236 @@ class _DocumentWritingSurface extends StatelessWidget {
 }
 
 
-class _LatexDocumentSurface extends StatelessWidget {
-  final WorkspaceDocument document;
-  final TextEditingController titleController;
-  final TextEditingController bodyController;
-  final FocusNode bodyFocusNode;
-  final bool embedded;
-  final bool compact;
-  final LatexWorkspaceMode mode;
-  final LatexCompileResult? compileResult;
-  final bool isCompiling;
+class _SourceAwareLatexToolbar extends StatelessWidget {
+  final SourceEditorConfiguration configuration;
+  final ValueChanged<SourceEditorConfiguration> onConfigurationChanged;
   final VoidCallback onCompile;
+  final bool isCompiling;
+  final SourceLatexCompileResult? compileResult;
+  final bool compact;
 
-  const _LatexDocumentSurface({
-    required this.document,
-    required this.titleController,
-    required this.bodyController,
-    required this.bodyFocusNode,
-    required this.embedded,
-    required this.compact,
-    required this.mode,
-    required this.compileResult,
-    required this.isCompiling,
+  const _SourceAwareLatexToolbar({
+    required this.configuration,
+    required this.onConfigurationChanged,
     required this.onCompile,
+    required this.isCompiling,
+    required this.compileResult,
+    required this.compact,
   });
 
   @override
   Widget build(BuildContext context) {
-    switch (mode) {
-      case LatexWorkspaceMode.preview:
-        return _latexPreview();
-      case LatexWorkspaceMode.split:
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            const minPaneWidth = 460.0;
-            final content = SizedBox(
-              width: constraints.maxWidth < minPaneWidth * 2 ? minPaneWidth * 2 : constraints.maxWidth,
-              child: Row(
-                children: [
-                  Expanded(child: _sourceEditor()),
-                  const VerticalDivider(width: 1),
-                  Expanded(child: _latexPreview()),
-                ],
+    final theme = Theme.of(context);
+    final result = compileResult;
+    final status = result == null
+        ? 'No PDF compiled yet'
+        : result.success
+            ? [
+                'PDF ready',
+                if (result.compiler != null) result.compiler!,
+                if (result.durationLabel.isNotEmpty) result.durationLabel,
+              ].join(' · ')
+            : 'Compile failed · open output/log';
+
+    return Material(
+      color: theme.colorScheme.surfaceContainerLowest,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(compact ? 8 : 14, 8, compact ? 8 : 14, 8),
+        child: Wrap(
+          spacing: 12,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            SourceEditorToolbar(
+              configuration: configuration,
+              onChanged: onConfigurationChanged,
+            ),
+            FilledButton.icon(
+              onPressed: isCompiling ? null : onCompile,
+              icon: isCompiling
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.play_arrow_rounded),
+              label: Text(isCompiling ? 'Compiling…' : 'Compile PDF'),
+            ),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Text(
+                status,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: result != null && !result.success
+                      ? theme.colorScheme.error
+                      : theme.colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
-            );
-            if (constraints.maxWidth < minPaneWidth * 2) {
-              return Scrollbar(
-                thumbVisibility: true,
-                child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: content),
-              );
-            }
-            return content;
-          },
-        );
-      case LatexWorkspaceMode.pdf:
-        return LatexCompiledPdfPreview(
-          result: compileResult,
-          isCompiling: isCompiling,
-          onCompile: onCompile,
-        );
-      case LatexWorkspaceMode.source:
-        return _sourceEditor();
-    }
-  }
-
-  Widget _sourceEditor() {
-    return _DocumentWritingSurface(
-      document: document,
-      titleController: titleController,
-      bodyController: bodyController,
-      bodyFocusNode: bodyFocusNode,
-      embedded: embedded,
-      compact: compact,
-      contentMode: _DocumentContentMode.latex,
-    );
-  }
-
-  Widget _latexPreview() {
-    return AnimatedBuilder(
-      animation: bodyController,
-      builder: (context, _) => LatexPseudoPreview(
-        source: bodyController.text,
-        title: titleController.text,
-        embedded: embedded,
+            ),
+          ],
+        ),
       ),
     );
   }
 }
+
+class _SourceAwareWorkspaceDocumentSurface extends StatelessWidget {
+  final WorkspaceDocument document;
+  final TextEditingController titleController;
+  final SourceDocumentController sourceController;
+  final LatexSourceParser parser;
+  final SourceEditorConfiguration configuration;
+  final ValueChanged<SourceEditorConfiguration> onConfigurationChanged;
+  final SourceLatexCompileResult? compileResult;
+  final bool isCompiling;
+  final VoidCallback onCompile;
+  final bool embedded;
+  final bool compact;
+
+  const _SourceAwareWorkspaceDocumentSurface({
+    required this.document,
+    required this.titleController,
+    required this.sourceController,
+    required this.parser,
+    required this.configuration,
+    required this.onConfigurationChanged,
+    required this.compileResult,
+    required this.isCompiling,
+    required this.onCompile,
+    required this.embedded,
+    required this.compact,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ColoredBox(
+      color: theme.colorScheme.surfaceContainerLowest,
+      child: Column(
+        children: [
+          if (configuration.outputMode != SourceEditorOutputMode.outputOnly)
+            _WorkspaceSourceHeader(
+              document: document,
+              titleController: titleController,
+              sourceController: sourceController,
+              embedded: embedded,
+              compact: compact,
+            ),
+          Expanded(
+            child: SourceAwareEditor(
+              controller: sourceController,
+              parser: parser,
+              configuration: configuration,
+              onConfigurationChanged: onConfigurationChanged,
+              outputPane: LatexCompileOutputPane(
+                result: compileResult,
+                isCompiling: isCompiling,
+                onCompile: onCompile,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WorkspaceSourceHeader extends StatelessWidget {
+  final WorkspaceDocument document;
+  final TextEditingController titleController;
+  final SourceDocumentController sourceController;
+  final bool embedded;
+  final bool compact;
+
+  const _WorkspaceSourceHeader({
+    required this.document,
+    required this.titleController,
+    required this.sourceController,
+    required this.embedded,
+    required this.compact,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final horizontal = embedded ? 16.0 : 40.0;
+    return Material(
+      color: theme.colorScheme.surfaceContainerLowest,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(horizontal, embedded ? 12 : 20, horizontal, embedded ? 10 : 12),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 820),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (document.sourceUrl != null && document.sourceUrl!.trim().isNotEmpty) ...[
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primaryContainer.withAlpha(85),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: theme.colorScheme.primary.withAlpha(55)),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: Row(
+                        children: [
+                          Icon(Icons.link_rounded, size: 16, color: theme.colorScheme.primary),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              document.sourceUrl!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.onPrimaryContainer),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                TextField(
+                  controller: titleController,
+                  textInputAction: TextInputAction.next,
+                  style: (compact ? theme.textTheme.titleMedium : theme.textTheme.titleLarge)?.copyWith(
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -0.25,
+                  ),
+                  decoration: const InputDecoration(
+                    hintText: 'Untitled document',
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+                if (!compact) ...[
+                  const SizedBox(height: 6),
+                  AnimatedBuilder(
+                    animation: sourceController,
+                    builder: (context, _) => Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _TinyDocumentChip(label: WorkspaceDocumentKind.label(document.kind)),
+                        const _TinyDocumentChip(label: 'LaTeX source-aware'),
+                        _TinyDocumentChip(label: _wordCountLabel(sourceController.source)),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 
 class _TinyDocumentChip extends StatelessWidget {
   final String label;

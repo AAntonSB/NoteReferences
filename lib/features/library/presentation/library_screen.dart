@@ -19,6 +19,7 @@ import '../../tags/data/tag_repository.dart';
 import '../../tags/presentation/tag_icon_registry.dart';
 import '../../tags/presentation/tag_manager_dialog.dart';
 import '../../settings/presentation/settings_screen.dart';
+import '../../text_system/presentation/text_system_test_env_screen.dart';
 import '../data/document_import_service.dart';
 import '../data/pdf_metadata_extractor.dart';
 import '../data/online_metadata_lookup_service.dart';
@@ -109,6 +110,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
     await showDevTodoDrawer(
       context: context,
       planningRepository: _planningRepository,
+    );
+  }
+
+  Future<void> _openTextSystemTestEnv() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemTestEnvScreen()),
     );
   }
 
@@ -883,6 +890,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
       appBar: AppBar(
         title: const Text('Library'),
         actions: [
+          TextButton.icon(
+            onPressed: _openTextSystemTestEnv,
+            icon: const Icon(Icons.edit_note_rounded),
+            label: const Text('textsys test env'),
+          ),
+          const SizedBox(width: 4),
           IconButton(
             tooltip: 'Dev todos',
             onPressed: _planningLoaded ? _openDevTodos : null,

@@ -24,6 +24,7 @@ class _CreateWorkspaceDocumentScreenState extends State<CreateWorkspaceDocumentS
   final _sourceUrlController = TextEditingController();
   final _bodyController = TextEditingController();
   String _kind = WorkspaceDocumentKind.working;
+  _DocumentContentMode _contentMode = _DocumentContentMode.plain;
   bool _isSaving = false;
 
   @override
@@ -50,7 +51,7 @@ class _CreateWorkspaceDocumentScreenState extends State<CreateWorkspaceDocumentS
       title: title,
       kind: _kind,
       body: _bodyController.text,
-      tags: _splitTags(_tagsController.text),
+      tags: _saveTags(_splitTags(_tagsController.text), _contentMode),
       language: _emptyToNull(_languageController.text),
       sourceUrl: _emptyToNull(_sourceUrlController.text),
       projectIds: widget.project == null ? const <String>[] : <String>[widget.project!.id],
@@ -110,21 +111,43 @@ class _CreateWorkspaceDocumentScreenState extends State<CreateWorkspaceDocumentS
             ),
           ),
           const SizedBox(height: 14),
-          DropdownButtonFormField<String>(
-            value: _kind,
-            decoration: const InputDecoration(
-              labelText: 'Document behavior',
-              border: OutlineInputBorder(),
-            ),
-            items: WorkspaceDocumentKind.values
-                .map(
-                  (kind) => DropdownMenuItem(
-                    value: kind,
-                    child: Text(WorkspaceDocumentKind.label(kind)),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: _kind,
+                  decoration: const InputDecoration(
+                    labelText: 'Document behavior',
+                    border: OutlineInputBorder(),
                   ),
-                )
-                .toList(),
-            onChanged: (value) => setState(() => _kind = value ?? WorkspaceDocumentKind.working),
+                  items: WorkspaceDocumentKind.values
+                      .map(
+                        (kind) => DropdownMenuItem(
+                          value: kind,
+                          child: Text(WorkspaceDocumentKind.label(kind)),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) => setState(() => _kind = value ?? WorkspaceDocumentKind.working),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: DropdownButtonFormField<_DocumentContentMode>(
+                  value: _contentMode,
+                  decoration: const InputDecoration(
+                    labelText: 'Text mode',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: _DocumentContentMode.plain, child: Text('Plain text')),
+                    DropdownMenuItem(value: _DocumentContentMode.markdown, child: Text('Markdown')),
+                    DropdownMenuItem(value: _DocumentContentMode.latex, child: Text('LaTeX source-aware')),
+                  ],
+                  onChanged: (value) => setState(() => _contentMode = value ?? _DocumentContentMode.plain),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 14),
           TextField(
@@ -169,7 +192,7 @@ class _CreateWorkspaceDocumentScreenState extends State<CreateWorkspaceDocumentS
             maxLines: 24,
             decoration: const InputDecoration(
               labelText: 'Document body',
-              hintText: 'Paste a job ad, start a personal letter, write study notes, or leave blank.',
+              hintText: 'Paste a job ad, start a personal letter, write LaTeX source, or leave blank.',
               alignLabelWithHint: true,
               border: OutlineInputBorder(),
             ),
@@ -178,6 +201,15 @@ class _CreateWorkspaceDocumentScreenState extends State<CreateWorkspaceDocumentS
       ),
     );
   }
+}
+
+
+enum _DocumentContentMode { plain, markdown, latex }
+
+List<String> _saveTags(List<String> tags, _DocumentContentMode mode) {
+  final next = <String>[...tags];
+  if (mode != _DocumentContentMode.plain) next.add('mode:${mode.name}');
+  return next;
 }
 
 List<String> _splitTags(String value) => value

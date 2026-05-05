@@ -12,7 +12,7 @@ import 'package:pdfrx/pdfrx.dart' as pdfrx;
 ///
 /// This is intentionally not tied to the job-search workspace. Any document
 /// surface can use this enum/service/widgets to offer Overleaf-like editing.
-enum LatexWorkspaceMode { source, preview, split, pdf }
+enum LatexWorkspaceMode { visual, source, split, pdf }
 
 class LatexCompileResult {
   const LatexCompileResult({
@@ -344,9 +344,9 @@ class LatexModeBar extends StatelessWidget {
             Expanded(
               child: SegmentedButton<LatexWorkspaceMode>(
                 segments: const [
+                  ButtonSegment(value: LatexWorkspaceMode.visual, label: Text('Visual'), icon: Icon(Icons.edit_note_rounded)),
                   ButtonSegment(value: LatexWorkspaceMode.source, label: Text('Source'), icon: Icon(Icons.code_rounded)),
-                  ButtonSegment(value: LatexWorkspaceMode.preview, label: Text('Preview'), icon: Icon(Icons.visibility_outlined)),
-                  ButtonSegment(value: LatexWorkspaceMode.split, label: Text('Split'), icon: Icon(Icons.view_column_outlined)),
+                  ButtonSegment(value: LatexWorkspaceMode.split, label: Text('Source + PDF'), icon: Icon(Icons.view_column_outlined)),
                   ButtonSegment(value: LatexWorkspaceMode.pdf, label: Text('PDF'), icon: Icon(Icons.picture_as_pdf_outlined)),
                 ],
                 selected: {mode},
@@ -382,6 +382,928 @@ class LatexModeBar extends StatelessWidget {
     );
   }
 }
+
+
+/// Overleaf-style LaTeX editor surface.
+///
+/// The LaTeX source remains the canonical document. This widget renders safe,
+/// common LaTeX visually while keeping every rendered block source-aware:
+/// tapping a rendered block reveals and edits the exact LaTeX source behind it.
+/// Unknown, complex, or broken LaTeX falls back to a compact editable source
+/// block instead of producing misleading preview garbage.
+class LatexHybridEditor extends StatefulWidget {
+  final TextEditingController controller;
+  final FocusNode? focusNode;
+  final String title;
+  final bool embedded;
+
+  const LatexHybridEditor({
+    super.key,
+    required this.controller,
+    required this.title,
+    this.focusNode,
+    this.embedded = false,
+  });
+
+  @override
+  State<LatexHybridEditor> createState() => _LatexHybridEditorState();
+}
+
+class _LatexHybridEditorState extends State<LatexHybridEditor> {
+  final _activeController = TextEditingController();
+  final _activeFocusNode = FocusNode(debugLabel: 'LatexHybridActiveBlock');
+  int? _activeStart;
+  int? _activeEnd;
+  bool _syncingActiveBlock = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_handleSourceChanged);
+    _activeController.addListener(_handleActiveEdited);
+    _activeFocusNode.addListener(() {
+      if (!_activeFocusNode.hasFocus && mounted) {
+        setState(() {
+          _activeStart = null;
+          _activeEnd = null;
+          _activeController.clear();
+        });
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant LatexHybridEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_handleSourceChanged);
+      widget.controller.addListener(_handleSourceChanged);
+      _clearActiveBlock();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_handleSourceChanged);
+    _activeController.removeListener(_handleActiveEdited);
+    _activeController.dispose();
+    _activeFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _handleSourceChanged() {
+    final start = _activeStart;
+    final end = _activeEnd;
+    if (start == null || end == null) return;
+    if (start < 0 || end > widget.controller.text.length || start > end) {
+      _clearActiveBlock();
+    } else if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _clearActiveBlock() {
+    if (!mounted) return;
+    setState(() {
+      _activeStart = null;
+      _activeEnd = null;
+      _activeController.clear();
+    });
+  }
+
+  void _activateBlock(_LatexVisualBlock block) {
+    _syncingActiveBlock = true;
+    _activeController.text = block.source;
+    _activeController.selection = TextSelection.collapsed(offset: _activeController.text.length);
+    _syncingActiveBlock = false;
+    setState(() {
+      _activeStart = block.start;
+      _activeEnd = block.end;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _activeFocusNode.requestFocus();
+    });
+  }
+
+  void _handleActiveEdited() {
+    if (_syncingActiveBlock) return;
+    final start = _activeStart;
+    final end = _activeEnd;
+    if (start == null || end == null) return;
+    final current = widget.controller.text;
+    if (start < 0 || end > current.length || start > end) return;
+    final replacement = _activeController.text;
+    final next = current.replaceRange(start, end, replacement);
+    final selectionOffset = (start + replacement.length).clamp(0, next.length).toInt();
+    widget.controller.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: selectionOffset),
+    );
+    _activeEnd = start + replacement.length;
+  }
+
+  bool _isActive(_LatexVisualBlock block) {
+    final start = _activeStart;
+    if (start == null) return false;
+    return start >= block.start && start <= block.end;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AnimatedBuilder(
+      animation: widget.controller,
+      builder: (context, _) {
+        final parsed = _LatexVisualParser.parse(widget.controller.text);
+        final horizontal = widget.embedded ? 12.0 : 32.0;
+        final vertical = widget.embedded ? 12.0 : 28.0;
+        return ColoredBox(
+          color: theme.colorScheme.surfaceContainerLowest,
+          child: ListView(
+            padding: EdgeInsets.symmetric(horizontal: horizontal, vertical: vertical),
+            children: [
+              Center(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: widget.embedded ? 720 : 860),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surface,
+                      borderRadius: BorderRadius.circular(widget.embedded ? 12 : 18),
+                      border: Border.all(color: theme.colorScheme.outlineVariant.withAlpha(180)),
+                      boxShadow: [
+                        if (!widget.embedded)
+                          BoxShadow(color: Colors.black.withAlpha(14), blurRadius: 26, offset: const Offset(0, 14)),
+                      ],
+                    ),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(minHeight: widget.embedded ? 680 : 960),
+                      child: Padding(
+                        padding: EdgeInsets.all(widget.embedded ? 24 : 46),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (parsed.preamble != null) _PreambleDisclosure(source: parsed.preamble!),
+                            if (parsed.blocks.isEmpty)
+                              Text(
+                                'Start typing LaTeX. Visual mode renders safe blocks and reveals source when you click them.',
+                                style: theme.textTheme.bodyLarge?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                              )
+                            else
+                              for (final block in parsed.blocks)
+                                _LatexVisualBlockView(
+                                  key: ValueKey('${block.start}-${block.end}-${block.type}-${_isActive(block)}'),
+                                  block: block,
+                                  active: _isActive(block),
+                                  activeController: _activeController,
+                                  activeFocusNode: _activeFocusNode,
+                                  onTap: () => _activateBlock(block),
+                                ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _PreambleDisclosure extends StatelessWidget {
+  final String source;
+
+  const _PreambleDisclosure({required this.source});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: ExpansionTile(
+        tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        collapsedShape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        backgroundColor: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
+        collapsedBackgroundColor: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
+        title: const Text('Show document preamble'),
+        children: [
+          SelectableText(
+            source.trim(),
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 13,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LatexVisualBlockView extends StatelessWidget {
+  final _LatexVisualBlock block;
+  final bool active;
+  final TextEditingController activeController;
+  final FocusNode activeFocusNode;
+  final VoidCallback onTap;
+
+  const _LatexVisualBlockView({
+    super.key,
+    required this.block,
+    required this.active,
+    required this.activeController,
+    required this.activeFocusNode,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (active || block.type == _LatexVisualBlockType.raw || block.type == _LatexVisualBlockType.unsupported || block.broken) {
+      return _LatexSourceBlockEditor(
+        block: block,
+        controller: active ? activeController : null,
+        focusNode: active ? activeFocusNode : null,
+        readOnly: !active,
+        onTap: onTap,
+      );
+    }
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7),
+        child: _renderVisual(context),
+      ),
+    );
+  }
+
+  Widget _renderVisual(BuildContext context) {
+    final theme = Theme.of(context);
+    switch (block.type) {
+      case _LatexVisualBlockType.section:
+        return Text(
+          block.text,
+          style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900, letterSpacing: -0.2),
+        );
+      case _LatexVisualBlockType.subsection:
+        return Text(
+          block.text,
+          style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900, letterSpacing: -0.15),
+        );
+      case _LatexVisualBlockType.comment:
+        return Text(
+          block.text,
+          style: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 14,
+            color: Colors.green.shade700,
+          ),
+        );
+      case _LatexVisualBlockType.center:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            for (final line in block.lines)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 1.5),
+                child: Text(
+                  line,
+                  textAlign: TextAlign.center,
+                  style: line == block.lines.first
+                      ? theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900)
+                      : theme.textTheme.bodyLarge,
+                ),
+              ),
+          ],
+        );
+      case _LatexVisualBlockType.itemize:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final line in block.lines)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 5),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(padding: EdgeInsets.only(top: 7), child: Text('•  ')),
+                    Expanded(child: _InlineLatexText(line)),
+                  ],
+                ),
+              ),
+          ],
+        );
+      case _LatexVisualBlockType.role:
+        return _LatexRoleBlock(lines: block.lines);
+      case _LatexVisualBlockType.math:
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Math.tex(block.text, textStyle: theme.textTheme.titleMedium),
+        );
+      case _LatexVisualBlockType.paragraph:
+        return _InlineLatexText(block.text);
+      case _LatexVisualBlockType.raw:
+      case _LatexVisualBlockType.unsupported:
+        return const SizedBox.shrink();
+    }
+  }
+}
+
+class _LatexSourceBlockEditor extends StatelessWidget {
+  final _LatexVisualBlock block;
+  final TextEditingController? controller;
+  final FocusNode? focusNode;
+  final bool readOnly;
+  final VoidCallback onTap;
+
+  const _LatexSourceBlockEditor({
+    required this.block,
+    required this.controller,
+    required this.readOnly,
+    required this.onTap,
+    this.focusNode,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isUnsupported = block.type == _LatexVisualBlockType.unsupported;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 7),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: isUnsupported ? theme.colorScheme.primaryContainer.withAlpha(45) : theme.colorScheme.surfaceContainerHighest.withAlpha(90),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isUnsupported ? theme.colorScheme.primary.withAlpha(90) : theme.colorScheme.outlineVariant,
+          ),
+        ),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: readOnly ? onTap : null,
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (isUnsupported || block.broken) ...[
+                  Row(
+                    children: [
+                      Icon(
+                        block.broken ? Icons.warning_amber_rounded : Icons.code_rounded,
+                        size: 16,
+                        color: block.broken ? theme.colorScheme.error : theme.colorScheme.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          block.broken ? 'LaTeX source needs attention' : 'Unsupported LaTeX block — edit as source',
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: block.broken ? theme.colorScheme.error : theme.colorScheme.primary,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                if (readOnly)
+                  SelectableText(
+                    block.source,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 14,
+                      color: theme.colorScheme.onSurface,
+                      height: 1.35,
+                    ),
+                  )
+                else
+                  TextField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    minLines: block.source.contains('\n') ? null : 1,
+                    maxLines: null,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 14,
+                      color: theme.colorScheme.onSurface,
+                      height: 1.35,
+                    ),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: InputBorder.none,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineLatexText extends StatelessWidget {
+  final String text;
+
+  const _InlineLatexText(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SelectableText.rich(
+      TextSpan(
+        children: _inlineSpans(text, theme),
+        style: theme.textTheme.bodyLarge?.copyWith(height: 1.55),
+      ),
+    );
+  }
+
+  static List<InlineSpan> _inlineSpans(String value, ThemeData theme) {
+    final spans = <InlineSpan>[];
+    final regex = RegExp(r'(\\textbf\{([^{}]*)\}|\\emph\{([^{}]*)\}|\\textit\{([^{}]*)\}|\\href\{([^{}]*)\}\{([^{}]*)\}|\\url\{([^{}]*)\}|\$([^$]+)\$)');
+    var cursor = 0;
+    for (final match in regex.allMatches(value)) {
+      if (match.start > cursor) spans.add(TextSpan(text: value.substring(cursor, match.start)));
+      if (match.group(2) != null) {
+        spans.add(TextSpan(text: match.group(2), style: const TextStyle(fontWeight: FontWeight.w800)));
+      } else if (match.group(3) != null || match.group(4) != null) {
+        spans.add(TextSpan(text: match.group(3) ?? match.group(4), style: const TextStyle(fontStyle: FontStyle.italic)));
+      } else if (match.group(6) != null) {
+        spans.add(TextSpan(text: match.group(6), style: TextStyle(color: theme.colorScheme.primary, decoration: TextDecoration.underline)));
+      } else if (match.group(7) != null) {
+        spans.add(TextSpan(text: match.group(7), style: TextStyle(color: theme.colorScheme.primary, decoration: TextDecoration.underline)));
+      } else if (match.group(8) != null) {
+        spans.add(WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            child: Math.tex(match.group(8)!, textStyle: theme.textTheme.bodyLarge),
+          ),
+        ));
+      } else {
+        spans.add(TextSpan(text: match.group(0)));
+      }
+      cursor = match.end;
+    }
+    if (cursor < value.length) spans.add(TextSpan(text: value.substring(cursor)));
+    return spans.isEmpty ? [TextSpan(text: value)] : spans;
+  }
+}
+
+class _LatexRoleBlock extends StatelessWidget {
+  final List<String> lines;
+
+  const _LatexRoleBlock({required this.lines});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final role = lines.isNotEmpty ? lines[0] : '';
+    final date = lines.length > 1 ? lines[1] : '';
+    final company = lines.length > 2 ? lines[2] : '';
+    final location = lines.length > 3 ? lines[3] : '';
+    final bullets = lines.length > 4 ? lines.sublist(4) : const <String>[];
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  role,
+                  style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+                ),
+              ),
+              if (date.isNotEmpty)
+                Text(date, style: theme.textTheme.labelLarge?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            ],
+          ),
+          if (company.isNotEmpty || location.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              [company, location].where((part) => part.trim().isNotEmpty).join(' · '),
+              style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant, fontWeight: FontWeight.w700),
+            ),
+          ],
+          if (bullets.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            for (final bullet in bullets)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(padding: EdgeInsets.only(top: 7), child: Text('•  ')),
+                    Expanded(child: _InlineLatexText(bullet)),
+                  ],
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _LatexVisualDocument {
+  const _LatexVisualDocument({required this.blocks, this.preamble});
+  final List<_LatexVisualBlock> blocks;
+  final String? preamble;
+}
+
+class _LatexVisualBlock {
+  const _LatexVisualBlock({
+    required this.type,
+    required this.source,
+    required this.start,
+    required this.end,
+    this.text = '',
+    this.lines = const [],
+    this.broken = false,
+  });
+
+  final _LatexVisualBlockType type;
+  final String source;
+  final int start;
+  final int end;
+  final String text;
+  final List<String> lines;
+  final bool broken;
+}
+
+enum _LatexVisualBlockType { section, subsection, paragraph, comment, center, itemize, role, math, unsupported, raw }
+
+class _LatexVisualParser {
+  static _LatexVisualDocument parse(String source) {
+    if (source.trim().isEmpty) return const _LatexVisualDocument(blocks: []);
+    final bodyRange = _documentBodyRange(source);
+    final preamble = bodyRange == null ? null : source.substring(0, bodyRange.start);
+    final parseStart = bodyRange?.start ?? 0;
+    final parseEnd = bodyRange?.end ?? source.length;
+    final body = source.substring(parseStart, parseEnd);
+    final blocks = <_LatexVisualBlock>[];
+    var cursor = 0;
+
+    while (cursor < body.length) {
+      final whitespace = RegExp(r'\s+').matchAsPrefix(body, cursor);
+      if (whitespace != null) {
+        cursor = whitespace.end;
+        continue;
+      }
+
+      final absolute = parseStart + cursor;
+      final remaining = body.substring(cursor);
+
+      if (remaining.startsWith('%')) {
+        final lineEnd = _lineEnd(body, cursor);
+        final raw = body.substring(cursor, lineEnd);
+        blocks.add(_LatexVisualBlock(
+          type: _LatexVisualBlockType.comment,
+          source: raw,
+          start: absolute,
+          end: parseStart + lineEnd,
+          text: raw,
+        ));
+        cursor = lineEnd;
+        continue;
+      }
+
+      final section = _parseSection(body, cursor, parseStart);
+      if (section != null) {
+        blocks.add(section);
+        cursor = section.end - parseStart;
+        continue;
+      }
+
+      final env = _parseEnvironment(body, cursor, parseStart);
+      if (env != null) {
+        blocks.add(env);
+        cursor = env.end - parseStart;
+        continue;
+      }
+
+      final role = _parseCommandWithArgs(body, cursor, parseStart, 'role', expectedArgs: 5);
+      if (role != null) {
+        blocks.add(role);
+        cursor = role.end - parseStart;
+        continue;
+      }
+
+      final displayMath = _parseDisplayMath(body, cursor, parseStart);
+      if (displayMath != null) {
+        blocks.add(displayMath);
+        cursor = displayMath.end - parseStart;
+        continue;
+      }
+
+      if (body.codeUnitAt(cursor) == 92) {
+        final lineEnd = _lineEnd(body, cursor);
+        final raw = body.substring(cursor, lineEnd);
+        blocks.add(_LatexVisualBlock(
+          type: _LatexVisualBlockType.raw,
+          source: raw,
+          start: absolute,
+          end: parseStart + lineEnd,
+          broken: raw.contains('{') && !_hasBalancedBraces(raw),
+        ));
+        cursor = lineEnd;
+        continue;
+      }
+
+      final paragraphEnd = _paragraphEnd(body, cursor);
+      final raw = body.substring(cursor, paragraphEnd);
+      final cleaned = _cleanParagraph(raw);
+      if (cleaned.trim().isNotEmpty) {
+        blocks.add(_LatexVisualBlock(
+          type: _LatexVisualBlockType.paragraph,
+          source: raw,
+          start: absolute,
+          end: parseStart + paragraphEnd,
+          text: cleaned,
+          broken: !_hasBalancedBraces(raw),
+        ));
+      }
+      cursor = paragraphEnd;
+    }
+
+    return _LatexVisualDocument(blocks: blocks, preamble: preamble?.trim().isEmpty == true ? null : preamble);
+  }
+
+  static _TextRange? _documentBodyRange(String source) {
+    final begin = RegExp(r'\\begin\{document\}').firstMatch(source);
+    if (begin == null) return null;
+    final end = RegExp(r'\\end\{document\}').firstMatch(source.substring(begin.end));
+    if (end == null) return _TextRange(begin.end, source.length);
+    return _TextRange(begin.end, begin.end + end.start);
+  }
+
+  static _LatexVisualBlock? _parseSection(String body, int cursor, int offset) {
+    final command = RegExp(r'\\(section|subsection)\*?').matchAsPrefix(body, cursor);
+    if (command == null) return null;
+    final arg = _readBraceGroup(body, command.end);
+    if (arg == null) {
+      final lineEnd = _lineEnd(body, cursor);
+      return _LatexVisualBlock(
+        type: _LatexVisualBlockType.raw,
+        source: body.substring(cursor, lineEnd),
+        start: offset + cursor,
+        end: offset + lineEnd,
+        broken: true,
+      );
+    }
+    final name = command.group(1) == 'section' ? _LatexVisualBlockType.section : _LatexVisualBlockType.subsection;
+    return _LatexVisualBlock(
+      type: name,
+      source: body.substring(cursor, arg.end),
+      start: offset + cursor,
+      end: offset + arg.end,
+      text: _cleanInline(arg.content),
+    );
+  }
+
+  static _LatexVisualBlock? _parseEnvironment(String body, int cursor, int offset) {
+    final begin = RegExp(r'\\begin\{([A-Za-z*]+)\}([^\n]*)').matchAsPrefix(body, cursor);
+    if (begin == null) return null;
+    final name = begin.group(1) ?? '';
+    final endPattern = '\\end{$name}';
+    final endIndex = body.indexOf(endPattern, begin.end);
+    if (endIndex < 0) {
+      final lineEnd = _lineEnd(body, cursor);
+      return _LatexVisualBlock(
+        type: _LatexVisualBlockType.raw,
+        source: body.substring(cursor, lineEnd),
+        start: offset + cursor,
+        end: offset + lineEnd,
+        broken: true,
+      );
+    }
+    final end = endIndex + endPattern.length;
+    final raw = body.substring(cursor, end);
+    final inner = body.substring(begin.end, endIndex);
+
+    if (name == 'center') {
+      return _LatexVisualBlock(
+        type: _LatexVisualBlockType.center,
+        source: raw,
+        start: offset + cursor,
+        end: offset + end,
+        lines: _centerLines(inner),
+      );
+    }
+    if (name == 'itemize' || name == 'enumerate') {
+      return _LatexVisualBlock(
+        type: _LatexVisualBlockType.itemize,
+        source: raw,
+        start: offset + cursor,
+        end: offset + end,
+        lines: _items(inner),
+      );
+    }
+    if (name == 'tabular' || name == 'tabularx' || name == 'array' || name == 'table') {
+      return _LatexVisualBlock(
+        type: _LatexVisualBlockType.unsupported,
+        source: raw,
+        start: offset + cursor,
+        end: offset + end,
+        text: name,
+      );
+    }
+    return _LatexVisualBlock(
+      type: _LatexVisualBlockType.raw,
+      source: raw,
+      start: offset + cursor,
+      end: offset + end,
+    );
+  }
+
+  static _LatexVisualBlock? _parseCommandWithArgs(String body, int cursor, int offset, String command, {required int expectedArgs}) {
+    final cmd = RegExp('\\\\$command').matchAsPrefix(body, cursor);
+    if (cmd == null) return null;
+    var pos = cmd.end;
+    final args = <String>[];
+    for (var i = 0; i < expectedArgs; i++) {
+      final arg = _readBraceGroup(body, pos);
+      if (arg == null) {
+        final lineEnd = _lineEnd(body, cursor);
+        return _LatexVisualBlock(
+          type: _LatexVisualBlockType.raw,
+          source: body.substring(cursor, lineEnd),
+          start: offset + cursor,
+          end: offset + lineEnd,
+          broken: true,
+        );
+      }
+      args.add(arg.content);
+      pos = arg.end;
+      while (pos < body.length && RegExp(r'\s').hasMatch(body[pos])) {
+        if (body[pos] == '\n' && pos + 1 < body.length && body[pos + 1] == '\n') break;
+        pos++;
+      }
+    }
+    final roleLines = <String>[
+      _cleanInline(args[0]),
+      _cleanInline(args[1]),
+      _cleanInline(args[2]),
+      _cleanInline(args[3]),
+      ..._items(args[4]),
+    ].where((line) => line.trim().isNotEmpty).toList();
+    return _LatexVisualBlock(
+      type: _LatexVisualBlockType.role,
+      source: body.substring(cursor, pos),
+      start: offset + cursor,
+      end: offset + pos,
+      lines: roleLines,
+    );
+  }
+
+  static _LatexVisualBlock? _parseDisplayMath(String body, int cursor, int offset) {
+    if (body.startsWith(r'\[', cursor)) {
+      final end = body.indexOf(r'\]', cursor + 2);
+      if (end < 0) return null;
+      return _LatexVisualBlock(
+        type: _LatexVisualBlockType.math,
+        source: body.substring(cursor, end + 2),
+        start: offset + cursor,
+        end: offset + end + 2,
+        text: body.substring(cursor + 2, end).trim(),
+      );
+    }
+    if (body.startsWith(r'$$', cursor)) {
+      final end = body.indexOf(r'$$', cursor + 2);
+      if (end < 0) return null;
+      return _LatexVisualBlock(
+        type: _LatexVisualBlockType.math,
+        source: body.substring(cursor, end + 2),
+        start: offset + cursor,
+        end: offset + end + 2,
+        text: body.substring(cursor + 2, end).trim(),
+      );
+    }
+    return null;
+  }
+
+  static List<String> _centerLines(String inner) {
+    return inner
+        .replaceAll(r'\\', '\n')
+        .split('\n')
+        .map(_cleanInline)
+        .where((line) => line.trim().isNotEmpty)
+        .toList();
+  }
+
+  static List<String> _items(String inner) {
+    final parts = inner.split(RegExp(r'\\item\s*'));
+    return parts
+        .map(_cleanParagraph)
+        .where((line) => line.trim().isNotEmpty)
+        .toList();
+  }
+
+  static int _lineEnd(String value, int start) {
+    final next = value.indexOf('\n', start);
+    return next < 0 ? value.length : next;
+  }
+
+  static int _paragraphEnd(String value, int start) {
+    var pos = start;
+    while (pos < value.length) {
+      if (pos > start && value.startsWith('\n\n', pos)) return pos;
+      if (pos > start && value.codeUnitAt(pos) == 92) {
+        final previous = pos > 0 ? value[pos - 1] : '';
+        if (previous == '\n') return pos;
+      }
+      pos++;
+    }
+    return value.length;
+  }
+
+  static _BraceGroup? _readBraceGroup(String value, int start) {
+    var pos = start;
+    while (pos < value.length && RegExp(r'\s').hasMatch(value[pos])) {
+      pos++;
+    }
+    if (pos >= value.length || value[pos] != '{') return null;
+    var depth = 0;
+    for (var i = pos; i < value.length; i++) {
+      final escaped = i > 0 && value.codeUnitAt(i - 1) == 92;
+      if (escaped) continue;
+      if (value[i] == '{') {
+        depth++;
+      } else if (value[i] == '}') {
+        depth--;
+        if (depth == 0) return _BraceGroup(value.substring(pos + 1, i), i + 1);
+      }
+    }
+    return null;
+  }
+
+  static bool _hasBalancedBraces(String value) => _balance(value) == 0;
+
+  static int _balance(String value) {
+    var depth = 0;
+    for (var i = 0; i < value.length; i++) {
+      final escaped = i > 0 && value.codeUnitAt(i - 1) == 92;
+      if (escaped) continue;
+      if (value[i] == '{') depth++;
+      if (value[i] == '}') depth--;
+      if (depth < 0) return depth;
+    }
+    return depth;
+  }
+
+  static String _cleanParagraph(String raw) {
+    return raw
+        .replaceAll(r'\\', '\n')
+        .split('\n')
+        .map(_cleanInline)
+        .where((line) => line.trim().isNotEmpty)
+        .join('\n');
+  }
+
+  static String _cleanInline(String raw) {
+    var text = raw.trim();
+    text = text.replaceAll(RegExp(r'\[[0-9.]+\s*(pt|em|ex|mm|cm|in)\]'), '');
+    text = text.replaceAll(RegExp(r'\\(?:quad|qquad|,|;|:|!)'), ' ');
+    text = text.replaceAllMapped(
+      RegExp(r'\{\\(?:Large|LARGE|huge|Huge|large|small|footnotesize|scriptsize|normalsize)\s+([^{}]*)\}'),
+      (m) => m.group(1) ?? '',
+    );
+    text = text.replaceAllMapped(RegExp(r'\\(?:Large|LARGE|huge|Huge|large|small|footnotesize|scriptsize|normalsize)\s+([^\\\n]*)'), (m) => m.group(1) ?? '');
+    text = text.replaceAllMapped(RegExp(r'\\href\{([^{}]*)\}\{([^{}]*)\}'), (m) => m.group(2) ?? m.group(1) ?? '');
+    text = text.replaceAllMapped(RegExp(r'\\url\{([^{}]*)\}'), (m) => m.group(1) ?? '');
+    text = text.replaceAll(r'\&', '&');
+    text = text.replaceAll(r'\%', '%');
+    text = text.replaceAll(r'\#', '#');
+    text = text.replaceAll(r'\_', '_');
+    return text.replaceAll(RegExp(r'[ \t]+'), ' ').trim();
+  }
+}
+
+class _TextRange {
+  const _TextRange(this.start, this.end);
+  final int start;
+  final int end;
+}
+
+class _BraceGroup {
+  const _BraceGroup(this.content, this.end);
+  final String content;
+  final int end;
+}
+
 
 class LatexPseudoPreview extends StatelessWidget {
   final String source;
@@ -659,34 +1581,6 @@ class _LatexPreviewBlockView extends StatelessWidget {
           child: _InlineLatexText(block.text),
         );
     }
-  }
-}
-
-class _InlineLatexText extends StatelessWidget {
-  final String text;
-
-  const _InlineLatexText(this.text);
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final pieces = _splitInlineMath(text);
-    return Wrap(
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        for (final piece in pieces)
-          if (piece.isMath)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 2),
-              child: _SafeMathTex(piece.text, display: false),
-            )
-          else
-            Text(
-              piece.text,
-              style: theme.textTheme.bodyLarge?.copyWith(height: 1.45),
-            ),
-      ],
-    );
   }
 }
 
@@ -1025,22 +1919,3 @@ class _LatexPreviewBlock {
 
 enum _LatexPreviewBlockType { section, subsection, meta, paragraph, item, math }
 
-class _InlinePiece {
-  const _InlinePiece(this.text, this.isMath);
-
-  final String text;
-  final bool isMath;
-}
-
-List<_InlinePiece> _splitInlineMath(String value) {
-  final pieces = <_InlinePiece>[];
-  final regex = RegExp(r'\$([^$]+)\$');
-  var cursor = 0;
-  for (final match in regex.allMatches(value)) {
-    if (match.start > cursor) pieces.add(_InlinePiece(value.substring(cursor, match.start), false));
-    pieces.add(_InlinePiece(match.group(1) ?? '', true));
-    cursor = match.end;
-  }
-  if (cursor < value.length) pieces.add(_InlinePiece(value.substring(cursor), false));
-  return pieces.where((piece) => piece.text.isNotEmpty).toList(growable: false);
-}

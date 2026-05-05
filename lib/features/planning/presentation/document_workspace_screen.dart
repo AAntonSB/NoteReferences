@@ -770,7 +770,7 @@ class _WorkspaceSetDialogState extends State<_WorkspaceSetDialog> {
         sourceTitle: 'Job ad — $name',
         sourceBody: _sourceBodyController.text,
         referenceTitle: 'CV / reference — $name',
-        referenceBody: _referenceIsLatex ? r'% Paste LaTeX here, or use the Overleaf link saved on this document.' : '',
+        referenceBody: _referenceIsLatex ? _defaultCvLatexTemplate(name) : '',
         referenceSourceUrl: _emptyToNull(_referenceSourceUrlController.text),
         referenceContentMode: _referenceIsLatex ? _DocumentContentMode.latex : _DocumentContentMode.plain,
         draftTitle: 'Personal letter — $name',
@@ -891,6 +891,46 @@ class _WorkspaceSetDraft {
     required this.referenceDocumentId,
   });
 }
+
+
+String _defaultCvLatexTemplate(String name) {
+  final safeName = name.trim().isEmpty ? 'Application' : name.trim();
+  return r'''% CV / reference source for @name
+% This template intentionally uses the source-aware CV macros supported by the editor.
+\section*{Profile}
+Write a concise profile tailored to @name.
+
+\section*{Technical Skills}
+\skillrow{Core}{Add your strongest role-relevant skills here}
+\skillrow{Tools}{Add tools, frameworks, methods, or domain knowledge}
+
+\section*{Professional Experience}
+\role
+{Role title}
+{Dates}
+{Organization}
+{Location}
+{\begin{itemize}
+\item Add one quantified, job-relevant contribution.
+\item Add one collaboration, responsibility, or impact bullet.
+\end{itemize}}
+
+\section*{Education}
+\education
+{Degree or programme}
+{Dates}
+{Institution}
+{Location}
+{Relevant coursework, thesis, or distinction}
+
+\section*{Projects}
+\project
+{Project name}
+{Context / technology}
+{Describe why this project is relevant to the target role.}
+'''.replaceAll('@name', safeName);
+}
+
 
 enum _DocumentContentMode { plain, markdown, latex }
 
