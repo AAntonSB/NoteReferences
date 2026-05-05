@@ -3,6 +3,11 @@ import 'package:flutter/services.dart';
 
 import '../../source_editor/presentation/latex_source_editor_lab_screen.dart';
 import '../../source_editor/presentation/source_editor_lab_screen.dart';
+import 'text_engine_core_lab_screen.dart';
+import 'text_system_persistence_lab_screen.dart';
+import 'text_system_surface_infrastructure_lab_screen.dart';
+import 'text_system_basic_surfaces_lab_screen.dart';
+import 'text_system_simple_note_surface_lab_screen.dart';
 
 class TextSystemTestEnvScreen extends StatefulWidget {
   const TextSystemTestEnvScreen({super.key});
@@ -39,6 +44,36 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
   Future<void> _openLatexSourceLab() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => const LatexSourceEditorLabScreen()),
+    );
+  }
+
+  Future<void> _openCoreTextEngineLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextEngineCoreLabScreen()),
+    );
+  }
+
+  Future<void> _openPersistenceLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemPersistenceLabScreen()),
+    );
+  }
+
+  Future<void> _openSurfaceInfrastructureLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemSurfaceInfrastructureLabScreen()),
+    );
+  }
+
+  Future<void> _openBasicSurfacesLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemBasicSurfacesLabScreen()),
+    );
+  }
+
+  Future<void> _openSimpleNoteSurfaceLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemSimpleNoteSurfaceLabScreen()),
     );
   }
 
@@ -117,12 +152,45 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
                 actionLabel: 'Open LaTeX lab',
                 onPressed: _openLatexSourceLab,
               ),
-              const _TestSurfaceCard(
+              _TestSurfaceCard(
                 icon: Icons.text_fields_rounded,
                 title: 'Core text engine surface',
                 description:
-                    'Placeholder for the Phase 6 native text-system surface: structured text, formatting marks, selection, undo/redo, and safe persistence.',
-                actionLabel: 'Coming in Phase 6',
+                    'Phase 6 native text-system surface: structured text, formatting marks, internal rich copy/paste, undo/redo, snapshots, and transaction logging.',
+                actionLabel: 'Open core lab',
+                onPressed: _openCoreTextEngineLab,
+              ),
+              _TestSurfaceCard(
+                icon: Icons.health_and_safety_rounded,
+                title: 'Persistence safety lab',
+                description:
+                    'Phase 6 completion surface: document JSON, save/load contract, autosave state, and surface configuration validation.',
+                actionLabel: 'Open safety lab',
+                onPressed: _openPersistenceLab,
+              ),
+              _TestSurfaceCard(
+                icon: Icons.dashboard_customize_rounded,
+                title: 'Surface infrastructure lab',
+                description:
+                    'Phase 7A shared surface layer: selection bridge, surface controller, toolbar, keyboard dispatcher, command registry, and autosave handoff.',
+                actionLabel: 'Open surface lab',
+                onPressed: _openSurfaceInfrastructureLab,
+              ),
+              _TestSurfaceCard(
+                icon: Icons.short_text_rounded,
+                title: 'Basic text surfaces lab',
+                description:
+                    'Phase 7B concrete lightweight surfaces: InlineTextSurface for compact editing and ReadOnlyTextSurface for non-mutating structured rendering.',
+                actionLabel: 'Open 7B lab',
+                onPressed: _openBasicSurfacesLab,
+              ),
+              _TestSurfaceCard(
+                icon: Icons.sticky_note_2_rounded,
+                title: 'Simple note surface lab',
+                description:
+                    'Phase 7C lightweight multi-line note surface for sidecar notes, observations, comments, and compact project notes.',
+                actionLabel: 'Open 7C lab',
+                onPressed: _openSimpleNoteSurfaceLab,
               ),
               const _TestSurfaceCard(
                 icon: Icons.article_outlined,
@@ -263,16 +331,16 @@ class _PhaseRoadmapCard extends StatelessWidget {
             const SizedBox(height: 12),
             const _CheckpointRow(
               label: 'Phase 6',
-              value: 'Text engine core + stable test env',
-              active: true,
+              value: 'Text engine core + persistence contracts',
             ),
             const _CheckpointRow(
               label: 'Phase 7',
               value: 'Basic text surfaces',
+              active: true,
             ),
             const _CheckpointRow(
               label: 'Phase 8',
-              value: 'Persistence and revision safety',
+              value: 'Surface UX and revision UI',
             ),
             const _CheckpointRow(
               label: 'Phase 9',
