@@ -1,6 +1,9 @@
 import 'package:flutter/foundation.dart';
 
 import 'text_clipboard_fragment.dart';
+import 'text_system_document_fragment.dart';
+import 'text_system_document_range.dart';
+import 'text_system_document_selection_mapper.dart';
 import 'text_mark.dart';
 import 'text_operation.dart';
 import 'text_system_block.dart';
@@ -53,12 +56,14 @@ class TextSystemController extends ChangeNotifier {
   final List<TextTransaction> _transactionLog = <TextTransaction>[];
   final List<TextSystemSnapshot> _snapshots = <TextSystemSnapshot>[];
   TextClipboardFragment? _internalClipboard;
+  TextSystemDocumentFragment? _internalDocumentClipboard;
 
   TextSystemDocument get document => _document;
   int get revision => _revision;
   List<TextTransaction> get transactionLog => List.unmodifiable(_transactionLog);
   List<TextSystemSnapshot> get snapshots => List.unmodifiable(_snapshots);
   TextClipboardFragment? get internalClipboard => _internalClipboard;
+  TextSystemDocumentFragment? get internalDocumentClipboard => _internalDocumentClipboard;
   bool get canUndo => _undoStack.isNotEmpty;
   bool get canRedo => _redoStack.isNotEmpty;
 
@@ -138,6 +143,14 @@ class TextSystemController extends ChangeNotifier {
       ],
       origin: TextTransactionOrigin.user,
     );
+  }
+
+  TextSystemDocumentFragment copyDocumentFragment(TextSystemDocumentRange range) {
+    final fragment = TextSystemDocumentSelectionMapper.fragmentForRange(_document, range);
+    _internalDocumentClipboard = fragment;
+    _internalClipboard = fragment.toFlatClipboardFragment();
+    notifyListeners();
+    return fragment;
   }
 
   TextClipboardFragment copyFragment(String blockId, TextSystemRange range) {

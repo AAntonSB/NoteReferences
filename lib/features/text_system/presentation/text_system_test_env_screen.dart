@@ -12,6 +12,7 @@ import 'text_system_document_surface_lab_screen.dart';
 import 'text_system_command_shortcut_lab_screen.dart';
 import 'text_system_fluent_text_polish_lab_screen.dart';
 import 'text_system_natural_keyboard_lab_screen.dart';
+import 'text_system_document_selection_lab_screen.dart';
 
 class TextSystemTestEnvScreen extends StatefulWidget {
   const TextSystemTestEnvScreen({super.key});
@@ -102,6 +103,12 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
   Future<void> _openNaturalKeyboardLab() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => const TextSystemNaturalKeyboardLabScreen()),
+    );
+  }
+
+  Future<void> _openDocumentSelectionLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemDocumentSelectionLabScreen()),
     );
   }
 
@@ -252,6 +259,14 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
                 actionLabel: 'Open 8B lab',
                 onPressed: _openNaturalKeyboardLab,
               ),
+              _TestSurfaceCard(
+                icon: Icons.text_fields_rounded,
+                title: 'Fluent document selection lab',
+                description:
+                    'Phase 8C document-level selection foundation: maps fluent text offsets to internal text units and extracts structured cross-paragraph fragments.',
+                actionLabel: 'Open 8C lab',
+                onPressed: _openDocumentSelectionLab,
+              ),
               const _TestSurfaceCard(
                 icon: Icons.article_outlined,
                 title: 'Premium writer surface',
@@ -400,7 +415,7 @@ class _PhaseRoadmapCard extends StatelessWidget {
             ),
             const _CheckpointRow(
               label: 'Phase 8',
-              value: 'Surface UX and revision UI',
+              value: 'Fluent text UX foundations',
             ),
             const _CheckpointRow(
               label: 'Phase 9',
