@@ -103,7 +103,8 @@ class _SimpleNoteSurfaceState extends State<SimpleNoteSurface> {
       showToolbar: widget.showToolbar,
       showStatusBar: widget.showStatusBar,
       compactToolbar: true,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
+      frameStyle: TextSystemSurfaceFrameStyle.subtle,
       editorBuilder: (context, controller) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -130,23 +131,18 @@ class _SimpleNoteSurfaceState extends State<SimpleNoteSurface> {
               keyboardType: TextInputType.multiline,
               textInputAction: TextInputAction.newline,
               textCapitalization: TextCapitalization.sentences,
+              style: theme.textTheme.bodyLarge,
               decoration: InputDecoration(
                 hintText: widget.placeholder ?? 'Write a note...',
-                filled: true,
-                fillColor: theme.colorScheme.surfaceContainerLowest,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: BorderSide(color: theme.colorScheme.outlineVariant),
+                hintStyle: theme.textTheme.bodyLarge?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.72),
                 ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: BorderSide(color: theme.colorScheme.outlineVariant),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: BorderSide(color: theme.colorScheme.primary, width: 1.4),
-                ),
-                contentPadding: const EdgeInsets.all(14),
+                filled: false,
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                disabledBorder: InputBorder.none,
+                contentPadding: EdgeInsets.zero,
               ),
             ),
           ],

@@ -10,6 +10,7 @@ import 'text_system_basic_surfaces_lab_screen.dart';
 import 'text_system_simple_note_surface_lab_screen.dart';
 import 'text_system_document_surface_lab_screen.dart';
 import 'text_system_command_shortcut_lab_screen.dart';
+import 'text_system_fluent_text_polish_lab_screen.dart';
 
 class TextSystemTestEnvScreen extends StatefulWidget {
   const TextSystemTestEnvScreen({super.key});
@@ -88,6 +89,12 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
   Future<void> _openCommandShortcutLab() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => const TextSystemCommandShortcutLabScreen()),
+    );
+  }
+
+  Future<void> _openFluentTextPolishLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemFluentTextPolishLabScreen()),
     );
   }
 
@@ -221,6 +228,14 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
                     'Phase 7E hardening pass: shared command ids, shortcut profile, availability rules, link marker placeholder, and final Phase 7 acceptance checks.',
                 actionLabel: 'Open 7E lab',
                 onPressed: _openCommandShortcutLab,
+              ),
+              _TestSurfaceCard(
+                icon: Icons.edit_note_rounded,
+                title: 'Fluent text polish lab',
+                description:
+                    'Phase 8A text-first UX polish: quieter frames, calmer input chrome, clear save state, and document text that does not feel like visible block management.',
+                actionLabel: 'Open 8A lab',
+                onPressed: _openFluentTextPolishLab,
               ),
               const _TestSurfaceCard(
                 icon: Icons.article_outlined,

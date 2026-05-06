@@ -96,7 +96,10 @@ class _InlineTextSurfaceState extends State<InlineTextSurface> {
       compactToolbar: true,
       padding: widget.showToolbar || widget.showStatusBar
           ? const EdgeInsets.all(10)
-          : const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          : const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      frameStyle: widget.showToolbar || widget.showStatusBar
+          ? TextSystemSurfaceFrameStyle.subtle
+          : TextSystemSurfaceFrameStyle.subtle,
       editorBuilder: (context, controller) {
         return TextField(
           controller: controller.editingController,
@@ -107,10 +110,17 @@ class _InlineTextSurfaceState extends State<InlineTextSurface> {
           maxLines: widget.maxLines,
           textInputAction: widget.maxLines == 1 ? TextInputAction.done : TextInputAction.newline,
           onSubmitted: widget.onSubmitted,
+          style: Theme.of(context).textTheme.bodyLarge,
           decoration: InputDecoration(
             isDense: true,
             border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+            disabledBorder: InputBorder.none,
             hintText: widget.placeholder,
+            hintStyle: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.72),
+                ),
           ),
         );
       },

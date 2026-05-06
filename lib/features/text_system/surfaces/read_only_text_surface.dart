@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/text_mark.dart';
 import '../core/text_system_controller.dart';
+import 'text_system_editable_surface_frame.dart';
 import 'text_system_rich_text_renderer.dart';
 import 'text_system_surface_config.dart';
 
@@ -16,8 +17,9 @@ class ReadOnlyTextSurface extends StatelessWidget {
     required this.textController,
     this.config,
     this.selectable = true,
-    this.padding = const EdgeInsets.all(14),
+    this.padding = const EdgeInsets.all(16),
     this.showTitle = false,
+    this.frameStyle = TextSystemSurfaceFrameStyle.subtle,
     this.onLinkTap,
   });
 
@@ -26,6 +28,7 @@ class ReadOnlyTextSurface extends StatelessWidget {
   final bool selectable;
   final EdgeInsetsGeometry padding;
   final bool showTitle;
+  final TextSystemSurfaceFrameStyle frameStyle;
   final void Function(TextMark mark)? onLinkTap;
 
   TextSystemSurfaceConfig get _config => config ??
@@ -48,12 +51,8 @@ class ReadOnlyTextSurface extends StatelessWidget {
         return Semantics(
           label: _config.label,
           readOnly: true,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surface,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: theme.colorScheme.outlineVariant.withValues(alpha: 0.8)),
-            ),
+          child: _ReadOnlyFrame(
+            frameStyle: frameStyle,
             child: Padding(
               padding: padding,
               child: Column(
@@ -61,13 +60,16 @@ class ReadOnlyTextSurface extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (showTitle) ...[
-                    Text(document.title, style: theme.textTheme.titleMedium),
-                    const SizedBox(height: 10),
-                    Divider(height: 1, color: theme.colorScheme.outlineVariant),
-                    const SizedBox(height: 10),
+                    Text(document.title, style: theme.textTheme.titleLarge),
+                    const SizedBox(height: 12),
                   ],
                   if (document.blocks.isEmpty)
-                    Text('No text.', style: theme.textTheme.bodyMedium)
+                    Text(
+                      'Nothing written yet.',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    )
                   else
                     for (final block in document.blocks)
                       TextSystemRichTextRenderer.block(
@@ -82,6 +84,35 @@ class ReadOnlyTextSurface extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _ReadOnlyFrame extends StatelessWidget {
+  const _ReadOnlyFrame({
+    required this.frameStyle,
+    required this.child,
+  });
+
+  final TextSystemSurfaceFrameStyle frameStyle;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    if (frameStyle == TextSystemSurfaceFrameStyle.plain) {
+      return child;
+    }
+    final outlined = frameStyle == TextSystemSurfaceFrameStyle.outlined;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: outlined ? colorScheme.surface : colorScheme.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(outlined ? 18 : 14),
+        border: Border.all(
+          color: colorScheme.outlineVariant.withValues(alpha: outlined ? 0.78 : 0.38),
+        ),
+      ),
+      child: child,
     );
   }
 }

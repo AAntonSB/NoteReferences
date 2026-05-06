@@ -6,6 +6,7 @@ import '../core/text_system_block.dart';
 import '../core/text_system_controller.dart';
 import '../core/text_system_document.dart';
 import '../persistence/text_system_autosave_controller.dart';
+import '../persistence/text_system_save_state.dart';
 import 'text_system_editable_surface_frame.dart';
 import 'text_system_surface_config.dart';
 import 'text_system_surface_controller.dart';
@@ -13,8 +14,8 @@ import 'text_system_surface_controller.dart';
 /// Basic document-shaped surface for regular text documents and longer notes.
 ///
 /// This is intentionally still the light text-system layer, not the future
-/// premium writer. It provides document spacing, title editing, block-level
-/// type controls, basic headings/lists/quotes/todos, and per-block rich text
+/// premium writer. It provides document spacing, title editing, paragraph
+/// styles, basic headings/lists/quotes/todos, and per-paragraph rich text
 /// editing through the shared Phase 7A infrastructure.
 class DocumentTextSurface extends StatefulWidget {
   const DocumentTextSurface({
@@ -24,7 +25,7 @@ class DocumentTextSurface extends StatefulWidget {
     this.config,
     this.showTitle = true,
     this.showDocumentToolbar = true,
-    this.showBlockToolbars = true,
+    this.showBlockToolbars = false,
     this.showStatusBars = true,
     this.enabled = true,
     this.placeholder = 'Write here...',
@@ -119,7 +120,7 @@ class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
 
     widget.textController.replaceDocument(
       document.copyWith(blocks: _renumberOrderedListBlocks(blocks)),
-      label: 'Convert block to ${_blockTypeLabel(type).toLowerCase()}',
+      label: 'Apply ${_blockTypeLabel(type).toLowerCase()} style',
     );
   }
 
@@ -132,7 +133,7 @@ class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
           document.blocks.where((block) => block.id != blockId).toList(),
         ),
       ),
-      label: 'Remove document block',
+      label: 'Delete paragraph',
     );
   }
 
@@ -148,12 +149,12 @@ class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
     blocks.insert(nextIndex, block);
     widget.textController.replaceDocument(
       document.copyWith(blocks: _renumberOrderedListBlocks(blocks)),
-      label: delta < 0 ? 'Move block up' : 'Move block down',
+      label: delta < 0 ? 'Move paragraph up' : 'Move paragraph down',
     );
   }
 
   TextSystemBlock _defaultBlockFor(TextSystemBlockType type, {required int index}) {
-    final id = 'doc-block-${DateTime.now().microsecondsSinceEpoch}-$index';
+    final id = 'doc-paragraph-${DateTime.now().microsecondsSinceEpoch}-$index';
     return switch (type) {
       TextSystemBlockType.heading => TextSystemBlock(
           id: id,
@@ -249,11 +250,11 @@ class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
         return DecoratedBox(
           decoration: BoxDecoration(
             color: theme.colorScheme.surface,
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: theme.colorScheme.outlineVariant.withValues(alpha: 0.8)),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: theme.colorScheme.outlineVariant.withValues(alpha: 0.42)),
           ),
           child: Padding(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.fromLTRB(28, 24, 28, 24),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               mainAxisSize: MainAxisSize.min,
@@ -265,15 +266,20 @@ class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
                     enabled: widget.enabled,
                     textInputAction: TextInputAction.done,
                     onChanged: _updateTitle,
-                    style: theme.textTheme.headlineSmall,
-                    decoration: const InputDecoration(
+                    style: theme.textTheme.headlineMedium,
+                    decoration: InputDecoration(
                       border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
                       hintText: 'Untitled document',
+                      hintStyle: theme.textTheme.headlineMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.65),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 6),
-                  Divider(height: 1, color: theme.colorScheme.outlineVariant),
-                  const SizedBox(height: 14),
+                  Divider(height: 1, color: theme.colorScheme.outlineVariant.withValues(alpha: 0.55)),
+                  const SizedBox(height: 18),
                 ],
                 if (widget.showDocumentToolbar) ...[
                   _DocumentToolbar(
@@ -287,7 +293,7 @@ class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
                               message: 'Manually saved document surface.',
                             ),
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 18),
                 ],
                 if (document.blocks.isEmpty)
                   _EmptyDocumentCard(onAddParagraph: () => _appendBlock(TextSystemBlockType.paragraph))
@@ -295,7 +301,7 @@ class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
                   for (final block in document.blocks)
                     Padding(
                       key: ValueKey<String>('document-surface-${block.id}'),
-                      padding: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.only(bottom: 8),
                       child: _DocumentBlockEditor(
                         block: block,
                         textController: widget.textController,
@@ -304,7 +310,7 @@ class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
                         enabled: widget.enabled,
                         placeholder: widget.placeholder,
                         showBlockToolbar: widget.showBlockToolbars,
-                        showStatusBar: widget.showStatusBars,
+                        showStatusBar: false,
                         maxLines: widget.maxBlockLines,
                         onParagraph: () => _convertBlock(block.id, TextSystemBlockType.paragraph),
                         onHeading1: () => _convertBlock(block.id, TextSystemBlockType.heading, level: 1),
@@ -319,6 +325,13 @@ class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
                         onRemove: document.blocks.length <= 1 ? null : () => _removeBlock(block.id),
                       ),
                     ),
+                if (widget.showStatusBars) ...[
+                  const SizedBox(height: 10),
+                  _DocumentSaveStatus(
+                    textController: widget.textController,
+                    autosaveController: widget.autosaveController,
+                  ),
+                ],
               ],
             ),
           ),
@@ -363,7 +376,7 @@ class _DocumentToolbar extends StatelessWidget {
         FilledButton.tonalIcon(
           onPressed: onAddListItem,
           icon: const Icon(Icons.format_list_bulleted_rounded),
-          label: const Text('List item'),
+          label: const Text('List'),
         ),
         FilledButton.tonalIcon(
           onPressed: onAddTodo,
@@ -474,10 +487,11 @@ class _DocumentBlockEditorState extends State<_DocumentBlockEditor> {
     return TextSystemEditableSurfaceFrame(
       surfaceController: _surfaceController,
       commandRegistry: _commandRegistry,
-      showToolbar: true,
+      showToolbar: widget.showBlockToolbar,
       showStatusBar: widget.showStatusBar,
       compactToolbar: true,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      frameStyle: TextSystemSurfaceFrameStyle.plain,
       editorBuilder: (context, controller) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -514,21 +528,18 @@ class _DocumentBlockEditorState extends State<_DocumentBlockEditor> {
               decoration: InputDecoration(
                 prefixIcon: _prefixFor(widget.block, theme),
                 hintText: widget.placeholder,
-                filled: true,
-                fillColor: theme.colorScheme.surfaceContainerLowest,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: BorderSide(color: theme.colorScheme.outlineVariant),
+                hintStyle: theme.textTheme.bodyLarge?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.62),
                 ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: BorderSide(color: theme.colorScheme.outlineVariant),
+                filled: false,
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                disabledBorder: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: _prefixFor(widget.block, theme) == null ? 0 : 4,
+                  vertical: 4,
                 ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: BorderSide(color: theme.colorScheme.primary, width: 1.4),
-                ),
-                contentPadding: const EdgeInsets.all(14),
               ),
             ),
           ],
@@ -646,13 +657,13 @@ class _BlockTypeToolbar extends StatelessWidget {
         ),
         _MiniIconBlockButton(
           icon: Icons.format_list_bulleted_rounded,
-          tooltip: 'Bullet list item',
+          tooltip: 'Bullet list',
           selected: block.type == TextSystemBlockType.listItem && block.metadata['ordered'] != true,
           onPressed: onBullet,
         ),
         _MiniIconBlockButton(
           icon: Icons.format_list_numbered_rounded,
-          tooltip: 'Numbered list item',
+          tooltip: 'Numbered list',
           selected: block.type == TextSystemBlockType.listItem && block.metadata['ordered'] == true,
           onPressed: onNumbered,
         ),
@@ -670,17 +681,17 @@ class _BlockTypeToolbar extends StatelessWidget {
         ),
         const SizedBox(width: 4),
         IconButton.filledTonal(
-          tooltip: 'Move up',
+          tooltip: 'Move paragraph up',
           onPressed: onMoveUp,
           icon: const Icon(Icons.keyboard_arrow_up_rounded),
         ),
         IconButton.filledTonal(
-          tooltip: 'Move down',
+          tooltip: 'Move paragraph down',
           onPressed: onMoveDown,
           icon: const Icon(Icons.keyboard_arrow_down_rounded),
         ),
         IconButton.filledTonal(
-          tooltip: 'Remove block',
+          tooltip: 'Delete paragraph',
           onPressed: onRemove,
           icon: const Icon(Icons.delete_outline_rounded),
         ),
@@ -733,6 +744,63 @@ class _MiniIconBlockButton extends StatelessWidget {
   }
 }
 
+
+class _DocumentSaveStatus extends StatelessWidget {
+  const _DocumentSaveStatus({
+    required this.textController,
+    required this.autosaveController,
+  });
+
+  final TextSystemController textController;
+  final TextSystemAutosaveController? autosaveController;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final saveState = autosaveController?.saveState;
+    final status = saveState?.status;
+    final label = _label(saveState);
+    final color = switch (status) {
+      TextSystemSaveStatus.dirty => theme.colorScheme.tertiary,
+      TextSystemSaveStatus.saving => theme.colorScheme.primary,
+      TextSystemSaveStatus.saved => theme.colorScheme.primary,
+      TextSystemSaveStatus.failed => theme.colorScheme.error,
+      TextSystemSaveStatus.clean || null => theme.colorScheme.onSurfaceVariant,
+    };
+    final icon = switch (status) {
+      TextSystemSaveStatus.dirty => Icons.circle_rounded,
+      TextSystemSaveStatus.saving => Icons.sync_rounded,
+      TextSystemSaveStatus.saved => Icons.check_circle_rounded,
+      TextSystemSaveStatus.failed => Icons.error_rounded,
+      TextSystemSaveStatus.clean || null => Icons.check_rounded,
+    };
+
+    return DefaultTextStyle.merge(
+      style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+      child: Row(
+        children: [
+          Icon(icon, size: 15, color: color),
+          const SizedBox(width: 6),
+          Expanded(child: Text(label, overflow: TextOverflow.ellipsis)),
+          const SizedBox(width: 12),
+          Text('Revision ${textController.revision}'),
+        ],
+      ),
+    );
+  }
+
+  static String _label(TextSystemSaveState? saveState) {
+    if (saveState == null) return 'Local editing';
+    return switch (saveState.status) {
+      TextSystemSaveStatus.clean => saveState.message ?? 'No changes yet',
+      TextSystemSaveStatus.dirty => saveState.message ?? 'Unsaved changes',
+      TextSystemSaveStatus.saving => 'Saving…',
+      TextSystemSaveStatus.saved => saveState.message ?? 'Saved',
+      TextSystemSaveStatus.failed => saveState.message ?? 'Save failed',
+    };
+  }
+}
+
 class _EmptyDocumentCard extends StatelessWidget {
   const _EmptyDocumentCard({required this.onAddParagraph});
 
@@ -752,12 +820,12 @@ class _EmptyDocumentCard extends StatelessWidget {
         children: [
           const Icon(Icons.article_outlined),
           const SizedBox(height: 8),
-          Text('No blocks yet.', style: theme.textTheme.titleSmall),
+          Text('Nothing written yet.', style: theme.textTheme.titleSmall),
           const SizedBox(height: 8),
           FilledButton.tonalIcon(
             onPressed: onAddParagraph,
             icon: const Icon(Icons.add_rounded),
-            label: const Text('Add first paragraph'),
+            label: const Text('Start writing'),
           ),
         ],
       ),
@@ -768,12 +836,12 @@ class _EmptyDocumentCard extends StatelessWidget {
 String _blockTypeLabel(TextSystemBlockType type) {
   return switch (type) {
     TextSystemBlockType.heading => 'Heading',
-    TextSystemBlockType.listItem => 'List item',
+    TextSystemBlockType.listItem => 'List',
     TextSystemBlockType.todo => 'Todo',
     TextSystemBlockType.quote => 'Quote',
     TextSystemBlockType.code => 'Code',
     TextSystemBlockType.divider => 'Divider',
-    TextSystemBlockType.custom => 'Custom block',
+    TextSystemBlockType.custom => 'Custom',
     TextSystemBlockType.paragraph => 'Paragraph',
   };
 }
