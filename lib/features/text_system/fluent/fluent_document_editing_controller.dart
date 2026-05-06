@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../core/text_system_document.dart';
+import '../core/text_system_document_position.dart';
+import '../core/text_system_document_range.dart';
 import 'fluent_document_buffer.dart';
 import 'fluent_document_buffer_mapper.dart';
 import 'fluent_document_text_styler.dart';
@@ -57,6 +59,24 @@ class FluentDocumentEditingController extends TextEditingController {
 
   void acceptDocumentFromCurrentBuffer(TextSystemDocument document) {
     _buffer = FluentDocumentBufferMapper.fromDocument(document);
+  }
+
+  TextSystemDocumentRange? documentRangeForSelection([TextSelection? selectionOverride]) {
+    final effectiveSelection = selectionOverride ?? selection;
+    if (!effectiveSelection.isValid || effectiveSelection.isCollapsed) return null;
+    return FluentDocumentBufferMapper.rangeFromBufferSelection(
+      _buffer,
+      effectiveSelection.start,
+      effectiveSelection.end,
+    );
+  }
+
+  TextSystemDocumentPosition documentPositionForBufferOffset(int offset) {
+    return FluentDocumentBufferMapper.positionForBufferOffset(_buffer, offset);
+  }
+
+  int bufferOffsetForDocumentPosition(TextSystemDocumentPosition position) {
+    return _buffer.offsetForPosition(position);
   }
 
   @override

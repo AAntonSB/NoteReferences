@@ -16,6 +16,7 @@ import 'text_system_document_selection_lab_screen.dart';
 import 'text_system_structured_clipboard_lab_screen.dart';
 import 'text_system_phase8_acceptance_lab_screen.dart';
 import 'text_system_fluent_document_surface_lab_screen.dart';
+import 'text_system_phase9_diagnostics_lab_screen.dart';
 
 class TextSystemTestEnvScreen extends StatefulWidget {
   const TextSystemTestEnvScreen({super.key});
@@ -125,6 +126,13 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
   Future<void> _openFluentDocumentSurfaceLab() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => const TextSystemFluentDocumentSurfaceLabScreen()),
+    );
+  }
+
+
+  Future<void> _openPhase9DiagnosticsLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemPhase9DiagnosticsLabScreen()),
     );
   }
 
@@ -309,9 +317,18 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
                 icon: Icons.article_rounded,
                 title: 'Fluent document surface lab',
                 description:
-                    'Phase 9B styled continuous editor: one editable Flutter text surface with rich heading/list/inline styling and structured mapping underneath.',
-                actionLabel: 'Open 9B lab',
+                    'Phase 9A–9E fluent editor lab: continuous editing, styling, selection formatting, copy/paste, and natural editing rules.',
+                actionLabel: 'Open 9E lab',
                 onPressed: _openFluentDocumentSurfaceLab,
+              ),
+
+              _TestSurfaceCard(
+                icon: Icons.health_and_safety_rounded,
+                title: 'Phase 9 diagnostics lab',
+                description:
+                    'Phase 9F diagnostic tool: validates the fluent editor, checks model integrity, and copies a shareable report for debugging together.',
+                actionLabel: 'Open 9F lab',
+                onPressed: _openPhase9DiagnosticsLab,
               ),
               const _TestSurfaceCard(
                 icon: Icons.article_outlined,

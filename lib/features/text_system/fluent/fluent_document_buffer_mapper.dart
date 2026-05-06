@@ -1,5 +1,7 @@
 import '../core/text_mark.dart';
 import '../core/text_system_block.dart';
+import '../core/text_system_document_position.dart';
+import '../core/text_system_document_range.dart';
 import '../core/text_system_document.dart';
 import 'fluent_buffer_segment.dart';
 import 'fluent_document_buffer.dart';
@@ -97,6 +99,47 @@ class FluentDocumentBufferMapper {
       blocks: blocks,
       updatedAt: DateTime.now(),
     );
+  }
+
+  static TextSystemDocumentRange rangeFromBufferSelection(
+    FluentDocumentBuffer buffer,
+    int start,
+    int end,
+  ) {
+    final safeStart = start.clamp(0, buffer.text.length).toInt();
+    final safeEnd = end.clamp(0, buffer.text.length).toInt();
+    final normalizedStart = safeStart <= safeEnd ? safeStart : safeEnd;
+    final normalizedEnd = safeStart <= safeEnd ? safeEnd : safeStart;
+
+    return TextSystemDocumentRange(
+      start: positionForBufferOffset(buffer, normalizedStart),
+      end: positionForBufferOffset(buffer, normalizedEnd),
+    );
+  }
+
+  static TextSystemDocumentPosition positionForBufferOffset(
+    FluentDocumentBuffer buffer,
+    int offset,
+  ) {
+    if (buffer.segments.isEmpty) {
+      return const TextSystemDocumentPosition(blockId: 'document-start', blockIndex: 0, offset: 0);
+    }
+
+    final clamped = offset.clamp(0, buffer.text.length).toInt();
+    for (var i = 0; i < buffer.segments.length; i++) {
+      final segment = buffer.segments[i];
+      final isLast = i == buffer.segments.length - 1;
+      final nextStart = isLast ? buffer.text.length + 1 : buffer.segments[i + 1].bufferStart;
+      if (clamped <= segment.bufferEnd) {
+        return segment.positionForBufferOffset(clamped);
+      }
+      if (clamped < nextStart) {
+        return segment.positionForBufferOffset(segment.bufferEnd);
+      }
+    }
+
+    final last = buffer.segments.last;
+    return last.positionForBufferOffset(last.bufferEnd);
   }
 
   static bool equivalentDocumentShape(TextSystemDocument a, TextSystemDocument b) {

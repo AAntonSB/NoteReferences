@@ -40,11 +40,11 @@ class _TextSystemFluentDocumentSurfaceLabScreenState
   TextSystemDocument _seedDocument() {
     final now = DateTime.now();
     return TextSystemDocument(
-      id: 'phase-9b-fluent-document',
-      title: 'Phase 9B styled fluent document',
+      id: 'phase-9e-fluent-document',
+      title: 'Phase 9E natural editing',
       createdAt: now,
       updatedAt: now,
-      metadata: const <String, Object?>{'phase': '9B'},
+      metadata: const <String, Object?>{'phase': '9E'},
       blocks: <TextSystemBlock>[
         TextSystemBlock(
           id: 'heading-1',
@@ -186,10 +186,10 @@ class _TextSystemFluentDocumentSurfaceLabScreenState
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Phase 9B: styled continuous editing', style: theme.textTheme.titleLarge),
+                        Text('Phase 9E: natural editing rules', style: theme.textTheme.titleLarge),
                         const SizedBox(height: 6),
                         Text(
-                          'The editor remains one continuous text surface, but the buffer now paints headings, list/todo markers, quotes, code, links, highlight, and inline marks. Styling must not break fluent selection.',
+                          'The editor remains one continuous text surface. Use Enter to continue bullets, numbered lists, and todos; press Enter on an empty list/todo row to exit; use Backspace at the marker boundary to turn a list/todo row back into plain text. Copy/paste and formatting still use the same fluent selection.',
                           style: theme.textTheme.bodyMedium,
                         ),
                       ],
@@ -264,7 +264,7 @@ class _EditorCard extends StatelessWidget {
             Text('FluentDocumentSurface', style: theme.textTheme.titleMedium),
             const SizedBox(height: 6),
             Text(
-              'Try selecting across styled headings, paragraphs, list items, todo text, quote text, and code. The document should still behave like one editor, not several rows.',
+              'Try selecting across styled headings, paragraphs, list items, todo text, quote text, and code, then copy/cut/paste using the toolbar or Ctrl/Cmd+C/X/V. Structured internal paste should preserve text shape and marks while staying inside one fluent selection surface.',
               style: theme.textTheme.bodyMedium,
             ),
             const SizedBox(height: 14),
@@ -358,7 +358,10 @@ class _DebugCard extends StatelessWidget {
                 _DebugRow(label: 'Blocks', value: '${textController.document.blocks.length}'),
                 _DebugRow(label: 'Visible buffer length', value: '${controller?.text.length ?? 0}'),
                 _DebugRow(label: 'Selection', value: selectionDescription),
+                _DebugRow(label: 'Document range', value: _documentRangeDescription(controller)),
                 _DebugRow(label: 'Save state', value: autosaveController.saveState.message ?? autosaveController.saveState.status.name),
+                _DebugRow(label: 'Structured clipboard', value: _documentClipboardDescription(textController)),
+                _DebugRow(label: 'Flat rich clipboard', value: _flatClipboardDescription(textController)),
                 const SizedBox(height: 12),
                 Text('Buffer segments', style: theme.textTheme.labelLarge),
                 const SizedBox(height: 8),
@@ -384,6 +387,26 @@ class _DebugCard extends StatelessWidget {
       },
     );
   }
+}
+
+
+String _documentRangeDescription(FluentDocumentEditingController? controller) {
+  if (controller == null) return 'not attached yet';
+  final range = controller.documentRangeForSelection();
+  if (range == null || range.isCollapsed) return 'collapsed or no selected text';
+  return TextSystemDocumentSelectionMapper.describeRange(controller.document, range);
+}
+
+String _documentClipboardDescription(TextSystemController controller) {
+  final clipboard = controller.internalDocumentClipboard;
+  if (clipboard == null || clipboard.isEmpty) return 'empty';
+  return '${clipboard.blockCount} text units, ${clipboard.markCount} marks, ${clipboard.plainText.length} chars';
+}
+
+String _flatClipboardDescription(TextSystemController controller) {
+  final clipboard = controller.internalClipboard;
+  if (clipboard == null || clipboard.isEmpty) return 'empty';
+  return '${clipboard.text.length} chars, ${clipboard.marks.length} marks';
 }
 
 class _DebugRow extends StatelessWidget {

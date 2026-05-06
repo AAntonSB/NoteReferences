@@ -19,6 +19,30 @@ class TextSystemDocumentFragment {
     return const TextSystemDocumentFragment(blocks: <TextSystemBlock>[]);
   }
 
+  factory TextSystemDocumentFragment.fromPlainText(
+    String text, {
+    String idPrefix = 'plain-text',
+  }) {
+    if (text.isEmpty) return TextSystemDocumentFragment.empty();
+
+    final normalized = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    final lines = normalized.split('\n');
+    final seed = DateTime.now().microsecondsSinceEpoch;
+
+    return TextSystemDocumentFragment(
+      blocks: <TextSystemBlock>[
+        for (var i = 0; i < lines.length; i++)
+          TextSystemBlock.paragraph(
+            id: '$idPrefix-$seed-$i',
+            text: lines[i],
+          ),
+      ],
+      metadata: const <String, Object?>{
+        'source': 'plainText',
+      },
+    );
+  }
+
   factory TextSystemDocumentFragment.fromJson(Map<String, Object?> json) {
     return TextSystemDocumentFragment(
       blocks: (json['blocks'] as List? ?? const <Object?>[])

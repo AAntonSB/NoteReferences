@@ -4,6 +4,7 @@ import 'text_clipboard_fragment.dart';
 import 'text_system_document_fragment.dart';
 import 'text_system_document_fragment_edit.dart';
 import 'text_system_document_fragment_ops.dart';
+import 'text_system_document_mark_ops.dart';
 import 'text_system_document_position.dart';
 import 'text_system_document_range.dart';
 import 'text_system_document_selection_mapper.dart';
@@ -141,6 +142,31 @@ class TextSystemController extends ChangeNotifier {
           type: TextOperationType.toggleMark,
           blockId: blockId,
           range: safeRange,
+          markKind: kind,
+        ),
+      ],
+      origin: TextTransactionOrigin.user,
+    );
+  }
+
+
+  void toggleMarkForDocumentRange(TextSystemDocumentRange range, TextMarkKind kind) {
+    final normalized = range.normalized();
+    if (normalized.isCollapsed) return;
+
+    final nextDocument = TextSystemDocumentMarkOps.toggleMark(
+      document: _document,
+      range: normalized,
+      kind: kind,
+    );
+
+    _commit(
+      after: nextDocument,
+      label: 'Toggle ${kind.name} in selection',
+      operations: <TextOperation>[
+        TextOperation(
+          type: TextOperationType.toggleDocumentMark,
+          documentRange: normalized,
           markKind: kind,
         ),
       ],

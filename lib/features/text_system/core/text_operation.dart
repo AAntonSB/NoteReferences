@@ -7,6 +7,7 @@ import 'text_system_range.dart';
 enum TextOperationType {
   replaceBlockText,
   toggleMark,
+  toggleDocumentMark,
   insertFragment,
   insertDocumentFragment,
   replaceDocument,
