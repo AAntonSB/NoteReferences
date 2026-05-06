@@ -10,6 +10,8 @@ export 'core/text_system_block.dart';
 export 'core/text_system_controller.dart';
 export 'core/text_system_document.dart';
 export 'core/text_system_document_fragment.dart';
+export 'core/text_system_document_fragment_edit.dart';
+export 'core/text_system_document_fragment_ops.dart';
 export 'core/text_system_document_position.dart';
 export 'core/text_system_document_range.dart';
 export 'core/text_system_document_selection_mapper.dart';

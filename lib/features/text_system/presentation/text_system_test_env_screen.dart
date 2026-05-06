@@ -13,6 +13,7 @@ import 'text_system_command_shortcut_lab_screen.dart';
 import 'text_system_fluent_text_polish_lab_screen.dart';
 import 'text_system_natural_keyboard_lab_screen.dart';
 import 'text_system_document_selection_lab_screen.dart';
+import 'text_system_structured_clipboard_lab_screen.dart';
 
 class TextSystemTestEnvScreen extends StatefulWidget {
   const TextSystemTestEnvScreen({super.key});
@@ -109,6 +110,12 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
   Future<void> _openDocumentSelectionLab() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => const TextSystemDocumentSelectionLabScreen()),
+    );
+  }
+
+  Future<void> _openStructuredClipboardLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemStructuredClipboardLabScreen()),
     );
   }
 
@@ -266,6 +273,14 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
                     'Phase 8C document-level selection foundation: maps fluent text offsets to internal text units and extracts structured cross-paragraph fragments.',
                 actionLabel: 'Open 8C lab',
                 onPressed: _openDocumentSelectionLab,
+              ),
+              _TestSurfaceCard(
+                icon: Icons.content_paste_go_rounded,
+                title: 'Structured copy/paste lab',
+                description:
+                    'Phase 8D cross-paragraph copy/paste foundation: stores structured document fragments and inserts them back through fluent document offsets.',
+                actionLabel: 'Open 8D lab',
+                onPressed: _openStructuredClipboardLab,
               ),
               const _TestSurfaceCard(
                 icon: Icons.article_outlined,

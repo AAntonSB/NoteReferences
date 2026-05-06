@@ -2,6 +2,9 @@ import 'package:flutter/foundation.dart';
 
 import 'text_clipboard_fragment.dart';
 import 'text_system_document_fragment.dart';
+import 'text_system_document_fragment_edit.dart';
+import 'text_system_document_fragment_ops.dart';
+import 'text_system_document_position.dart';
 import 'text_system_document_range.dart';
 import 'text_system_document_selection_mapper.dart';
 import 'text_mark.dart';
@@ -143,6 +146,58 @@ class TextSystemController extends ChangeNotifier {
       ],
       origin: TextTransactionOrigin.user,
     );
+  }
+
+
+  TextSystemDocumentFragment copyDocumentFragmentByOffsets(int start, int end) {
+    final range = TextSystemDocumentSelectionMapper.rangeFromOffsets(_document, start, end);
+    return copyDocumentFragment(range);
+  }
+
+  TextSystemDocumentFragmentEditResult replaceDocumentRangeWithFragment(
+    TextSystemDocumentRange range,
+    TextSystemDocumentFragment fragment, {
+    String label = 'Paste structured text',
+  }) {
+    final result = TextSystemDocumentFragmentOps.replaceRangeWithFragment(
+      document: _document,
+      range: range,
+      fragment: fragment,
+      idPrefix: 'paste-${_revision + 1}',
+    );
+
+    _commit(
+      after: result.document,
+      label: label,
+      operations: <TextOperation>[
+        TextOperation(
+          type: TextOperationType.insertDocumentFragment,
+          documentRange: range.normalized(),
+          documentFragment: fragment,
+        ),
+      ],
+      origin: TextTransactionOrigin.paste,
+    );
+    return result;
+  }
+
+  TextSystemDocumentFragmentEditResult pasteDocumentClipboardAtRange(TextSystemDocumentRange range) {
+    final fragment = _internalDocumentClipboard;
+    if (fragment == null || fragment.isEmpty) {
+      final collapsed = range.normalized();
+      return TextSystemDocumentFragmentEditResult(
+        document: _document,
+        replacementRange: collapsed,
+        insertedRange: collapsed,
+        affectedBlockIds: const <String>[],
+        insertedPlainText: '',
+      );
+    }
+    return replaceDocumentRangeWithFragment(range, fragment);
+  }
+
+  TextSystemDocumentFragmentEditResult pasteDocumentClipboardAtPosition(TextSystemDocumentPosition position) {
+    return pasteDocumentClipboardAtRange(TextSystemDocumentRange.collapsed(position));
   }
 
   TextSystemDocumentFragment copyDocumentFragment(TextSystemDocumentRange range) {

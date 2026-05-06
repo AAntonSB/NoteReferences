@@ -1,4 +1,6 @@
 import 'text_clipboard_fragment.dart';
+import 'text_system_document_fragment.dart';
+import 'text_system_document_range.dart';
 import 'text_mark.dart';
 import 'text_system_range.dart';
 
@@ -6,6 +8,7 @@ enum TextOperationType {
   replaceBlockText,
   toggleMark,
   insertFragment,
+  insertDocumentFragment,
   replaceDocument,
 }
 
@@ -36,11 +39,15 @@ class TextOperation {
     this.text,
     this.markKind,
     this.fragment,
+    this.documentRange,
+    this.documentFragment,
   });
 
   factory TextOperation.fromJson(Map<String, Object?> json) {
     final rangeJson = json['range'];
     final fragmentJson = json['fragment'];
+    final documentRangeJson = json['documentRange'];
+    final documentFragmentJson = json['documentFragment'];
     return TextOperation(
       type: _textOperationTypeFromName(json['type'] as String?),
       blockId: json['blockId'] as String?,
@@ -52,6 +59,12 @@ class TextOperation {
       fragment: fragmentJson is Map
           ? TextClipboardFragment.fromJson(Map<String, Object?>.from(fragmentJson))
           : null,
+      documentRange: documentRangeJson is Map
+          ? TextSystemDocumentRange.fromJson(Map<String, Object?>.from(documentRangeJson))
+          : null,
+      documentFragment: documentFragmentJson is Map
+          ? TextSystemDocumentFragment.fromJson(Map<String, Object?>.from(documentFragmentJson))
+          : null,
     );
   }
 
@@ -61,6 +74,8 @@ class TextOperation {
   final String? text;
   final TextMarkKind? markKind;
   final TextClipboardFragment? fragment;
+  final TextSystemDocumentRange? documentRange;
+  final TextSystemDocumentFragment? documentFragment;
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
@@ -70,6 +85,8 @@ class TextOperation {
       if (text != null) 'text': text,
       if (markKind != null) 'markKind': markKind!.name,
       if (fragment != null) 'fragment': fragment!.toJson(),
+      if (documentRange != null) 'documentRange': documentRange!.toJson(),
+      if (documentFragment != null) 'documentFragment': documentFragment!.toJson(),
     };
   }
 }
