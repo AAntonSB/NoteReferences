@@ -14,6 +14,8 @@ import 'text_system_fluent_text_polish_lab_screen.dart';
 import 'text_system_natural_keyboard_lab_screen.dart';
 import 'text_system_document_selection_lab_screen.dart';
 import 'text_system_structured_clipboard_lab_screen.dart';
+import 'text_system_phase8_acceptance_lab_screen.dart';
+import 'text_system_fluent_document_surface_lab_screen.dart';
 
 class TextSystemTestEnvScreen extends StatefulWidget {
   const TextSystemTestEnvScreen({super.key});
@@ -116,6 +118,19 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
   Future<void> _openStructuredClipboardLab() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => const TextSystemStructuredClipboardLabScreen()),
+    );
+  }
+
+
+  Future<void> _openFluentDocumentSurfaceLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemFluentDocumentSurfaceLabScreen()),
+    );
+  }
+
+  Future<void> _openPhase8AcceptanceLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemPhase8AcceptanceLabScreen()),
     );
   }
 
@@ -282,6 +297,22 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
                 actionLabel: 'Open 8D lab',
                 onPressed: _openStructuredClipboardLab,
               ),
+              _TestSurfaceCard(
+                icon: Icons.verified_rounded,
+                title: 'Phase 8 acceptance lab',
+                description:
+                    'Phase 8E final pass: validates fluent-text foundations, rich preservation, persistence safety, structured copy/paste, and the no-block-management UX rule.',
+                actionLabel: 'Open 8E lab',
+                onPressed: _openPhase8AcceptanceLab,
+              ),
+              _TestSurfaceCard(
+                icon: Icons.article_rounded,
+                title: 'Fluent document surface lab',
+                description:
+                    'Phase 9B styled continuous editor: one editable Flutter text surface with rich heading/list/inline styling and structured mapping underneath.',
+                actionLabel: 'Open 9B lab',
+                onPressed: _openFluentDocumentSurfaceLab,
+              ),
               const _TestSurfaceCard(
                 icon: Icons.article_outlined,
                 title: 'Premium writer surface',
@@ -426,7 +457,6 @@ class _PhaseRoadmapCard extends StatelessWidget {
             const _CheckpointRow(
               label: 'Phase 7',
               value: 'Basic text surfaces',
-              active: true,
             ),
             const _CheckpointRow(
               label: 'Phase 8',
@@ -434,7 +464,8 @@ class _PhaseRoadmapCard extends StatelessWidget {
             ),
             const _CheckpointRow(
               label: 'Phase 9',
-              value: 'Commands and custom shortcuts',
+              value: 'Fluent document surface + styled continuous editing',
+              active: true,
             ),
             const _CheckpointRow(
               label: 'Phase 10',

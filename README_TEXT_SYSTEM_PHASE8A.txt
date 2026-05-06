@@ -1,6 +1,6 @@
 # Text System Phase 8A — Fluent Text Surface Polish
 
-Phase 8A starts the UX polish phase for the light/common text system.
+Phase 8A starts the UX polish phase for the light/common text system. 
 
 The guiding rule is:
 
