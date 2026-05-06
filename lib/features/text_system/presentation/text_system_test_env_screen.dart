@@ -11,6 +11,7 @@ import 'text_system_simple_note_surface_lab_screen.dart';
 import 'text_system_document_surface_lab_screen.dart';
 import 'text_system_command_shortcut_lab_screen.dart';
 import 'text_system_fluent_text_polish_lab_screen.dart';
+import 'text_system_natural_keyboard_lab_screen.dart';
 
 class TextSystemTestEnvScreen extends StatefulWidget {
   const TextSystemTestEnvScreen({super.key});
@@ -95,6 +96,12 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
   Future<void> _openFluentTextPolishLab() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => const TextSystemFluentTextPolishLabScreen()),
+    );
+  }
+
+  Future<void> _openNaturalKeyboardLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemNaturalKeyboardLabScreen()),
     );
   }
 
@@ -236,6 +243,14 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
                     'Phase 8A text-first UX polish: quieter frames, calmer input chrome, clear save state, and document text that does not feel like visible block management.',
                 actionLabel: 'Open 8A lab',
                 onPressed: _openFluentTextPolishLab,
+              ),
+              _TestSurfaceCard(
+                icon: Icons.keyboard_return_rounded,
+                title: 'Natural keyboard lab',
+                description:
+                    'Phase 8B text-first keyboard behavior: Enter and Backspace create natural paragraph/list transitions while structure stays internal.',
+                actionLabel: 'Open 8B lab',
+                onPressed: _openNaturalKeyboardLab,
               ),
               const _TestSurfaceCard(
                 icon: Icons.article_outlined,

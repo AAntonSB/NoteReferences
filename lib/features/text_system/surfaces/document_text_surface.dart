@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../commands/text_system_command_registry.dart';
 import '../commands/text_system_default_commands.dart';
+import '../core/text_mark.dart';
 import '../core/text_system_block.dart';
 import '../core/text_system_controller.dart';
 import '../core/text_system_document.dart';
+import '../core/text_system_range.dart';
 import '../persistence/text_system_autosave_controller.dart';
 import '../persistence/text_system_save_state.dart';
 import 'text_system_editable_surface_frame.dart';
@@ -50,6 +53,10 @@ class DocumentTextSurface extends StatefulWidget {
 class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
   late final TextEditingController _titleController;
   late final FocusNode _titleFocusNode;
+
+  String? _pendingFocusBlockId;
+  int _pendingFocusOffset = 0;
+  int _focusRequestVersion = 0;
 
   TextSystemSurfaceConfig get _config => widget.config ??
       TextSystemSurfaceConfig.simpleDocument(
@@ -106,6 +113,111 @@ class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
       document.copyWith(blocks: <TextSystemBlock>[...document.blocks, block]),
       label: 'Add ${_blockTypeLabel(type).toLowerCase()}',
     );
+  }
+
+
+  void _requestFocus(String blockId, int offset) {
+    setState(() {
+      _pendingFocusBlockId = blockId;
+      _pendingFocusOffset = offset;
+      _focusRequestVersion += 1;
+    });
+  }
+
+  bool _handleNaturalEnter(String blockId, TextSelection selection) {
+    final document = widget.textController.document;
+    final index = document.blocks.indexWhere((block) => block.id == blockId);
+    if (index < 0 || !selection.isValid) return false;
+
+    final block = document.blocks[index];
+    final textLength = block.text.length;
+    final start = selection.start.clamp(0, textLength).toInt();
+    final end = selection.end.clamp(0, textLength).toInt();
+    final rangeStart = start <= end ? start : end;
+    final rangeEnd = start <= end ? end : start;
+
+    if (block.text.trim().isEmpty && _exitsToParagraphOnEmptyEnter(block)) {
+      final updated = _convertedBlock(block, TextSystemBlockType.paragraph);
+      final blocks = <TextSystemBlock>[
+        for (final existing in document.blocks) existing.id == block.id ? updated : existing,
+      ];
+      widget.textController.replaceDocument(
+        document.copyWith(blocks: _renumberOrderedListBlocks(blocks)),
+        label: 'Exit ${_blockTypeLabel(block.type).toLowerCase()}',
+      );
+      _requestFocus(block.id, 0);
+      return true;
+    }
+
+    final beforeText = block.text.substring(0, rangeStart);
+    final afterText = block.text.substring(rangeEnd);
+    final nextBlock = _continuationBlockFor(
+      block,
+      text: afterText,
+      marks: _marksAfter(block.marks, rangeEnd),
+    );
+    final updatedBlock = block.copyWith(
+      text: beforeText,
+      marks: _marksBefore(block.marks, rangeStart),
+    ).normalizeMarks();
+
+    final blocks = <TextSystemBlock>[
+      ...document.blocks.take(index),
+      updatedBlock,
+      nextBlock,
+      ...document.blocks.skip(index + 1),
+    ];
+    widget.textController.replaceDocument(
+      document.copyWith(blocks: _renumberOrderedListBlocks(blocks)),
+      label: 'Insert paragraph break',
+    );
+    _requestFocus(nextBlock.id, 0);
+    return true;
+  }
+
+  bool _handleBackspaceAtStart(String blockId, TextSelection selection) {
+    final document = widget.textController.document;
+    final index = document.blocks.indexWhere((block) => block.id == blockId);
+    if (index < 0 || !selection.isValid || !selection.isCollapsed || selection.start != 0) {
+      return false;
+    }
+
+    final block = document.blocks[index];
+    if (_exitsToParagraphOnBackspace(block)) {
+      final updated = _convertedBlock(block, TextSystemBlockType.paragraph);
+      final blocks = <TextSystemBlock>[
+        for (final existing in document.blocks) existing.id == block.id ? updated : existing,
+      ];
+      widget.textController.replaceDocument(
+        document.copyWith(blocks: _renumberOrderedListBlocks(blocks)),
+        label: 'Apply paragraph style',
+      );
+      _requestFocus(block.id, 0);
+      return true;
+    }
+
+    if (index == 0) return false;
+
+    final previous = document.blocks[index - 1];
+    final mergeOffset = previous.text.length;
+    final merged = previous.copyWith(
+      text: previous.text + block.text,
+      marks: <TextMark>[
+        ...previous.marks,
+        ..._shiftMarks(block.marks, mergeOffset),
+      ],
+    ).normalizeMarks();
+    final blocks = <TextSystemBlock>[
+      ...document.blocks.take(index - 1),
+      merged,
+      ...document.blocks.skip(index + 1),
+    ];
+    widget.textController.replaceDocument(
+      document.copyWith(blocks: _renumberOrderedListBlocks(blocks)),
+      label: 'Merge paragraphs',
+    );
+    _requestFocus(previous.id, mergeOffset);
+    return true;
   }
 
   void _convertBlock(String blockId, TextSystemBlockType type, {int? level}) {
@@ -312,6 +424,11 @@ class _DocumentTextSurfaceState extends State<DocumentTextSurface> {
                         showBlockToolbar: widget.showBlockToolbars,
                         showStatusBar: false,
                         maxLines: widget.maxBlockLines,
+                        requestedFocusBlockId: _pendingFocusBlockId,
+                        requestedFocusOffset: _pendingFocusOffset,
+                        focusRequestVersion: _focusRequestVersion,
+                        onNaturalEnter: (selection) => _handleNaturalEnter(block.id, selection),
+                        onBackspaceAtStart: (selection) => _handleBackspaceAtStart(block.id, selection),
                         onParagraph: () => _convertBlock(block.id, TextSystemBlockType.paragraph),
                         onHeading1: () => _convertBlock(block.id, TextSystemBlockType.heading, level: 1),
                         onHeading2: () => _convertBlock(block.id, TextSystemBlockType.heading, level: 2),
@@ -405,6 +522,11 @@ class _DocumentBlockEditor extends StatefulWidget {
     required this.showBlockToolbar,
     required this.showStatusBar,
     required this.maxLines,
+    required this.requestedFocusBlockId,
+    required this.requestedFocusOffset,
+    required this.focusRequestVersion,
+    required this.onNaturalEnter,
+    required this.onBackspaceAtStart,
     required this.onParagraph,
     required this.onHeading1,
     required this.onHeading2,
@@ -427,6 +549,11 @@ class _DocumentBlockEditor extends StatefulWidget {
   final bool showBlockToolbar;
   final bool showStatusBar;
   final int maxLines;
+  final String? requestedFocusBlockId;
+  final int requestedFocusOffset;
+  final int focusRequestVersion;
+  final bool Function(TextSelection selection) onNaturalEnter;
+  final bool Function(TextSelection selection) onBackspaceAtStart;
   final VoidCallback onParagraph;
   final VoidCallback onHeading1;
   final VoidCallback onHeading2;
@@ -451,6 +578,7 @@ class _DocumentBlockEditorState extends State<_DocumentBlockEditor> {
   void initState() {
     super.initState();
     _createController();
+    _scheduleRequestedFocusIfNeeded();
   }
 
   @override
@@ -462,6 +590,20 @@ class _DocumentBlockEditorState extends State<_DocumentBlockEditor> {
       _surfaceController.dispose();
       _createController();
     }
+    if (oldWidget.focusRequestVersion != widget.focusRequestVersion ||
+        oldWidget.requestedFocusBlockId != widget.requestedFocusBlockId) {
+      _scheduleRequestedFocusIfNeeded();
+    }
+  }
+
+  void _scheduleRequestedFocusIfNeeded() {
+    if (widget.requestedFocusBlockId != widget.block.id) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final offset = widget.requestedFocusOffset.clamp(0, _surfaceController.editingController.text.length).toInt();
+      _surfaceController.requestFocus();
+      _surfaceController.editingController.selection = TextSelection.collapsed(offset: offset);
+    });
   }
 
   @override
@@ -514,31 +656,51 @@ class _DocumentBlockEditorState extends State<_DocumentBlockEditor> {
               ),
               const SizedBox(height: 10),
             ],
-            TextField(
-              controller: controller.editingController,
-              focusNode: controller.focusNode,
-              enabled: widget.enabled,
-              readOnly: controller.isReadOnly || !widget.enabled,
-              minLines: _minLinesFor(widget.block),
-              maxLines: widget.maxLines,
-              keyboardType: TextInputType.multiline,
-              textInputAction: TextInputAction.newline,
-              textCapitalization: TextCapitalization.sentences,
-              style: _textStyleFor(theme, widget.block),
-              decoration: InputDecoration(
-                prefixIcon: _prefixFor(widget.block, theme),
-                hintText: widget.placeholder,
-                hintStyle: theme.textTheme.bodyLarge?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.62),
-                ),
-                filled: false,
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                disabledBorder: InputBorder.none,
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: _prefixFor(widget.block, theme) == null ? 0 : 4,
-                  vertical: 4,
+            Focus(
+              onKeyEvent: (node, event) {
+                if (event is! KeyDownEvent) return KeyEventResult.ignored;
+                if (event.logicalKey == LogicalKeyboardKey.backspace &&
+                    widget.onBackspaceAtStart(controller.editingController.selection)) {
+                  return KeyEventResult.handled;
+                }
+                return KeyEventResult.ignored;
+              },
+              child: CallbackShortcuts(
+                bindings: <ShortcutActivator, VoidCallback>{
+                  const SingleActivator(LogicalKeyboardKey.enter): () {
+                    widget.onNaturalEnter(controller.editingController.selection);
+                  },
+                  const SingleActivator(LogicalKeyboardKey.numpadEnter): () {
+                    widget.onNaturalEnter(controller.editingController.selection);
+                  },
+                },
+                child: TextField(
+                  controller: controller.editingController,
+                  focusNode: controller.focusNode,
+                  enabled: widget.enabled,
+                  readOnly: controller.isReadOnly || !widget.enabled,
+                  minLines: _minLinesFor(widget.block),
+                  maxLines: widget.maxLines,
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: TextInputAction.newline,
+                  textCapitalization: TextCapitalization.sentences,
+                  style: _textStyleFor(theme, widget.block),
+                  decoration: InputDecoration(
+                    prefixIcon: _prefixFor(widget.block, theme),
+                    hintText: widget.placeholder,
+                    hintStyle: theme.textTheme.bodyLarge?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.62),
+                    ),
+                    filled: false,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: _prefixFor(widget.block, theme) == null ? 0 : 4,
+                      vertical: 4,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -831,6 +993,84 @@ class _EmptyDocumentCard extends StatelessWidget {
       ),
     );
   }
+}
+
+
+bool _exitsToParagraphOnEmptyEnter(TextSystemBlock block) {
+  return block.type == TextSystemBlockType.listItem ||
+      block.type == TextSystemBlockType.todo ||
+      block.type == TextSystemBlockType.quote;
+}
+
+bool _exitsToParagraphOnBackspace(TextSystemBlock block) {
+  return block.type == TextSystemBlockType.listItem ||
+      block.type == TextSystemBlockType.todo ||
+      block.type == TextSystemBlockType.quote;
+}
+
+TextSystemBlock _continuationBlockFor(
+  TextSystemBlock source, {
+  required String text,
+  required List<TextMark> marks,
+}) {
+  final id = 'doc-paragraph-${DateTime.now().microsecondsSinceEpoch}';
+  return switch (source.type) {
+    TextSystemBlockType.heading => TextSystemBlock.paragraph(id: id, text: text, marks: marks),
+    TextSystemBlockType.listItem => TextSystemBlock(
+        id: id,
+        type: TextSystemBlockType.listItem,
+        text: text,
+        marks: marks,
+        metadata: <String, Object?>{'ordered': source.metadata['ordered'] == true},
+      ),
+    TextSystemBlockType.todo => TextSystemBlock(
+        id: id,
+        type: TextSystemBlockType.todo,
+        text: text,
+        marks: marks,
+        checked: false,
+      ),
+    TextSystemBlockType.quote => TextSystemBlock(
+        id: id,
+        type: TextSystemBlockType.quote,
+        text: text,
+        marks: marks,
+      ),
+    _ => TextSystemBlock.paragraph(id: id, text: text, marks: marks),
+  }.normalizeMarks();
+}
+
+List<TextMark> _marksBefore(List<TextMark> marks, int cutOffset) {
+  final result = <TextMark>[];
+  for (final mark in marks) {
+    if (mark.range.start >= cutOffset) continue;
+    final end = mark.range.end > cutOffset ? cutOffset : mark.range.end;
+    if (end <= mark.range.start) continue;
+    result.add(mark.copyWith(range: TextSystemRange(mark.range.start, end)));
+  }
+  return result;
+}
+
+List<TextMark> _marksAfter(List<TextMark> marks, int cutOffset) {
+  final result = <TextMark>[];
+  for (final mark in marks) {
+    if (mark.range.end <= cutOffset) continue;
+    final start = mark.range.start < cutOffset ? cutOffset : mark.range.start;
+    final shiftedStart = start - cutOffset;
+    final shiftedEnd = mark.range.end - cutOffset;
+    if (shiftedEnd <= shiftedStart) continue;
+    result.add(mark.copyWith(range: TextSystemRange(shiftedStart, shiftedEnd)));
+  }
+  return result;
+}
+
+List<TextMark> _shiftMarks(List<TextMark> marks, int offset) {
+  return <TextMark>[
+    for (final mark in marks)
+      mark.copyWith(
+        range: TextSystemRange(mark.range.start + offset, mark.range.end + offset),
+      ),
+  ];
 }
 
 String _blockTypeLabel(TextSystemBlockType type) {
