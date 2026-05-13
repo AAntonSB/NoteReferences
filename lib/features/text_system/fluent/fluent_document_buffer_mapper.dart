@@ -66,12 +66,27 @@ class FluentDocumentBufferMapper {
   }) {
     final lines = bufferText.split('\n');
     final blocks = <TextSystemBlock>[];
+    final usedPreviousIndices = <int>{};
     var orderedIndex = 1;
     final seed = DateTime.now().microsecondsSinceEpoch;
 
     for (var i = 0; i < lines.length; i++) {
-      final previous = i < previousDocument.blocks.length ? previousDocument.blocks[i] : null;
-      final parsed = _parseVisibleLine(lines[i], previous, orderedIndex);
+      final rawLine = lines[i];
+      final sameIndexPrevious = i < previousDocument.blocks.length ? previousDocument.blocks[i] : null;
+      final textWithoutMarker = _plainTextFromVisibleLine(rawLine);
+      final previous = _bestPreviousBlockForLine(
+        previousDocument: previousDocument,
+        sameIndexPrevious: sameIndexPrevious,
+        lineIndex: i,
+        plainText: textWithoutMarker,
+        usedPreviousIndices: usedPreviousIndices,
+      );
+      if (previous != null) {
+        final previousIndex = previousDocument.blocks.indexWhere((block) => block.id == previous.id);
+        if (previousIndex >= 0) usedPreviousIndices.add(previousIndex);
+      }
+
+      final parsed = _parseVisibleLine(rawLine, previous, orderedIndex);
       if (parsed.ordered) orderedIndex++;
 
       final text = parsed.text;
@@ -100,6 +115,7 @@ class FluentDocumentBufferMapper {
       updatedAt: DateTime.now(),
     );
   }
+
 
   static TextSystemDocumentRange rangeFromBufferSelection(
     FluentDocumentBuffer buffer,
@@ -208,6 +224,13 @@ class FluentDocumentBufferMapper {
       );
     }
 
+    // Blank lines created by pressing Enter after a heading should become normal
+    // paragraphs. Existing headings must not turn following headings into
+    // paragraphs, and new blank lines must not inherit heading style.
+    if (line.trim().isEmpty) {
+      return const _ParsedVisibleLine(type: TextSystemBlockType.paragraph, text: '');
+    }
+
     if (previous != null &&
         previous.type != TextSystemBlockType.listItem &&
         previous.type != TextSystemBlockType.todo) {
@@ -221,6 +244,57 @@ class FluentDocumentBufferMapper {
 
     return _ParsedVisibleLine(type: TextSystemBlockType.paragraph, text: line);
   }
+
+  static TextSystemBlock? _bestPreviousBlockForLine({
+    required TextSystemDocument previousDocument,
+    required TextSystemBlock? sameIndexPrevious,
+    required int lineIndex,
+    required String plainText,
+    required Set<int> usedPreviousIndices,
+  }) {
+    // Prefer exact same-index mapping when the visible text still matches.
+    if (sameIndexPrevious != null && sameIndexPrevious.text == plainText) {
+      return sameIndexPrevious;
+    }
+
+    // If a new blank paragraph was inserted, do not steal the style from a
+    // nearby heading/list item. It should be a normal paragraph.
+    if (plainText.trim().isEmpty) return null;
+
+    // Then preserve structure for shifted lines, especially headings below an
+    // inserted paragraph/newline. Search nearby first so repeated headings do
+    // not jump across the whole document unless necessary.
+    for (final radius in const <int>[1, 2, 3, 5]) {
+      final start = (lineIndex - radius).clamp(0, previousDocument.blocks.length - 1).toInt();
+      final end = (lineIndex + radius).clamp(0, previousDocument.blocks.length - 1).toInt();
+      for (var i = start; i <= end; i++) {
+        if (usedPreviousIndices.contains(i)) continue;
+        final candidate = previousDocument.blocks[i];
+        if (candidate.text == plainText) return candidate;
+      }
+    }
+
+    // If same-index text changed because the user edited the line, preserving
+    // that line's previous style is still correct for non-list/todo structures.
+    if (sameIndexPrevious != null &&
+        sameIndexPrevious.type != TextSystemBlockType.listItem &&
+        sameIndexPrevious.type != TextSystemBlockType.todo) {
+      return sameIndexPrevious;
+    }
+
+    return null;
+  }
+
+  static String _plainTextFromVisibleLine(String line) {
+    final orderedMatch = RegExp(r'^\s*(\d+)[\.)]\s+(.*)$').firstMatch(line);
+    if (orderedMatch != null) return orderedMatch.group(2) ?? '';
+    final bulletMatch = RegExp(r'^\s*(?:[-*•])\s+(.*)$').firstMatch(line);
+    if (bulletMatch != null) return bulletMatch.group(1) ?? '';
+    final todoMatch = RegExp(r'^\s*([☐☑])\s+(.*)$').firstMatch(line);
+    if (todoMatch != null) return todoMatch.group(2) ?? '';
+    return line;
+  }
+
 
   static List<TextMark> _clampMarks(List<TextMark> marks, int textLength) {
     return marks

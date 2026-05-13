@@ -46,3 +46,15 @@ export 'fluent/fluent_document_editing_controller.dart';
 export 'fluent/fluent_document_surface.dart';
 export 'fluent/fluent_document_natural_editing_formatter.dart';
 export 'fluent/fluent_document_text_styler.dart';
+export 'surfaces/text_system_document_surface.dart';
+export 'premium/premium_writer_screen.dart';
+
+export 'export/text_system_export_service.dart';
+export 'page/text_system_page_furniture.dart';
+export 'page/text_system_layout_tree.dart';
+export 'page/text_system_layout_tree_builder.dart';
+export 'styles/text_system_document_style.dart';
+export 'structure/text_system_document_structure.dart';
+export 'export/text_system_export_v2.dart';
+export 'references/text_system_reference_index.dart';
+export 'references/actions/text_system_reference_actions.dart';

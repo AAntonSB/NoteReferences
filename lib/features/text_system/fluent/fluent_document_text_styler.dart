@@ -139,34 +139,44 @@ class FluentDocumentTextStyler {
     TextStyle fallback,
     FluentBufferSegment segment,
   ) {
+    final body = (theme.textTheme.bodyLarge ?? const TextStyle(fontSize: 16))
+        .merge(fallback)
+        .copyWith(color: fallback.color ?? theme.colorScheme.onSurface);
+    final bodySize = body.fontSize ?? 16;
+
     return switch (segment.blockType) {
       TextSystemBlockType.heading => switch (segment.level ?? 2) {
-          1 => (theme.textTheme.headlineMedium ?? fallback.copyWith(fontSize: 28)).copyWith(
+          1 => body.copyWith(
+              fontSize: bodySize * 1.5,
               fontWeight: FontWeight.w800,
-              height: 1.18,
-              letterSpacing: -0.35,
+              height: 1.2,
+              letterSpacing: -0.25,
             ),
-          2 => (theme.textTheme.titleLarge ?? fallback.copyWith(fontSize: 22)).copyWith(
+          2 => body.copyWith(
+              fontSize: bodySize * 1.25,
               fontWeight: FontWeight.w700,
               height: 1.22,
-              letterSpacing: -0.2,
+              letterSpacing: -0.1,
             ),
-          _ => (theme.textTheme.titleMedium ?? fallback.copyWith(fontSize: 18)).copyWith(
+          _ => body.copyWith(
+              fontSize: bodySize * 1.12,
               fontWeight: FontWeight.w700,
               height: 1.25,
             ),
         },
-      TextSystemBlockType.quote => (theme.textTheme.bodyLarge ?? fallback).copyWith(
+      TextSystemBlockType.quote => body.copyWith(
           fontStyle: FontStyle.italic,
-          height: 1.45,
+          height: ((body.height ?? 1.42) + 0.05).clamp(1.25, 1.65).toDouble(),
           color: theme.colorScheme.onSurfaceVariant,
         ),
-      TextSystemBlockType.code => (theme.textTheme.bodyMedium ?? fallback).copyWith(
+      TextSystemBlockType.code => body.copyWith(
           fontFamily: 'monospace',
+          fontFamilyFallback: null,
+          fontSize: bodySize * 0.92,
           height: 1.4,
           backgroundColor: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.65),
         ),
-      _ => (theme.textTheme.bodyLarge ?? fallback).copyWith(height: 1.42),
+      _ => body,
     };
   }
 

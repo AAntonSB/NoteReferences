@@ -49,6 +49,40 @@ class TextSystemDocumentMarkOps {
     return document.copyWith(blocks: nextBlocks, updatedAt: DateTime.now());
   }
 
+  static TextSystemDocument applyMark({
+    required TextSystemDocument document,
+    required TextSystemDocumentRange range,
+    required TextMarkKind kind,
+    Map<String, String> attributes = const <String, String>{},
+  }) {
+    final affected = _affectedLocalRanges(document, range);
+    if (affected.isEmpty) return document;
+
+    final affectedByBlock = <int, TextSystemRange>{
+      for (final entry in affected) entry.blockIndex: entry.range,
+    };
+
+    final nextBlocks = <TextSystemBlock>[];
+    for (var i = 0; i < document.blocks.length; i++) {
+      final block = document.blocks[i];
+      final localRange = affectedByBlock[i];
+      if (localRange == null || localRange.isCollapsed) {
+        nextBlocks.add(block);
+        continue;
+      }
+
+      final nextMarks = _applyAttributedMarkToRange(
+        block.marks,
+        localRange,
+        kind,
+        attributes,
+      );
+      nextBlocks.add(block.copyWith(marks: nextMarks).normalizeMarks());
+    }
+
+    return document.copyWith(blocks: nextBlocks, updatedAt: DateTime.now());
+  }
+
   static List<_AffectedBlockRange> _affectedLocalRanges(
     TextSystemDocument document,
     TextSystemDocumentRange range,
@@ -138,6 +172,32 @@ class TextSystemDocumentMarkOps {
     }
 
     result.add(TextMark(kind: kind, range: merged));
+    return _normalize(result);
+  }
+
+  static List<TextMark> _applyAttributedMarkToRange(
+    List<TextMark> marks,
+    TextSystemRange range,
+    TextMarkKind kind,
+    Map<String, String> attributes,
+  ) {
+    final result = <TextMark>[];
+
+    for (final mark in marks) {
+      if (mark.kind != kind || !mark.range.overlaps(range)) {
+        result.add(mark);
+        continue;
+      }
+
+      if (mark.range.start < range.start) {
+        result.add(mark.copyWith(range: TextSystemRange(mark.range.start, range.start)));
+      }
+      if (mark.range.end > range.end) {
+        result.add(mark.copyWith(range: TextSystemRange(range.end, mark.range.end)));
+      }
+    }
+
+    result.add(TextMark(kind: kind, range: range, attributes: attributes));
     return _normalize(result);
   }
 

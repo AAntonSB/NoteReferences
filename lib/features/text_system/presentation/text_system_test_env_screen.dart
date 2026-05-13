@@ -17,6 +17,8 @@ import 'text_system_structured_clipboard_lab_screen.dart';
 import 'text_system_phase8_acceptance_lab_screen.dart';
 import 'text_system_fluent_document_surface_lab_screen.dart';
 import 'text_system_phase9_diagnostics_lab_screen.dart';
+import 'text_system_document_surface_promotion_lab_screen.dart';
+import 'text_system_premium_writer_lab_screen.dart';
 
 class TextSystemTestEnvScreen extends StatefulWidget {
   const TextSystemTestEnvScreen({super.key});
@@ -26,6 +28,18 @@ class TextSystemTestEnvScreen extends StatefulWidget {
 }
 
 class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
+  Future<void> _openPremiumWriterLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemPremiumWriterLabScreen()),
+    );
+  }
+
+  Future<void> _openDocumentSurfacePromotionLab() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const TextSystemDocumentSurfacePromotionLabScreen()),
+    );
+  }
+
   final TextEditingController _scratchpadController = TextEditingController(
     text: 'Textsys scratchpad\n\nUse this page as the stable test environment for each text-system phase.\n\nPhase 6 starts by separating the reusable text system from any one workflow or screen.',
   );
@@ -141,8 +155,7 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
       MaterialPageRoute(builder: (_) => const TextSystemPhase8AcceptanceLabScreen()),
     );
   }
-
-  @override
+@override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
@@ -323,12 +336,27 @@ class _TextSystemTestEnvScreenState extends State<TextSystemTestEnvScreen> {
               ),
 
               _TestSurfaceCard(
+                icon: Icons.edit_document,
+                title: 'Document surface promotion lab',
+                description:
+                    'Phase 10B comparison lab: TextSystemDocumentSurface defaults to fluent mode while the old row-based document surface is retained only as basic fallback.',
+                actionLabel: 'Open 10B lab',
+                onPressed: _openDocumentSurfacePromotionLab,
+              ),              _TestSurfaceCard(
                 icon: Icons.health_and_safety_rounded,
                 title: 'Phase 9 diagnostics lab',
                 description:
                     'Phase 9F diagnostic tool: validates the fluent editor, checks model integrity, and copies a shareable report for debugging together.',
                 actionLabel: 'Open 9F lab',
                 onPressed: _openPhase9DiagnosticsLab,
+              ),
+              _TestSurfaceCard(
+                icon: Icons.workspace_premium_rounded,
+                title: 'Premium writer lab',
+                description:
+                    'Phase 11A premium writer shell: fluent editor, outline, focus mode, inspector, save confidence, and reporting.',
+                actionLabel: 'Open 11A lab',
+                onPressed: _openPremiumWriterLab,
               ),
               const _TestSurfaceCard(
                 icon: Icons.article_outlined,
@@ -355,8 +383,7 @@ class _HeaderCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final IconData icon;
-
-  @override
+@override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
@@ -401,8 +428,7 @@ class _ScratchpadCard extends StatelessWidget {
 
   final TextEditingController controller;
   final VoidCallback onCopy;
-
-  @override
+@override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
@@ -453,8 +479,7 @@ class _ScratchpadCard extends StatelessWidget {
 
 class _PhaseRoadmapCard extends StatelessWidget {
   const _PhaseRoadmapCard();
-
-  @override
+@override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
@@ -482,11 +507,11 @@ class _PhaseRoadmapCard extends StatelessWidget {
             const _CheckpointRow(
               label: 'Phase 9',
               value: 'Fluent document surface + styled continuous editing',
-              active: true,
             ),
             const _CheckpointRow(
               label: 'Phase 10',
-              value: 'LaTeX-aware editor on text system',
+              value: 'Productize fluent document surface API',
+              active: true,
             ),
             const _CheckpointRow(
               label: 'Phase 11',
@@ -509,8 +534,7 @@ class _CheckpointRow extends StatelessWidget {
   final String label;
   final String value;
   final bool active;
-
-  @override
+@override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
@@ -560,8 +584,7 @@ class _TestSurfaceCard extends StatelessWidget {
   final String description;
   final String actionLabel;
   final VoidCallback? onPressed;
-
-  @override
+@override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;

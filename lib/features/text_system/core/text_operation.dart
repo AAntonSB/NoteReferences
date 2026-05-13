@@ -10,6 +10,11 @@ enum TextOperationType {
   toggleDocumentMark,
   insertFragment,
   insertDocumentFragment,
+  splitBlock,
+  mergeBlocks,
+  replaceBlockType,
+  insertPageBreak,
+  deleteBlock,
   replaceDocument,
 }
 
