@@ -46,7 +46,16 @@ class PdfReaderScreen extends StatefulWidget {
     required this.filePath,
     required this.title,
     this.planningRepository,
+    this.initialPageNumber,
+    this.initialSourceRects = const <PdfSourceRect>[],
+    this.initialSidecarNoteId,
+    this.initialOpenLabel,
   });
+
+  final int? initialPageNumber;
+  final List<PdfSourceRect> initialSourceRects;
+  final String? initialSidecarNoteId;
+  final String? initialOpenLabel;
 
   @override
   State<PdfReaderScreen> createState() => _PdfReaderScreenState();
@@ -115,6 +124,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   bool _sessionLoaded = false;
   bool _planningLoaded = false;
   bool _didRestorePdfViewport = false;
+  bool _didApplyInitialLocator = false;
   bool _latestOutlineOpen = false;
   bool _latestDebugEnabled = false;
 
@@ -290,6 +300,56 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         _publishViewportStateForNextFrames();
       }),
     );
+  }
+
+  bool get _hasInitialOpenLocator {
+    final pageNumber = widget.initialPageNumber;
+    final sidecarNoteId = widget.initialSidecarNoteId?.trim();
+    return (pageNumber != null && pageNumber > 0) ||
+        (sidecarNoteId != null && sidecarNoteId.isNotEmpty);
+  }
+
+  void _applyInitialOpenLocatorIfNeeded({int attemptsLeft = 8}) {
+    if (_didApplyInitialLocator || !_hasInitialOpenLocator || !mounted) {
+      return;
+    }
+
+    if (!_controller.isReady ||
+        _controller.visibleRect == Rect.zero ||
+        _controller.visibleRect.height <= 0 ||
+        _controller.layout.pageLayouts.isEmpty) {
+      if (attemptsLeft <= 0) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _applyInitialOpenLocatorIfNeeded(attemptsLeft: attemptsLeft - 1);
+      });
+      return;
+    }
+
+    _didApplyInitialLocator = true;
+
+    final pageNumber = widget.initialPageNumber;
+    if (pageNumber != null && pageNumber > 0) {
+      _jumpToPdfSource(
+        pageNumber: pageNumber,
+        sourceRects: widget.initialSourceRects,
+      );
+    }
+
+    final sidecarNoteId = widget.initialSidecarNoteId?.trim();
+    if (sidecarNoteId != null && sidecarNoteId.isNotEmpty) {
+      if (_workspaceLayout != PdfReaderWorkspaceLayout.sidecar) {
+        setState(() => _workspaceLayout = PdfReaderWorkspaceLayout.sidecar);
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _revealSidecarNote(sidecarNoteId, pageNumber: pageNumber);
+      });
+    }
+
+    final label = widget.initialOpenLabel?.trim();
+    if (label != null && label.isNotEmpty) {
+      _showSnackBar('Opened source target: $label');
+    }
   }
 
   bool get _hasActivePdfSearchQuery {
@@ -492,7 +552,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _restorePdfViewportIfNeeded();
+      if (_hasInitialOpenLocator) {
+        _applyInitialOpenLocatorIfNeeded();
+      } else {
+        _restorePdfViewportIfNeeded();
+      }
     });
 
     if (_pdfSearchOpen && _pdfSearchController.text.trim().isNotEmpty) {
@@ -1039,9 +1103,22 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       return;
     }
 
-    final targetY = sourceRects.isEmpty
+    final rectsForPage = sourceRects
+        .where((rect) => rect.pageNumber == safePageNumber)
+        .toList(growable: false);
+
+    final targetY = rectsForPage.isEmpty
         ? pageRect.top
-        : pageRect.top + pageRect.height * 0.20;
+        : pageRect.top +
+            ((rectsForPage
+                        .map((rect) => math.min(rect.top, rect.bottom))
+                        .reduce(math.min) +
+                    rectsForPage
+                        .map((rect) => math.max(rect.top, rect.bottom))
+                        .reduce(math.max)) /
+                2)
+                .clamp(0.0, pageRect.height)
+                .toDouble();
 
     final maxTop = math.max(0.0, documentSize.height - visibleRect.height);
     final targetTop = (targetY - visibleRect.height * 0.25)
@@ -1098,10 +1175,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     _showPersistentHighlightActions(region);
   }
 
-  void _revealSidecarNote(String noteId) {
+  void _revealSidecarNote(String noteId, {int? pageNumber}) {
     _revealNoteRequestNotifier.value = SidecarRevealNoteRequest(
       requestId: ++_revealNoteRequestId,
       noteId: noteId,
+      pageNumber: pageNumber,
     );
   }
 
@@ -1388,7 +1466,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       widget.filePath,
       key: ValueKey(widget.filePath),
       controller: _controller,
-      initialPageNumber: _viewportNotifier.value.currentPage,
+      initialPageNumber: widget.initialPageNumber ?? _viewportNotifier.value.currentPage,
       params: pdfrx.PdfViewerParams(
         margin: 8,
         backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,

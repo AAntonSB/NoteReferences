@@ -323,16 +323,20 @@ class TextSystemController extends ChangeNotifier {
     TextMarkKind kind, {
     Map<String, String> attributes = const <String, String>{},
     String? label,
+    TextSystemDocument Function(TextSystemDocument document)? transformAfterApply,
   }) {
     final normalized = range.normalized();
     if (normalized.isCollapsed) return;
 
-    final nextDocument = TextSystemDocumentMarkOps.applyMark(
+    var nextDocument = TextSystemDocumentMarkOps.applyMark(
       document: _document,
       range: normalized,
       kind: kind,
       attributes: attributes,
     );
+    if (transformAfterApply != null) {
+      nextDocument = transformAfterApply(nextDocument);
+    }
 
     _commit(
       after: nextDocument,
@@ -345,6 +349,73 @@ class TextSystemController extends ChangeNotifier {
         ),
       ],
       origin: TextTransactionOrigin.user,
+    );
+  }
+
+  TextSystemDocumentFragmentEditResult insertMarkedPlainTextAtDocumentPosition({
+    required TextSystemDocumentPosition position,
+    required String text,
+    required List<TextMark> marks,
+    String label = 'Insert marked text',
+    TextSystemDocument Function(TextSystemDocument document)? transformAfterInsert,
+  }) {
+    if (text.isEmpty) {
+      final collapsed = TextSystemDocumentRange.collapsed(position);
+      return TextSystemDocumentFragmentEditResult(
+        document: _document,
+        replacementRange: collapsed,
+        insertedRange: collapsed,
+        affectedBlockIds: const <String>[],
+        insertedPlainText: '',
+      );
+    }
+
+    final safeMarks = marks
+        .map((mark) => mark.clamp(text.length))
+        .where((mark) => !mark.isEmpty)
+        .toList(growable: false);
+    final fragment = TextSystemDocumentFragment(
+      blocks: <TextSystemBlock>[
+        TextSystemBlock.paragraph(
+          id: 'marked-${_revision + 1}-${DateTime.now().microsecondsSinceEpoch}',
+          text: text,
+          marks: safeMarks,
+        ),
+      ],
+      metadata: const <String, Object?>{
+        'source': 'markedPlainText',
+      },
+    );
+    final insertionRange = TextSystemDocumentRange.collapsed(position);
+    final result = TextSystemDocumentFragmentOps.replaceRangeWithFragment(
+      document: _document,
+      range: insertionRange,
+      fragment: fragment,
+      idPrefix: 'marked-${_revision + 1}',
+    );
+    final nextDocument = transformAfterInsert == null
+        ? result.document
+        : transformAfterInsert(result.document);
+
+    _commit(
+      after: nextDocument,
+      label: label,
+      operations: <TextOperation>[
+        TextOperation(
+          type: TextOperationType.insertDocumentFragment,
+          documentRange: insertionRange,
+          documentFragment: fragment,
+        ),
+      ],
+      origin: TextTransactionOrigin.user,
+    );
+
+    return TextSystemDocumentFragmentEditResult(
+      document: nextDocument,
+      replacementRange: result.replacementRange,
+      insertedRange: result.insertedRange,
+      affectedBlockIds: result.affectedBlockIds,
+      insertedPlainText: result.insertedPlainText,
     );
   }
 
@@ -797,6 +868,115 @@ class TextSystemController extends ChangeNotifier {
     );
   }
 
+
+
+  /// Inserts a complete block at a caret position.
+  ///
+  /// This is used by higher-level systems such as embedded app TODOs, figures,
+  /// and future table/caption blocks. The inserted block is kept as a real
+  /// document block rather than an inline mark.
+  TextSystemDocumentPosition? insertBlockAtPosition(
+    String blockId,
+    int offset,
+    TextSystemBlock insertedBlock, {
+    String label = 'Insert block',
+  }) {
+    final blockIndex = _document.blocks.indexWhere((block) => block.id == blockId);
+    if (blockIndex < 0) return null;
+
+    final block = _document.blocks[blockIndex];
+    if (_isStructuralBreakBlock(block)) return null;
+
+    final safeOffset = offset.clamp(0, block.text.length).toInt();
+    final nextBlocks = <TextSystemBlock>[];
+    late final TextSystemDocumentPosition targetPosition;
+
+    for (var i = 0; i < _document.blocks.length; i++) {
+      if (i != blockIndex) {
+        nextBlocks.add(_document.blocks[i]);
+        continue;
+      }
+
+      if (safeOffset <= 0) {
+        nextBlocks.add(insertedBlock);
+        nextBlocks.add(block);
+        targetPosition = TextSystemDocumentPosition(
+          blockId: insertedBlock.id,
+          blockIndex: nextBlocks.length - 2,
+          offset: insertedBlock.text.length,
+        );
+        continue;
+      }
+
+      if (safeOffset >= block.text.length) {
+        nextBlocks.add(block);
+        nextBlocks.add(insertedBlock);
+        targetPosition = TextSystemDocumentPosition(
+          blockId: insertedBlock.id,
+          blockIndex: nextBlocks.length - 1,
+          offset: insertedBlock.text.length,
+        );
+        continue;
+      }
+
+      final beforeText = block.text.substring(0, safeOffset);
+      final afterText = block.text.substring(safeOffset);
+      final afterBlockId = _nextGeneratedBlockId('after-inserted-block');
+      final afterType = block.type == TextSystemBlockType.heading
+          ? TextSystemBlockType.paragraph
+          : block.type;
+
+      final beforeBlock = block.copyWith(
+        text: beforeText,
+        marks: _marksForSplitPart(
+          marks: block.marks,
+          start: 0,
+          end: safeOffset,
+        ),
+      ).normalizeMarks();
+
+      final afterBlock = TextSystemBlock(
+        id: afterBlockId,
+        type: afterType,
+        text: afterText,
+        marks: _marksForSplitPart(
+          marks: block.marks,
+          start: safeOffset,
+          end: block.text.length,
+        ),
+        level: afterType == TextSystemBlockType.heading ? block.level : null,
+        checked: afterType == TextSystemBlockType.todo ? block.checked : null,
+        metadata: afterType == TextSystemBlockType.listItem || afterType == TextSystemBlockType.todo
+            ? Map<String, Object?>.unmodifiable(block.metadata)
+            : const <String, Object?>{},
+      ).normalizeMarks();
+
+      nextBlocks.add(beforeBlock);
+      nextBlocks.add(insertedBlock);
+      nextBlocks.add(afterBlock);
+      targetPosition = TextSystemDocumentPosition(
+        blockId: insertedBlock.id,
+        blockIndex: nextBlocks.length - 2,
+        offset: insertedBlock.text.length,
+      );
+    }
+
+    _commit(
+      after: _document.copyWith(blocks: nextBlocks, updatedAt: DateTime.now()),
+      label: label,
+      operations: <TextOperation>[
+        TextOperation(
+          type: TextOperationType.replaceDocument,
+          blockId: blockId,
+          range: TextSystemRange.collapsed(safeOffset),
+          text: insertedBlock.id,
+        ),
+      ],
+      origin: TextTransactionOrigin.user,
+    );
+
+    return targetPosition;
+  }
 
 
   /// Inserts a structural page-break block at the requested text position.

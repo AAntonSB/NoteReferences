@@ -6,9 +6,11 @@ import '../core/text_system_block.dart';
 import '../core/text_system_document_position.dart';
 import '../core/text_system_document_fragment.dart';
 import '../core/text_system_document_range.dart';
+import '../core/text_system_range.dart';
 import '../core/text_system_controller.dart';
 import '../persistence/text_system_autosave_controller.dart';
 import '../references/actions/text_system_reference_actions.dart';
+import '../references/citations/text_system_citation.dart';
 import 'fluent_document_buffer_mapper.dart';
 import 'fluent_document_command_controller.dart';
 import 'fluent_document_editing_controller.dart';
@@ -390,21 +392,67 @@ class _FluentDocumentSurfaceState extends State<FluentDocumentSurface> {
       selectedText: selectedText,
       repository: repository,
       initialActionType: actionType,
+      citationSettings: TextSystemCitationSettings.fromDocument(widget.textController.document),
     );
     if (!mounted || result == null) return;
 
-    widget.textController.applyMarkForDocumentRange(
-      range,
-      TextMarkKind.link,
-      attributes: result.inlineMark.toTextMarkAttributes(),
-      label: result.actionType.verbLabel,
-    );
-
     final previousSelection = selection;
-    _editingController.syncFromDocument(widget.textController.document);
-    final safeBase = previousSelection.baseOffset.clamp(0, _editingController.text.length).toInt();
-    final safeExtent = previousSelection.extentOffset.clamp(0, _editingController.text.length).toInt();
-    _editingController.selection = TextSelection(baseOffset: safeBase, extentOffset: safeExtent);
+    if (result.actionType == TextSystemReferenceActionType.citation) {
+      final normalized = range.normalized();
+      final settings = TextSystemCitationSettings.fromDocument(widget.textController.document);
+      final mode = TextSystemCitationInlineModeX.fromId(
+        result.inlineMark.metadata['citationInlineMode'] as String?,
+      );
+      final source = TextSystemCitationSource.fromReferenceTarget(result.target);
+      final registry = TextSystemCitationRegistry.fromDocument(widget.textController.document);
+      final sequenceNumber = registry.numberForTarget(result.target.id);
+      final citationText = TextSystemCitationFormatter.inlineCitation(
+        settings: settings,
+        source: source,
+        sequenceNumber: sequenceNumber,
+        inlineMode: mode,
+      );
+      final citationMark = result.inlineMark.copyWith(
+        selectedText: citationText,
+        metadata: <String, Object?>{
+          ...result.inlineMark.metadata,
+          ...source.toMetadata(),
+          'citationStyleId': settings.style.id,
+          'citationInlineMode': mode.id,
+          'citationText': citationText,
+          'bibliographyManaged': true,
+        },
+      );
+      final insertedText = ' $citationText';
+      widget.textController.insertMarkedPlainTextAtDocumentPosition(
+        position: normalized.end,
+        text: insertedText,
+        marks: <TextMark>[
+          TextMark(
+            kind: TextMarkKind.link,
+            range: TextSystemRange(1, insertedText.length),
+            attributes: citationMark.toTextMarkAttributes(),
+          ),
+        ],
+        label: 'Insert citation',
+        transformAfterInsert: (document) => TextSystemCitationBibliographyGenerator.refreshDocument(document),
+      );
+      _editingController.syncFromDocument(widget.textController.document);
+      final nextOffset = (previousSelection.end + insertedText.length).clamp(0, _editingController.text.length).toInt();
+      _editingController.selection = TextSelection.collapsed(offset: nextOffset);
+    } else {
+      widget.textController.applyMarkForDocumentRange(
+        range,
+        TextMarkKind.link,
+        attributes: result.inlineMark.toTextMarkAttributes(),
+        label: result.actionType.verbLabel,
+      );
+
+      _editingController.syncFromDocument(widget.textController.document);
+      final safeBase = previousSelection.baseOffset.clamp(0, _editingController.text.length).toInt();
+      final safeExtent = previousSelection.extentOffset.clamp(0, _editingController.text.length).toInt();
+      _editingController.selection = TextSelection(baseOffset: safeBase, extentOffset: safeExtent);
+    }
     _focusNode.requestFocus();
     _publishCommandState();
     widget.onBufferChanged?.call(_editingController);

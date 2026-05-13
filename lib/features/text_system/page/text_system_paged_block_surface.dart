@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -13,7 +14,9 @@ import '../core/text_system_document_position.dart';
 import '../core/text_system_document_range.dart';
 import '../core/text_system_range.dart';
 import '../references/actions/text_system_reference_actions.dart';
+import '../references/citations/text_system_citation.dart';
 import '../styles/text_system_document_style.dart';
+import '../todos/text_system_embedded_todo.dart';
 import 'text_system_document_selection_geometry.dart';
 import 'text_system_layout_style_resolver.dart';
 import 'text_system_page_furniture.dart';
@@ -328,6 +331,8 @@ class TextSystemPagedBlockSurface extends StatefulWidget {
     this.editable = true,
     this.scrollController,
     this.referenceActionRepository,
+    this.embeddedTodoRepository,
+    this.onOpenReferenceTarget,
   });
 
   final TextSystemController textController;
@@ -341,6 +346,8 @@ class TextSystemPagedBlockSurface extends StatefulWidget {
   final bool editable;
   final ScrollController? scrollController;
   final TextSystemReferenceActionRepository? referenceActionRepository;
+  final TextSystemEmbeddedTodoRepository? embeddedTodoRepository;
+  final ValueChanged<TextSystemInlineReferenceMark>? onOpenReferenceTarget;
 
   static const double _a4PortraitReferenceWidthMm = 210;
   static const double _pageHeaderHeight = 42;
@@ -363,11 +370,112 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
   _PagedEditableBlockFieldState? _activeTextField;
   bool _headerFooterEditMode = false;
   TextSystemHeaderFooterZoneKind? _headerFooterEditTarget;
+  Map<String, TextSystemEmbeddedTodoSnapshot> _embeddedTodoSnapshots = const {};
+  final Map<String, TextSystemEmbeddedTodoSnapshot> _pendingEmbeddedTodoSync = <String, TextSystemEmbeddedTodoSnapshot>{};
+  Timer? _embeddedTodoSyncTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _embeddedTodoSnapshots = _embeddedTodoSnapshotsFor(widget.textController.document);
+    widget.textController.addListener(_handleEmbeddedTodoDocumentChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant TextSystemPagedBlockSurface oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.textController != widget.textController) {
+      oldWidget.textController.removeListener(_handleEmbeddedTodoDocumentChanged);
+      widget.textController.addListener(_handleEmbeddedTodoDocumentChanged);
+      _embeddedTodoSnapshots = _embeddedTodoSnapshotsFor(widget.textController.document);
+      _pendingEmbeddedTodoSync.clear();
+      _embeddedTodoSyncTimer?.cancel();
+    } else if (!identical(oldWidget.document, widget.document)) {
+      _embeddedTodoSnapshots = _embeddedTodoSnapshotsFor(widget.textController.document);
+    }
+  }
+
+  @override
+  void dispose() {
+    _embeddedTodoSyncTimer?.cancel();
+    widget.textController.removeListener(_handleEmbeddedTodoDocumentChanged);
+    super.dispose();
+  }
 
   TextSystemBlock? get _activeBlock {
     final blockId = _activeBlockId ?? _activeCaretAnchor?.blockId;
     if (blockId == null) return null;
     return widget.document.blockById(blockId);
+  }
+
+  Map<String, TextSystemEmbeddedTodoSnapshot> _embeddedTodoSnapshotsFor(
+    TextSystemDocument document,
+  ) {
+    final snapshots = <String, TextSystemEmbeddedTodoSnapshot>{};
+    for (final block in document.blocks) {
+      if (!TextSystemEmbeddedTodoMetadata.isEmbeddedTodoBlock(block)) {
+        continue;
+      }
+      final snapshot = TextSystemEmbeddedTodoSnapshot.fromBlock(block);
+      if (snapshot.todoId.trim().isEmpty) {
+        continue;
+      }
+      snapshots[block.id] = snapshot;
+    }
+    return snapshots;
+  }
+
+  void _handleEmbeddedTodoDocumentChanged() {
+    final repository = widget.embeddedTodoRepository;
+    final nextSnapshots = _embeddedTodoSnapshotsFor(widget.textController.document);
+
+    if (repository != null) {
+      for (final entry in nextSnapshots.entries) {
+        final previous = _embeddedTodoSnapshots[entry.key];
+        final next = entry.value;
+        if (previous == null || !previous.sameTodoState(next)) {
+          _pendingEmbeddedTodoSync[next.todoId] = next;
+        }
+      }
+    }
+
+    _embeddedTodoSnapshots = nextSnapshots;
+
+    if (_pendingEmbeddedTodoSync.isNotEmpty) {
+      _scheduleEmbeddedTodoSync();
+    }
+  }
+
+  void _scheduleEmbeddedTodoSync() {
+    if (widget.embeddedTodoRepository == null) return;
+
+    _embeddedTodoSyncTimer?.cancel();
+    _embeddedTodoSyncTimer = Timer(const Duration(milliseconds: 350), () {
+      final repository = widget.embeddedTodoRepository;
+      if (repository == null || _pendingEmbeddedTodoSync.isEmpty) return;
+
+      final pending = List<TextSystemEmbeddedTodoSnapshot>.from(
+        _pendingEmbeddedTodoSync.values,
+      );
+      _pendingEmbeddedTodoSync.clear();
+
+      unawaited(() async {
+        for (final snapshot in pending) {
+          try {
+            await repository.syncSnapshot(snapshot);
+          } catch (_) {
+            if (!mounted) return;
+            ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+              const SnackBar(
+                content: Text('Could not sync an embedded TODO with the TODO system.'),
+                duration: Duration(seconds: 2),
+              ),
+            );
+          }
+        }
+      }());
+    });
   }
 
   void _runSelectionStateUpdate(VoidCallback update) {
@@ -831,24 +939,26 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
     final documentSelection = _activeDocumentSelection;
     if (documentRange == null || documentRange.isCollapsed || documentSelection == null) return;
 
+    final effectiveDocumentSelection = documentSelection;
+
     widget.textController.toggleMarkForDocumentRange(documentRange, kind);
 
-    if (documentSelection.isSingleBlock) {
-      final block = widget.document.blockById(documentSelection.base.blockId);
+    if (effectiveDocumentSelection.isSingleBlock) {
+      final block = widget.document.blockById(effectiveDocumentSelection.base.blockId);
       if (block != null) {
         _requestSelectionRestore(
           TextSystemPagedSelectionAnchor(
             blockId: block.id,
-            baseOffset: documentSelection.base.textOffset,
-            extentOffset: documentSelection.extent.textOffset,
+            baseOffset: effectiveDocumentSelection.base.textOffset,
+            extentOffset: effectiveDocumentSelection.extent.textOffset,
           ).clampToBlock(block),
         );
       }
     } else {
       _runSelectionStateUpdate(() {
-        _surfaceDocumentSelection = documentSelection;
-        _activeCaretAnchor = documentSelection.extent;
-        _activeBlockId = documentSelection.extent.blockId;
+        _surfaceDocumentSelection = effectiveDocumentSelection;
+        _activeCaretAnchor = effectiveDocumentSelection.extent;
+        _activeBlockId = effectiveDocumentSelection.extent.blockId;
       });
     }
   }
@@ -892,22 +1002,44 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
     final repository = widget.referenceActionRepository;
     if (repository == null) return;
 
+    final isCitationAction = actionType == TextSystemReferenceActionType.citation;
     final activeField = _surfaceDocumentSelection == null ? _usableActiveTextField : null;
     final fieldSelectionAnchor = activeField?.currentSelectionAnchor;
     final fieldDocumentRange = activeField?.documentRangeForToolbarSelection();
 
-    final documentRange = fieldDocumentRange ?? _activeDocumentRange;
-    final documentSelection = fieldSelectionAnchor == null
+    TextSystemDocumentRange? documentRange = fieldDocumentRange ?? _activeDocumentRange;
+    TextSystemPagedDocumentSelection? documentSelection = fieldSelectionAnchor == null
         ? _activeDocumentSelection
         : TextSystemPagedDocumentSelection.fromAnchor(fieldSelectionAnchor);
 
-    if (documentRange == null || documentRange.isCollapsed || documentSelection == null) {
+    if (documentRange == null && isCitationAction) {
+      final position = _activeInsertPosition();
+      if (position != null) {
+        documentRange = TextSystemDocumentRange.collapsed(position);
+        documentSelection = TextSystemPagedDocumentSelection(
+          base: TextSystemPagedCaretAnchor(blockId: position.blockId, textOffset: position.offset),
+          extent: TextSystemPagedCaretAnchor(blockId: position.blockId, textOffset: position.offset),
+        );
+      }
+    }
+
+    if (documentRange == null || documentSelection == null) {
       _showReferenceSelectionRequiredMessage();
       return;
     }
 
-    final selectedText = widget.textController.plainTextForDocumentRange(documentRange).trim();
-    if (selectedText.isEmpty) {
+    final effectiveDocumentRange = documentRange;
+    final effectiveDocumentSelection = documentSelection;
+
+    if (!isCitationAction && effectiveDocumentRange.isCollapsed) {
+      _showReferenceSelectionRequiredMessage();
+      return;
+    }
+
+    final selectedText = effectiveDocumentRange.isCollapsed
+        ? ''
+        : widget.textController.plainTextForDocumentRange(effectiveDocumentRange).trim();
+    if (!isCitationAction && selectedText.isEmpty) {
       _showReferenceSelectionRequiredMessage();
       return;
     }
@@ -917,11 +1049,67 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
       selectedText: selectedText,
       repository: repository,
       initialActionType: actionType,
+      citationSettings: TextSystemCitationSettings.fromDocument(widget.textController.document),
     );
     if (!mounted || result == null) return;
 
+    if (result.actionType == TextSystemReferenceActionType.citation) {
+      final normalized = effectiveDocumentRange.normalized();
+      final settings = TextSystemCitationSettings.fromDocument(widget.textController.document);
+      final mode = TextSystemCitationInlineModeX.fromId(
+        result.inlineMark.metadata['citationInlineMode'] as String?,
+      );
+      final source = TextSystemCitationSource.fromReferenceTarget(result.target);
+      final registry = TextSystemCitationRegistry.fromDocument(widget.textController.document);
+      final sequenceNumber = registry.numberForTarget(result.target.id);
+      final citationText = TextSystemCitationFormatter.inlineCitation(
+        settings: settings,
+        source: source,
+        sequenceNumber: sequenceNumber,
+        inlineMode: mode,
+      );
+      final citationMark = result.inlineMark.copyWith(
+        selectedText: citationText,
+        metadata: <String, Object?>{
+          ...result.inlineMark.metadata,
+          ...source.toMetadata(),
+          'citationStyleId': settings.style.id,
+          'citationInlineMode': mode.id,
+          'citationText': citationText,
+          'bibliographyManaged': true,
+        },
+      );
+      final prefix = normalized.isCollapsed ? '' : ' ';
+      final insertedText = '$prefix$citationText';
+      widget.textController.insertMarkedPlainTextAtDocumentPosition(
+        position: normalized.end,
+        text: insertedText,
+        marks: <TextMark>[
+          TextMark(
+            kind: TextMarkKind.link,
+            range: TextSystemRange(prefix.length, insertedText.length),
+            attributes: citationMark.toTextMarkAttributes(),
+          ),
+        ],
+        label: 'Insert citation',
+        transformAfterInsert: (document) => TextSystemCitationBibliographyGenerator.refreshDocument(document),
+      );
+
+      final endPosition = normalized.end;
+      final block = widget.textController.document.blockById(endPosition.blockId);
+      if (block != null) {
+        _requestSelectionRestore(
+          TextSystemPagedSelectionAnchor.collapsed(
+            blockId: block.id,
+            textOffset: endPosition.offset + insertedText.length,
+          ).clampToBlock(block),
+        );
+      }
+      return;
+    }
+
     widget.textController.applyMarkForDocumentRange(
-      documentRange,
+      effectiveDocumentRange,
       TextMarkKind.link,
       attributes: result.inlineMark.toTextMarkAttributes(),
       label: result.actionType.verbLabel,
@@ -935,24 +1123,48 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
       return;
     }
 
-    if (documentSelection.isSingleBlock) {
-      final block = widget.textController.document.blockById(documentSelection.base.blockId);
+    if (effectiveDocumentSelection.isSingleBlock) {
+      final block = widget.textController.document.blockById(effectiveDocumentSelection.base.blockId);
       if (block != null) {
         _requestSelectionRestore(
           TextSystemPagedSelectionAnchor(
             blockId: block.id,
-            baseOffset: documentSelection.base.textOffset,
-            extentOffset: documentSelection.extent.textOffset,
+            baseOffset: effectiveDocumentSelection.base.textOffset,
+            extentOffset: effectiveDocumentSelection.extent.textOffset,
           ).clampToBlock(block),
         );
       }
     } else {
       _runSelectionStateUpdate(() {
-        _surfaceDocumentSelection = documentSelection;
-        _activeCaretAnchor = documentSelection.extent;
-        _activeBlockId = documentSelection.extent.blockId;
+        _surfaceDocumentSelection = effectiveDocumentSelection;
+        _activeCaretAnchor = effectiveDocumentSelection.extent;
+        _activeBlockId = effectiveDocumentSelection.extent.blockId;
       });
     }
+  }
+
+  void _changeCitationStyle(TextSystemCitationStyle style) {
+    final settings = TextSystemCitationSettings.fromDocument(widget.textController.document).copyWith(style: style);
+    final nextDocument = TextSystemCitationBibliographyGenerator.refreshDocument(
+      settings.applyToDocument(widget.textController.document),
+      settings: settings,
+    );
+    widget.textController.replaceDocument(
+      nextDocument,
+      label: 'Change citation style',
+    );
+  }
+
+  void _changeCitationInlineMode(TextSystemCitationInlineMode mode) {
+    final settings = TextSystemCitationSettings.fromDocument(widget.textController.document).copyWith(inlineMode: mode);
+    final nextDocument = TextSystemCitationBibliographyGenerator.refreshDocument(
+      settings.applyToDocument(widget.textController.document),
+      settings: settings,
+    );
+    widget.textController.replaceDocument(
+      nextDocument,
+      label: 'Change citation mode',
+    );
   }
 
   void _toggleHeaderFooterEditMode() {
@@ -1126,6 +1338,123 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
     );
     if (target == null) return;
 
+    _requestSelectionRestore(
+      TextSystemPagedSelectionAnchor.collapsed(
+        blockId: target.blockId,
+        textOffset: target.offset,
+      ),
+    );
+  }
+
+  TextSystemDocumentPosition? _activeInsertPosition() {
+    final fieldSelection = _surfaceDocumentSelection == null
+        ? _usableActiveTextField?.currentSelectionAnchor
+        : null;
+    if (fieldSelection != null) {
+      return _documentRangeForPagedSelection(fieldSelection)?.normalized().end;
+    }
+
+    final activeRange = _activeDocumentRange;
+    if (activeRange != null) {
+      return activeRange.normalized().end;
+    }
+
+    final block = _activeBlock;
+    if (block == null || _isStructuralBreakBlock(block) || _isFootnoteBlock(block)) {
+      return null;
+    }
+
+    final blockIndex = widget.textController.document.blocks.indexWhere(
+      (candidate) => candidate.id == block.id,
+    );
+    if (blockIndex < 0) return null;
+
+    final caretOffset = (_activeSelectionAnchor?.caretOffset ??
+            _activeCaretAnchor?.textOffset ??
+            block.text.length)
+        .clamp(0, block.text.length)
+        .toInt();
+
+    return TextSystemDocumentPosition(
+      blockId: block.id,
+      blockIndex: blockIndex,
+      offset: caretOffset,
+    );
+  }
+
+  String _selectedTextForEmbeddedTodoDraft() {
+    final fieldRange = _surfaceDocumentSelection == null
+        ? _usableActiveTextField?.documentRangeForToolbarSelection()
+        : null;
+    final range = fieldRange ?? _activeDocumentRange;
+    if (range == null || range.isCollapsed) {
+      return '';
+    }
+    return widget.textController.plainTextForDocumentRange(range).trim();
+  }
+
+  Future<void> _insertEmbeddedTodoAtActiveSelection() async {
+    final repository = widget.embeddedTodoRepository;
+    if (repository == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(
+          content: Text('Open the writer from the app/library route to create synced TODOs.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    final position = _activeInsertPosition();
+    if (position == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(
+          content: Text('Place the caret in a text block before inserting an app TODO.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    final draft = await _showEmbeddedTodoDraftDialog(
+      context: context,
+      initialTitle: _selectedTextForEmbeddedTodoDraft(),
+    );
+    if (!mounted || draft == null) return;
+
+    final blockId = 'embedded-todo-${DateTime.now().microsecondsSinceEpoch}';
+    final todoId = await repository.createTodoForDocumentBlock(
+      documentId: widget.textController.document.id,
+      blockId: blockId,
+      title: draft.title,
+      priority: draft.priority,
+      deadline: draft.deadline,
+    );
+    if (!mounted) return;
+
+    final todoBlock = TextSystemEmbeddedTodoMetadata.createBlock(
+      blockId: blockId,
+      documentId: widget.textController.document.id,
+      todoId: todoId,
+      title: draft.title,
+      priority: draft.priority,
+      deadline: draft.deadline,
+      baseMetadata: const <String, Object?>{
+        'styleId': TextSystemDocumentStyleSheet.todo,
+      },
+    );
+
+    final target = widget.textController.insertBlockAtPosition(
+      position.blockId,
+      position.offset,
+      todoBlock,
+      label: 'Insert app TODO',
+    );
+    if (target == null) return;
+
+    _embeddedTodoSnapshots = _embeddedTodoSnapshotsFor(widget.textController.document);
     _requestSelectionRestore(
       TextSystemPagedSelectionAnchor.collapsed(
         blockId: target.blockId,
@@ -1368,7 +1697,13 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
                       onInsertPageBreak: widget.editable ? _insertPageBreakAtActiveSelection : null,
                       onInsertSectionBreak: widget.editable ? _insertSectionBreakAtActiveSelection : null,
                       onInsertFootnote: widget.editable ? _insertFootnoteAtActiveSelection : null,
+                      onInsertEmbeddedTodo: widget.editable && widget.embeddedTodoRepository != null
+                          ? _insertEmbeddedTodoAtActiveSelection
+                          : null,
                       onReferenceAction: _canOpenReferenceActionMenu ? _createReferenceForActiveSelection : null,
+                      citationSettings: TextSystemCitationSettings.fromDocument(widget.textController.document),
+                      onCitationStyleChanged: widget.editable ? _changeCitationStyle : null,
+                      onCitationInlineModeChanged: widget.editable ? _changeCitationInlineMode : null,
                       onToggleBold: _canToggleBold ? _toggleBoldForActiveSelection : null,
                       onToggleItalic: _canToggleItalic ? _toggleItalicForActiveSelection : null,
                       onToggleUnderline: _canToggleUnderline ? _toggleUnderlineForActiveSelection : null,
@@ -1424,6 +1759,7 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
                           onRequestCaretRestore: _requestCaretRestore,
                           onRequestSelectionRestore: _requestSelectionRestore,
                           onRestoreSelectionConsumed: _handleRestoreSelectionConsumed,
+                          onOpenReferenceTarget: widget.onOpenReferenceTarget,
                         ),
                       ),
                   ],
@@ -1527,7 +1863,11 @@ class _PagedBlockSurfaceBanner extends StatelessWidget {
     required this.onInsertPageBreak,
     required this.onInsertSectionBreak,
     required this.onInsertFootnote,
+    required this.onInsertEmbeddedTodo,
     required this.onReferenceAction,
+    required this.citationSettings,
+    required this.onCitationStyleChanged,
+    required this.onCitationInlineModeChanged,
     required this.onToggleBold,
     required this.onToggleItalic,
     required this.onToggleUnderline,
@@ -1565,7 +1905,11 @@ class _PagedBlockSurfaceBanner extends StatelessWidget {
   final VoidCallback? onInsertPageBreak;
   final VoidCallback? onInsertSectionBreak;
   final VoidCallback? onInsertFootnote;
+  final VoidCallback? onInsertEmbeddedTodo;
   final ValueChanged<TextSystemReferenceActionType>? onReferenceAction;
+  final TextSystemCitationSettings citationSettings;
+  final ValueChanged<TextSystemCitationStyle>? onCitationStyleChanged;
+  final ValueChanged<TextSystemCitationInlineMode>? onCitationInlineModeChanged;
   final VoidCallback? onToggleBold;
   final VoidCallback? onToggleItalic;
   final VoidCallback? onToggleUnderline;
@@ -1688,7 +2032,21 @@ class _PagedBlockSurfaceBanner extends StatelessWidget {
                     enabled: activeBlock != null && onInsertFootnote != null,
                     onPressed: onInsertFootnote,
                   ),
+                  _ToolbarCommandButton(
+                    icon: Icons.add_task_rounded,
+                    label: 'App TODO',
+                    tooltip: onInsertEmbeddedTodo == null
+                        ? 'Open the writer from the app/library route to create synced TODOs'
+                        : 'Insert a TODO block that is synced with the app TODO system',
+                    enabled: activeBlock != null && onInsertEmbeddedTodo != null,
+                    onPressed: onInsertEmbeddedTodo,
+                  ),
                   _PagedReferenceActionButton(onReferenceAction: onReferenceAction),
+                  _PagedCitationSettingsButton(
+                    settings: citationSettings,
+                    onStyleChanged: onCitationStyleChanged,
+                    onInlineModeChanged: onCitationInlineModeChanged,
+                  ),
                   _ToolbarCommandButton(
                     icon: Icons.border_top_rounded,
                     label: 'H/F edit',
@@ -1897,6 +2255,102 @@ class _PagedBlockStyleToolbarButton extends StatelessWidget {
 }
 
 
+
+class _PagedCitationSettingsButton extends StatelessWidget {
+  const _PagedCitationSettingsButton({
+    required this.settings,
+    required this.onStyleChanged,
+    required this.onInlineModeChanged,
+  });
+
+  final TextSystemCitationSettings settings;
+  final ValueChanged<TextSystemCitationStyle>? onStyleChanged;
+  final ValueChanged<TextSystemCitationInlineMode>? onInlineModeChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final enabled = onStyleChanged != null || onInlineModeChanged != null;
+
+    return PopupMenuButton<Object>(
+      enabled: enabled,
+      tooltip: 'Citation style and inline citation mode',
+      onSelected: (value) {
+        if (value is TextSystemCitationStyle) onStyleChanged?.call(value);
+        if (value is TextSystemCitationInlineMode) onInlineModeChanged?.call(value);
+      },
+      itemBuilder: (context) => <PopupMenuEntry<Object>>[
+        const PopupMenuItem<Object>(
+          enabled: false,
+          child: Text('Reference style'),
+        ),
+        for (final style in TextSystemCitationStyle.values)
+          PopupMenuItem<Object>(
+            value: style,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 22,
+                  child: settings.style == style ? const Icon(Icons.check_rounded, size: 18) : null,
+                ),
+                Text(style.label),
+              ],
+            ),
+          ),
+        const PopupMenuDivider(),
+        const PopupMenuItem<Object>(
+          enabled: false,
+          child: Text('Inline citation mode'),
+        ),
+        for (final mode in TextSystemCitationInlineMode.values)
+          PopupMenuItem<Object>(
+            value: mode,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 22,
+                  child: settings.inlineMode == mode ? const Icon(Icons.check_rounded, size: 18) : null,
+                ),
+                Text(mode.label),
+              ],
+            ),
+          ),
+      ],
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: enabled
+              ? colorScheme.surface.withValues(alpha: 0.78)
+              : colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.75)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.menu_book_outlined, size: 17, color: enabled ? colorScheme.onSurface : colorScheme.onSurfaceVariant),
+              const SizedBox(width: 6),
+              Text(
+                'Cite: ${settings.style.label}',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: enabled ? colorScheme.onSurface : colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(width: 2),
+              Icon(Icons.arrow_drop_down_rounded, size: 18, color: enabled ? colorScheme.onSurface : colorScheme.onSurfaceVariant),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _PagedReferenceActionButton extends StatelessWidget {
   const _PagedReferenceActionButton({required this.onReferenceAction});
 
@@ -1911,8 +2365,8 @@ class _PagedReferenceActionButton extends StatelessWidget {
     return PopupMenuButton<TextSystemReferenceActionType>(
       enabled: enabled,
       tooltip: enabled
-          ? 'Create a citation/source link from selected text'
-          : 'Select text inside a block to create a citation or source link',
+          ? 'Create a citation at the caret or a source/link from selected text'
+          : 'Place the caret inside a block to add a citation, or select text to create a link',
       onSelected: (type) => onReferenceAction?.call(type),
       itemBuilder: (context) => <PopupMenuEntry<TextSystemReferenceActionType>>[
         for (final type in TextSystemReferenceActionType.values)
@@ -1969,6 +2423,151 @@ IconData _iconForReferenceActionType(TextSystemReferenceActionType type) {
     TextSystemReferenceActionType.todo => Icons.check_circle_outline_rounded,
     TextSystemReferenceActionType.link => Icons.link_rounded,
   };
+}
+
+class _EmbeddedTodoDraft {
+  const _EmbeddedTodoDraft({
+    required this.title,
+    required this.priority,
+    this.deadline,
+  });
+
+  final String title;
+  final String priority;
+  final DateTime? deadline;
+}
+
+Future<_EmbeddedTodoDraft?> _showEmbeddedTodoDraftDialog({
+  required BuildContext context,
+  required String initialTitle,
+}) async {
+  final titleController = TextEditingController(
+    text: initialTitle.trim().isEmpty ? 'New TODO' : initialTitle.trim(),
+  );
+  var priority = 'medium';
+  DateTime? deadline;
+
+  final result = await showDialog<_EmbeddedTodoDraft>(
+    context: context,
+    builder: (context) {
+      return StatefulBuilder(
+        builder: (context, setDialogState) {
+          final theme = Theme.of(context);
+          final deadlineLabel = deadline == null
+              ? 'No deadline'
+              : MaterialLocalizations.of(context).formatMediumDate(deadline!);
+
+          return AlertDialog(
+            title: const Text('Insert app TODO'),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: titleController,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'TODO title',
+                      hintText: 'What should be done?',
+                    ),
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) {
+                      final title = titleController.text.trim();
+                      if (title.isEmpty) return;
+                      Navigator.of(context).pop(
+                        _EmbeddedTodoDraft(
+                          title: title,
+                          priority: priority,
+                          deadline: deadline,
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    value: priority,
+                    decoration: const InputDecoration(labelText: 'Priority'),
+                    items: const [
+                      DropdownMenuItem(value: 'low', child: Text('Low')),
+                      DropdownMenuItem(value: 'medium', child: Text('Medium')),
+                      DropdownMenuItem(value: 'high', child: Text('High')),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setDialogState(() => priority = value);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      ActionChip(
+                        avatar: const Icon(Icons.event_outlined, size: 18),
+                        label: Text(deadlineLabel),
+                        onPressed: () async {
+                          final now = DateTime.now();
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: deadline ?? now,
+                            firstDate: DateTime(now.year - 1),
+                            lastDate: DateTime(now.year + 8),
+                          );
+                          if (picked != null) {
+                            setDialogState(() => deadline = picked);
+                          }
+                        },
+                      ),
+                      if (deadline != null)
+                        TextButton.icon(
+                          icon: const Icon(Icons.clear_rounded, size: 18),
+                          label: const Text('Clear'),
+                          onPressed: () => setDialogState(() => deadline = null),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'This creates a real app TODO and embeds it as its own document block.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton.icon(
+                icon: const Icon(Icons.add_task_rounded),
+                label: const Text('Create TODO'),
+                onPressed: () {
+                  final title = titleController.text.trim();
+                  if (title.isEmpty) return;
+                  Navigator.of(context).pop(
+                    _EmbeddedTodoDraft(
+                      title: title,
+                      priority: priority,
+                      deadline: deadline,
+                    ),
+                  );
+                },
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+
+  titleController.dispose();
+  return result;
 }
 
 class _ToolbarCommandButton extends StatelessWidget {
@@ -2100,6 +2699,7 @@ class _PagedBlockPageView extends StatelessWidget {
     required this.onRequestCaretRestore,
     required this.onRequestSelectionRestore,
     required this.onRestoreSelectionConsumed,
+    this.onOpenReferenceTarget,
   });
 
   final TextSystemController textController;
@@ -2132,6 +2732,7 @@ class _PagedBlockPageView extends StatelessWidget {
   final ValueChanged<TextSystemPagedCaretAnchor> onRequestCaretRestore;
   final ValueChanged<TextSystemPagedSelectionAnchor> onRequestSelectionRestore;
   final ValueChanged<TextSystemPagedSelectionAnchor> onRestoreSelectionConsumed;
+  final ValueChanged<TextSystemInlineReferenceMark>? onOpenReferenceTarget;
 
   String _sectionTitleForPage() {
     final fragments = page.fragments;
@@ -2249,6 +2850,7 @@ class _PagedBlockPageView extends StatelessWidget {
                         onRequestCaretRestore: onRequestCaretRestore,
                         onRequestSelectionRestore: onRequestSelectionRestore,
                         onRestoreSelectionConsumed: onRestoreSelectionConsumed,
+                        onOpenReferenceTarget: onOpenReferenceTarget,
                       ),
                     ),
                   ),
@@ -2962,6 +3564,7 @@ class _PagedBlockFragmentView extends StatelessWidget {
     required this.onRequestCaretRestore,
     required this.onRequestSelectionRestore,
     required this.onRestoreSelectionConsumed,
+    this.onOpenReferenceTarget,
   });
 
   final TextSystemController textController;
@@ -2978,6 +3581,7 @@ class _PagedBlockFragmentView extends StatelessWidget {
   final ValueChanged<TextSystemPagedCaretAnchor> onRequestCaretRestore;
   final ValueChanged<TextSystemPagedSelectionAnchor> onRequestSelectionRestore;
   final ValueChanged<TextSystemPagedSelectionAnchor> onRestoreSelectionConsumed;
+  final ValueChanged<TextSystemInlineReferenceMark>? onOpenReferenceTarget;
 
   int _orderedListNumberFor(TextSystemBlock block) {
     if (block.type != TextSystemBlockType.listItem || block.metadata['ordered'] != true) {
@@ -3101,6 +3705,7 @@ class _PagedBlockFragmentView extends StatelessWidget {
             onRequestCaretRestore: onRequestCaretRestore,
             onRequestSelectionRestore: onRequestSelectionRestore,
             onRestoreSelectionConsumed: onRestoreSelectionConsumed,
+            onOpenReferenceTarget: onOpenReferenceTarget,
           )
         : SelectableText(
             fragment.text,
@@ -3130,6 +3735,14 @@ class _PagedBlockFragmentView extends StatelessWidget {
       _ => textChild,
     };
 
+    final blockChromeChild = TextSystemEmbeddedTodoMetadata.isEmbeddedTodoBlock(resolvedBlock)
+        ? _EmbeddedTodoBlockChrome(
+            block: resolvedBlock,
+            fragment: fragment,
+            child: listAwareTextChild,
+          )
+        : listAwareTextChild;
+
     final decorated = switch (fragment.blockType) {
       TextSystemBlockType.quote => DecoratedBox(
           decoration: BoxDecoration(
@@ -3137,7 +3750,7 @@ class _PagedBlockFragmentView extends StatelessWidget {
           ),
           child: Padding(
             padding: const EdgeInsets.only(left: 10),
-            child: listAwareTextChild,
+            child: blockChromeChild,
           ),
         ),
       TextSystemBlockType.code => DecoratedBox(
@@ -3147,10 +3760,10 @@ class _PagedBlockFragmentView extends StatelessWidget {
           ),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            child: listAwareTextChild,
+            child: blockChromeChild,
           ),
         ),
-      _ => listAwareTextChild,
+      _ => blockChromeChild,
     };
 
     return Stack(
@@ -3186,6 +3799,112 @@ class _PagedBlockFragmentView extends StatelessWidget {
 }
 
 
+
+class _EmbeddedTodoBlockChrome extends StatelessWidget {
+  const _EmbeddedTodoBlockChrome({
+    required this.block,
+    required this.fragment,
+    required this.child,
+  });
+
+  final TextSystemBlock block;
+  final TextSystemPagedBlockFragment fragment;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final metadata = TextSystemEmbeddedTodoMetadata.fromBlock(block);
+    final isFirstFragment = !fragment.continuesFromPreviousPage;
+    final dueLabel = metadata.deadline == null
+        ? null
+        : metadata.deadline!.toLocal().toIso8601String().split('T').first;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colorScheme.tertiaryContainer.withValues(alpha: 0.34),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: colorScheme.tertiary.withValues(alpha: 0.22),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 7, 10, 7),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (isFirstFragment)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.task_alt_rounded,
+                      size: 14,
+                      color: colorScheme.onTertiaryContainer.withValues(alpha: 0.82),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      'App TODO',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: colorScheme.onTertiaryContainer.withValues(alpha: 0.82),
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _EmbeddedTodoPill(label: metadata.priority.toUpperCase()),
+                    if (dueLabel != null) ...[
+                      const SizedBox(width: 6),
+                      _EmbeddedTodoPill(label: 'Due $dueLabel'),
+                    ],
+                    const Spacer(),
+                    Icon(
+                      Icons.sync_rounded,
+                      size: 13,
+                      color: colorScheme.onTertiaryContainer.withValues(alpha: 0.58),
+                    ),
+                  ],
+                ),
+              ),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmbeddedTodoPill extends StatelessWidget {
+  const _EmbeddedTodoPill({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colorScheme.surface.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.55)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        child: Text(
+          label,
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+                fontSize: 10,
+              ),
+        ),
+      ),
+    );
+  }
+}
 
 class _ListTodoBlockShell extends StatelessWidget {
   const _ListTodoBlockShell({
@@ -3498,6 +4217,9 @@ List<InlineSpan> _markedSpansForRange({
 TextStyle _styleWithMarks(TextStyle baseStyle, List<TextMark> marks) {
   var result = baseStyle;
   final decorations = <TextDecoration>[];
+  Color? referenceDecorationColor;
+  TextDecorationStyle? referenceDecorationStyle;
+  double? referenceDecorationThickness;
 
   for (final mark in marks) {
     switch (mark.kind) {
@@ -3524,23 +4246,42 @@ TextStyle _styleWithMarks(TextStyle baseStyle, List<TextMark> marks) {
         );
         break;
       case TextMarkKind.link:
+        final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
         if (_isFootnoteReferenceMark(mark)) {
           result = result.copyWith(
-            color: Colors.blueAccent,
             fontSize: (result.fontSize ?? 14) * 0.66,
             fontWeight: FontWeight.w700,
             height: 0.95,
           );
+        } else if (inlineReference?.isCitation == true) {
+          decorations.add(TextDecoration.underline);
+          referenceDecorationColor = const Color(0xFF8A6D1D);
+          referenceDecorationStyle = TextDecorationStyle.dotted;
+          referenceDecorationThickness = 1.2;
+          result = result.copyWith(backgroundColor: const Color(0x14B08900));
+        } else if (inlineReference != null) {
+          decorations.add(TextDecoration.underline);
+          referenceDecorationColor = inlineReference.targetId.trim().isEmpty
+              ? const Color(0xFFB3261E)
+              : const Color(0xFF6B5E8E);
+          referenceDecorationStyle = TextDecorationStyle.dotted;
+          referenceDecorationThickness = 1.15;
         } else {
           decorations.add(TextDecoration.underline);
-          result = result.copyWith(color: Colors.blueAccent);
+          referenceDecorationColor = const Color(0xFF6B5E8E);
+          referenceDecorationStyle = TextDecorationStyle.solid;
         }
         break;
     }
   }
 
   if (decorations.isNotEmpty) {
-    result = result.copyWith(decoration: TextDecoration.combine(decorations));
+    result = result.copyWith(
+      decoration: TextDecoration.combine(decorations),
+      decorationColor: referenceDecorationColor,
+      decorationStyle: referenceDecorationStyle,
+      decorationThickness: referenceDecorationThickness,
+    );
   }
 
   return result;
@@ -3583,6 +4324,7 @@ class _PagedEditableBlockField extends StatefulWidget {
     required this.onRequestCaretRestore,
     required this.onRequestSelectionRestore,
     required this.onRestoreSelectionConsumed,
+    this.onOpenReferenceTarget,
   });
 
   final TextSystemBlock block;
@@ -3598,6 +4340,7 @@ class _PagedEditableBlockField extends StatefulWidget {
   final ValueChanged<TextSystemPagedCaretAnchor> onRequestCaretRestore;
   final ValueChanged<TextSystemPagedSelectionAnchor> onRequestSelectionRestore;
   final ValueChanged<TextSystemPagedSelectionAnchor> onRestoreSelectionConsumed;
+  final ValueChanged<TextSystemInlineReferenceMark>? onOpenReferenceTarget;
 
   @override
   State<_PagedEditableBlockField> createState() => _PagedEditableBlockFieldState();
@@ -3607,6 +4350,12 @@ class _PagedEditableBlockFieldState extends State<_PagedEditableBlockField> {
   late final _PagedMarkedTextEditingController _controller;
   late final FocusNode _focusNode;
   Timer? _selectionSyncTimer;
+  Timer? _referencePreviewCloseTimer;
+  OverlayEntry? _referencePreviewEntry;
+  TextMark? _activeReferencePreviewMark;
+  Offset? _activeReferencePreviewGlobalPosition;
+  bool _referencePreviewPinned = false;
+  bool _pointerInsideReferencePreview = false;
   bool _isApplyingExternalText = false;
   TextSystemPagedSelectionAnchor? _lastReportedSelectionAnchor;
 
@@ -3813,6 +4562,11 @@ class _PagedEditableBlockFieldState extends State<_PagedEditableBlockField> {
     final modifierPressed =
         HardwareKeyboard.instance.isControlPressed || HardwareKeyboard.instance.isMetaPressed;
 
+    if (key == LogicalKeyboardKey.escape && _referencePreviewEntry != null) {
+      _hideReferencePreview();
+      return KeyEventResult.handled;
+    }
+
     if (modifierPressed && key == LogicalKeyboardKey.keyZ) {
       return _performHistoryShortcut(undo: true);
     }
@@ -3857,6 +4611,18 @@ class _PagedEditableBlockFieldState extends State<_PagedEditableBlockField> {
 
     if (modifierPressed && key == LogicalKeyboardKey.backquote) {
       return _toggleMarkForSelection(TextMarkKind.code);
+    }
+
+    if (modifierPressed &&
+        (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter)) {
+      final mark = _activeReferencePreviewMark;
+      final inlineReference = mark == null
+          ? null
+          : TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
+      if (inlineReference != null) {
+        _openReferenceTarget(inlineReference);
+        return KeyEventResult.handled;
+      }
     }
 
     if ((key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) &&
@@ -4300,9 +5066,294 @@ class _PagedEditableBlockFieldState extends State<_PagedEditableBlockField> {
     return toggleMarkForToolbar(TextMarkKind.bold);
   }
 
+  void _handleReferencePointerHover(PointerHoverEvent event) {
+    final mark = _referenceMarkAtLocalPosition(event.localPosition);
+    if (mark == null) {
+      _scheduleReferencePreviewClose();
+      return;
+    }
+    _showReferencePreview(mark: mark, globalPosition: event.position);
+  }
+
+  void _handleReferencePointerDown(PointerDownEvent event) {
+    final mark = _referenceMarkAtLocalPosition(event.localPosition);
+    if (mark == null) {
+      if (!_referencePreviewPinned) _hideReferencePreview();
+      return;
+    }
+    _showReferencePreview(mark: mark, globalPosition: event.position, pinned: true);
+  }
+
+  TextMark? _referenceMarkAtLocalPosition(Offset localPosition) {
+    if (widget.block.marks.isEmpty || _controller.text.isEmpty) return null;
+    final renderObject = context.findRenderObject();
+    if (renderObject is! RenderBox || !renderObject.hasSize) return null;
+    final width = math.max(1.0, renderObject.size.width);
+    final painter = TextPainter(
+      text: TextSpan(text: _controller.text, style: widget.style),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+    )..layout(maxWidth: width);
+    final localOffset = painter
+        .getPositionForOffset(
+          Offset(
+            localPosition.dx.clamp(0.0, width).toDouble(),
+            math.max(0.0, localPosition.dy),
+          ),
+        )
+        .offset
+        .clamp(0, _controller.text.length)
+        .toInt();
+    final globalOffset = _safeStartOffset(widget.block, widget.fragment) + localOffset;
+    final candidates = widget.block.marks.where((mark) {
+      if (mark.kind != TextMarkKind.link) return false;
+      if (TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes) == null) {
+        return false;
+      }
+      return mark.range.start <= globalOffset && globalOffset <= mark.range.end;
+    }).toList(growable: false)
+      ..sort((a, b) {
+        final aRef = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(a.attributes);
+        final bRef = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(b.attributes);
+        if (aRef?.isCitation == true && bRef?.isCitation != true) return -1;
+        if (bRef?.isCitation == true && aRef?.isCitation != true) return 1;
+        return a.range.length.compareTo(b.range.length);
+      });
+    return candidates.isEmpty ? null : candidates.first;
+  }
+
+  void _showReferencePreview({
+    required TextMark mark,
+    required Offset globalPosition,
+    bool pinned = false,
+  }) {
+    _referencePreviewCloseTimer?.cancel();
+    _activeReferencePreviewMark = mark;
+    _activeReferencePreviewGlobalPosition = globalPosition;
+    _referencePreviewPinned = pinned || _referencePreviewPinned;
+
+    final overlay = Overlay.maybeOf(context);
+    if (overlay == null) return;
+    if (_referencePreviewEntry == null) {
+      _referencePreviewEntry = OverlayEntry(builder: _buildReferencePreviewOverlay);
+      overlay.insert(_referencePreviewEntry!);
+    } else {
+      _referencePreviewEntry!.markNeedsBuild();
+    }
+  }
+
+  Widget _buildReferencePreviewOverlay(BuildContext overlayContext) {
+    final mark = _activeReferencePreviewMark;
+    final inlineReference = mark == null
+        ? null
+        : TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
+    final position = _activeReferencePreviewGlobalPosition;
+    if (mark == null || inlineReference == null || position == null) {
+      return const SizedBox.shrink();
+    }
+
+    final size = MediaQuery.sizeOf(overlayContext);
+    const cardWidth = 340.0;
+    const cardHeightEstimate = 260.0;
+    final left = math.min(
+      math.max(12.0, position.dx + 14.0),
+      math.max(12.0, size.width - cardWidth - 12.0),
+    );
+    final top = math.min(
+      math.max(12.0, position.dy + 18.0),
+      math.max(12.0, size.height - cardHeightEstimate - 12.0),
+    );
+
+    return Positioned(
+      left: left,
+      top: top,
+      width: cardWidth,
+      child: MouseRegion(
+        onEnter: (_) {
+          _pointerInsideReferencePreview = true;
+          _referencePreviewCloseTimer?.cancel();
+        },
+        onExit: (_) {
+          _pointerInsideReferencePreview = false;
+          _scheduleReferencePreviewClose();
+        },
+        child: _ReferencePreviewCard(
+          inlineReference: inlineReference,
+          citationSettings: TextSystemCitationSettings.fromDocument(widget.textController.document),
+          pinned: _referencePreviewPinned,
+          onTogglePinned: () {
+            _referencePreviewPinned = !_referencePreviewPinned;
+            _referencePreviewEntry?.markNeedsBuild();
+            if (!_referencePreviewPinned && !_pointerInsideReferencePreview) {
+              _scheduleReferencePreviewClose();
+            }
+          },
+          onOpen: () => _openReferenceTarget(inlineReference),
+          onCopy: () => _copyReferenceDetails(inlineReference),
+          onUnlink: () => _unlinkReferenceMark(mark),
+          onCitationModeChanged: inlineReference.isCitation
+              ? (mode) => _changeCitationModeForMark(mark, mode)
+              : null,
+          onClose: _hideReferencePreview,
+        ),
+      ),
+    );
+  }
+
+  void _scheduleReferencePreviewClose() {
+    if (_referencePreviewPinned || _pointerInsideReferencePreview) return;
+    _referencePreviewCloseTimer?.cancel();
+    _referencePreviewCloseTimer = Timer(const Duration(milliseconds: 220), () {
+      if (!_referencePreviewPinned && !_pointerInsideReferencePreview) {
+        _hideReferencePreview();
+      }
+    });
+  }
+
+  void _hideReferencePreview() {
+    _referencePreviewCloseTimer?.cancel();
+    _referencePreviewCloseTimer = null;
+    _referencePreviewEntry?.remove();
+    _referencePreviewEntry = null;
+    _activeReferencePreviewMark = null;
+    _activeReferencePreviewGlobalPosition = null;
+    _referencePreviewPinned = false;
+    _pointerInsideReferencePreview = false;
+  }
+
+  void _openReferenceTarget(TextSystemInlineReferenceMark inlineReference) {
+    final openTarget = widget.onOpenReferenceTarget;
+    if (openTarget != null) {
+      openTarget(inlineReference);
+      return;
+    }
+
+    final uri = inlineReference.uri?.toString();
+    final title = _referencePreviewTitle(inlineReference);
+    if (uri != null && uri.trim().isNotEmpty) {
+      Clipboard.setData(ClipboardData(text: uri));
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text('Copied target URI for $title. App navigation bridge is not attached here.')),
+      );
+      return;
+    }
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(content: Text('Open target: $title. No PDF/source navigation bridge is attached here.')),
+    );
+  }
+
+  void _copyReferenceDetails(TextSystemInlineReferenceMark inlineReference) {
+    Clipboard.setData(ClipboardData(text: _referencePreviewClipboardText(inlineReference)));
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      const SnackBar(content: Text('Reference details copied.')),
+    );
+  }
+
+  void _unlinkReferenceMark(TextMark mark) {
+    final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
+    if (inlineReference == null) return;
+    final document = widget.textController.document;
+    final nextBlocks = document.blocks.map((block) {
+      if (block.id != widget.block.id) return block;
+      final nextMarks = block.marks
+          .where((candidate) => !_isSameInlineReferenceTextMark(candidate, mark, inlineReference))
+          .toList(growable: false);
+      return block.copyWith(marks: nextMarks).normalizeMarks();
+    }).toList(growable: false);
+    var nextDocument = document.copyWith(blocks: nextBlocks, updatedAt: DateTime.now());
+    if (inlineReference.isCitation) {
+      nextDocument = TextSystemCitationBibliographyGenerator.refreshDocument(nextDocument);
+    }
+    widget.textController.replaceDocument(nextDocument, label: 'Unlink reference');
+    _hideReferencePreview();
+  }
+
+  void _changeCitationModeForMark(TextMark mark, TextSystemCitationInlineMode mode) {
+    final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
+    if (inlineReference == null || !inlineReference.isCitation) return;
+    final document = widget.textController.document;
+    final settings = TextSystemCitationSettings.fromDocument(document);
+    final source = TextSystemCitationSource.fromInlineMark(inlineReference);
+    final registry = TextSystemCitationRegistry.fromDocument(document);
+    final citationText = TextSystemCitationFormatter.inlineCitation(
+      settings: settings,
+      source: source,
+      sequenceNumber: registry.numberForTarget(inlineReference.targetId),
+      inlineMode: mode,
+    );
+    final refreshedReference = inlineReference.copyWith(
+      selectedText: citationText,
+      metadata: <String, Object?>{
+        ...inlineReference.metadata,
+        ...source.toMetadata(),
+        'citationStyleId': settings.style.id,
+        'citationInlineMode': mode.id,
+        'citationText': citationText,
+        'bibliographyManaged': true,
+      },
+    );
+
+    final nextBlocks = document.blocks.map((block) {
+      if (block.id != widget.block.id) return block;
+      final start = mark.range.start.clamp(0, block.text.length).toInt();
+      final end = mark.range.end.clamp(start, block.text.length).toInt();
+      if (start >= end) return block;
+      final delta = citationText.length - (end - start);
+      final nextText = block.text.replaceRange(start, end, citationText);
+      final nextMarks = block.marks.map((candidate) {
+        if (_isSameInlineReferenceTextMark(candidate, mark, inlineReference)) {
+          return candidate.copyWith(
+            range: TextSystemRange(start, start + citationText.length),
+            attributes: refreshedReference.toTextMarkAttributes(),
+          );
+        }
+        if (candidate.range.start >= end) {
+          return candidate.copyWith(range: candidate.range.shift(delta));
+        }
+        if (candidate.range.end > end) {
+          return candidate.copyWith(
+            range: TextSystemRange(candidate.range.start, candidate.range.end + delta),
+          );
+        }
+        return candidate;
+      }).toList(growable: false);
+      return block.copyWith(text: nextText, marks: nextMarks).normalizeMarks();
+    }).toList(growable: false);
+
+    final nextDocument = TextSystemCitationBibliographyGenerator.refreshDocument(
+      document.copyWith(blocks: nextBlocks, updatedAt: DateTime.now()),
+      settings: settings,
+    );
+    widget.textController.replaceDocument(nextDocument, label: 'Change citation format');
+    _hideReferencePreview();
+    widget.onRequestSelectionRestore(
+      TextSystemPagedSelectionAnchor.collapsed(
+        blockId: widget.block.id,
+        textOffset: (mark.range.start + citationText.length).clamp(0, nextDocument.blockById(widget.block.id)?.text.length ?? 0).toInt(),
+      ),
+    );
+  }
+
+  static bool _isSameInlineReferenceTextMark(
+    TextMark candidate,
+    TextMark original,
+    TextSystemInlineReferenceMark originalReference,
+  ) {
+    if (candidate.kind != TextMarkKind.link) return false;
+    final candidateReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(candidate.attributes);
+    if (candidateReference == null) return false;
+    return candidateReference.id == originalReference.id ||
+        (candidate.range.start == original.range.start &&
+            candidate.range.end == original.range.end &&
+            candidateReference.targetId == originalReference.targetId &&
+            candidateReference.kind == originalReference.kind);
+  }
+
+
   @override
   void dispose() {
     widget.onActiveFieldChanged(null);
+    _hideReferencePreview();
     _stopSelectionSync();
     _controller.removeListener(_notifyActiveSelection);
     _focusNode.removeListener(_handleFocusChanged);
@@ -4318,7 +5369,11 @@ class _PagedEditableBlockFieldState extends State<_PagedEditableBlockField> {
       onKeyEvent: _handleKeyEvent,
       child: Listener(
         behavior: HitTestBehavior.translucent,
-        onPointerDown: (_) => _scheduleActiveSelectionNotification(),
+        onPointerHover: _handleReferencePointerHover,
+        onPointerDown: (event) {
+          _handleReferencePointerDown(event);
+          _scheduleActiveSelectionNotification();
+        },
         onPointerUp: (_) => _scheduleActiveSelectionNotification(),
         onPointerCancel: (_) => _scheduleActiveSelectionNotification(),
         child: TextField(
@@ -4350,6 +5405,382 @@ class _PagedEditableBlockFieldState extends State<_PagedEditableBlockField> {
     );
   }
 }
+
+class _ReferencePreviewCard extends StatelessWidget {
+  const _ReferencePreviewCard({
+    required this.inlineReference,
+    required this.citationSettings,
+    required this.pinned,
+    required this.onTogglePinned,
+    required this.onOpen,
+    required this.onCopy,
+    required this.onUnlink,
+    required this.onClose,
+    this.onCitationModeChanged,
+  });
+
+  final TextSystemInlineReferenceMark inlineReference;
+  final TextSystemCitationSettings citationSettings;
+  final bool pinned;
+  final VoidCallback onTogglePinned;
+  final VoidCallback onOpen;
+  final VoidCallback onCopy;
+  final VoidCallback onUnlink;
+  final VoidCallback onClose;
+  final ValueChanged<TextSystemCitationInlineMode>? onCitationModeChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final title = _referencePreviewTitle(inlineReference);
+    final subtitle = _referencePreviewSubtitle(inlineReference, citationSettings);
+    final locator = _referencePreviewLocator(inlineReference);
+    final uri = inlineReference.uri?.toString();
+    final sourceName = _referencePreviewSourceName(inlineReference);
+    final excerpt = _referencePreviewExcerpt(inlineReference);
+    final workStatePills = _referencePreviewWorkStatePills(inlineReference);
+    final currentMode = TextSystemCitationInlineModeX.fromId(
+      inlineReference.metadata['citationInlineMode'] as String?,
+    );
+
+    return Material(
+      elevation: 10,
+      color: colorScheme.surface,
+      shadowColor: colorScheme.shadow.withValues(alpha: 0.22),
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.72)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    _referencePreviewIcon(inlineReference.kind),
+                    size: 18,
+                    color: colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          inlineReference.kind.label,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                            letterSpacing: 0.2,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton.filledTonal(
+                    tooltip: pinned ? 'Unpin preview' : 'Pin preview',
+                    iconSize: 16,
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onTogglePinned,
+                    icon: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    iconSize: 16,
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onClose,
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              if (subtitle != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+                ),
+              ],
+              if (locator != null || uri != null || sourceName != null || workStatePills.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    if (sourceName != null)
+                      _ReferencePreviewPill(icon: Icons.picture_as_pdf_outlined, label: sourceName),
+                    if (locator != null)
+                      _ReferencePreviewPill(icon: Icons.pin_drop_outlined, label: locator),
+                    for (final pill in workStatePills) pill,
+                    if (uri != null)
+                      _ReferencePreviewPill(icon: Icons.language, label: Uri.tryParse(uri)?.host.isNotEmpty == true ? Uri.parse(uri).host : uri),
+                  ],
+                ),
+              ],
+              if (excerpt != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  excerpt,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+              if (inlineReference.isCitation && onCitationModeChanged != null) ...[
+                const SizedBox(height: 10),
+                SegmentedButton<TextSystemCitationInlineMode>(
+                  segments: TextSystemCitationInlineMode.values
+                      .map(
+                        (mode) => ButtonSegment<TextSystemCitationInlineMode>(
+                          value: mode,
+                          label: Text(mode == TextSystemCitationInlineMode.parenthetical ? 'Parenthetical' : 'Narrative'),
+                        ),
+                      )
+                      .toList(growable: false),
+                  selected: <TextSystemCitationInlineMode>{currentMode},
+                  showSelectedIcon: false,
+                  onSelectionChanged: (selection) {
+                    if (selection.isEmpty) return;
+                    onCitationModeChanged!(selection.single);
+                  },
+                ),
+              ],
+              const SizedBox(height: 10),
+              Text(
+                'Ctrl/Cmd + Enter opens the target. Escape closes the preview.',
+                style: theme.textTheme.labelSmall?.copyWith(color: colorScheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.end,
+                children: [
+                  TextButton.icon(
+                    onPressed: onCopy,
+                    icon: const Icon(Icons.copy, size: 16),
+                    label: const Text('Copy'),
+                  ),
+                  TextButton.icon(
+                    onPressed: onUnlink,
+                    icon: const Icon(Icons.link_off, size: 16),
+                    label: const Text('Unlink'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: onOpen,
+                    icon: const Icon(Icons.open_in_new, size: 16),
+                    label: Text(_referencePreviewOpenLabel(inlineReference)),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReferencePreviewPill extends StatelessWidget {
+  const _ReferencePreviewPill({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.65)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 13, color: colorScheme.onSurfaceVariant),
+            const SizedBox(width: 4),
+            Text(
+              label.length > 42 ? '${label.substring(0, 39)}…' : label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(color: colorScheme.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _referencePreviewTitle(TextSystemInlineReferenceMark inlineReference) {
+  final metadataTitle = inlineReference.metadata['title']?.toString().trim();
+  if (metadataTitle != null && metadataTitle.isNotEmpty) return metadataTitle;
+  final citationText = inlineReference.metadata['citationText']?.toString().trim();
+  if (inlineReference.isCitation && citationText != null && citationText.isNotEmpty) {
+    return citationText;
+  }
+  final label = inlineReference.label.trim();
+  if (label.isNotEmpty) return label;
+  return inlineReference.kind.label;
+}
+
+String? _referencePreviewSubtitle(
+  TextSystemInlineReferenceMark inlineReference,
+  TextSystemCitationSettings citationSettings,
+) {
+  if (inlineReference.isCitation) {
+    final source = TextSystemCitationSource.fromInlineMark(inlineReference);
+    final parts = <String>[
+      if (source.authors.isNotEmpty) source.authors.join(', '),
+      if (source.year != null && source.year!.trim().isNotEmpty) source.year!.trim(),
+      if (source.containerTitle != null && source.containerTitle!.trim().isNotEmpty) source.containerTitle!.trim(),
+      if (_referencePreviewSourceName(inlineReference) != null) _referencePreviewSourceName(inlineReference)!,
+      citationSettings.style.label,
+    ];
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+  final selectedText = inlineReference.selectedText?.trim();
+  final target = inlineReference.targetId.trim();
+  final parts = <String>[
+    if (selectedText != null && selectedText.isNotEmpty) 'Text: $selectedText',
+    if (target.isNotEmpty) 'Target: $target',
+  ];
+  return parts.isEmpty ? null : parts.join(' · ');
+}
+
+String? _referencePreviewLocator(TextSystemInlineReferenceMark inlineReference) {
+  final sourceLocator = TextSystemSourceLocator.tryFromInlineReference(inlineReference);
+  final sourcePageLabel = sourceLocator?.pageLabel?.trim();
+  if (sourcePageLabel != null && sourcePageLabel.isNotEmpty) return sourcePageLabel;
+  final sourcePage = sourceLocator?.effectivePageNumber;
+  if (sourcePage != null && sourcePage > 0) return 'p. $sourcePage';
+
+  final locator = inlineReference.metadata['locator']?.toString().trim();
+  if (locator != null && locator.isNotEmpty) {
+    if (locator.startsWith('p.') || locator.startsWith('pp.')) return locator;
+    return 'p. $locator';
+  }
+  final page = inlineReference.metadata['page']?.toString().trim() ??
+      inlineReference.metadata['pageNumber']?.toString().trim();
+  if (page != null && page.isNotEmpty) return 'p. $page';
+  return null;
+}
+
+String? _referencePreviewSourceName(TextSystemInlineReferenceMark inlineReference) {
+  final locator = TextSystemSourceLocator.tryFromInlineReference(inlineReference);
+  final title = locator?.sourceTitle?.trim();
+  if (title != null && title.isNotEmpty) return title;
+
+  final metadataTitle = inlineReference.metadata['sourceTitle']?.toString().trim();
+  if (metadataTitle != null && metadataTitle.isNotEmpty) return metadataTitle;
+  return null;
+}
+
+String? _referencePreviewExcerpt(TextSystemInlineReferenceMark inlineReference) {
+  final locator = TextSystemSourceLocator.tryFromInlineReference(inlineReference);
+  final excerpt = locator?.excerpt?.trim() ?? inlineReference.metadata['excerpt']?.toString().trim();
+  if (excerpt == null || excerpt.isEmpty) return null;
+  return excerpt.length <= 180 ? '“$excerpt”' : '“${excerpt.substring(0, 177)}…”';
+}
+
+List<_ReferencePreviewPill> _referencePreviewWorkStatePills(
+  TextSystemInlineReferenceMark inlineReference,
+) {
+  final locator = TextSystemSourceLocator.tryFromInlineReference(inlineReference);
+  final workState = locator?.workState ?? _mapFromMetadata(inlineReference.metadata['workState']);
+  final sidecarNotes = _intFromObject(workState['sidecarNoteCount']);
+  final highlights = _intFromObject(workState['highlightCount']);
+  final openTodos = _intFromObject(workState['openTodoCount']);
+
+  return <_ReferencePreviewPill>[
+    if (sidecarNotes != null && sidecarNotes > 0)
+      _ReferencePreviewPill(
+        icon: Icons.sticky_note_2_outlined,
+        label: '$sidecarNotes note${sidecarNotes == 1 ? '' : 's'}',
+      ),
+    if (highlights != null && highlights > 0)
+      _ReferencePreviewPill(
+        icon: Icons.highlight_outlined,
+        label: '$highlights highlight${highlights == 1 ? '' : 's'}',
+      ),
+    if (openTodos != null && openTodos > 0)
+      _ReferencePreviewPill(
+        icon: Icons.check_circle_outline_rounded,
+        label: '$openTodos TODO${openTodos == 1 ? '' : 's'}',
+      ),
+  ];
+}
+
+String _referencePreviewOpenLabel(TextSystemInlineReferenceMark inlineReference) {
+  final locator = TextSystemSourceLocator.tryFromInlineReference(inlineReference);
+  if (locator?.hasPdfTarget == true) return 'Open PDF';
+  return 'Open';
+}
+
+Map<String, Object?> _mapFromMetadata(Object? value) {
+  if (value is Map<String, Object?>) return value;
+  if (value is Map) {
+    return value.map((dynamic key, dynamic value) => MapEntry(key.toString(), value as Object?));
+  }
+  return const <String, Object?>{};
+}
+
+int? _intFromObject(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value);
+  return null;
+}
+
+String _referencePreviewClipboardText(TextSystemInlineReferenceMark inlineReference) {
+  final lines = <String>[
+    '${inlineReference.kind.label}: ${_referencePreviewTitle(inlineReference)}',
+    if (_referencePreviewSubtitle(inlineReference, const TextSystemCitationSettings()) != null)
+      _referencePreviewSubtitle(inlineReference, const TextSystemCitationSettings())!,
+    if (_referencePreviewSourceName(inlineReference) != null) _referencePreviewSourceName(inlineReference)!,
+    if (_referencePreviewLocator(inlineReference) != null) _referencePreviewLocator(inlineReference)!,
+    if (_referencePreviewExcerpt(inlineReference) != null) _referencePreviewExcerpt(inlineReference)!,
+    if (inlineReference.uri != null) inlineReference.uri.toString(),
+    'targetId: ${inlineReference.targetId}',
+  ];
+  return lines.join('\n');
+}
+
+IconData _referencePreviewIcon(TextSystemReferenceTargetKind kind) {
+  return switch (kind) {
+    TextSystemReferenceTargetKind.citation => Icons.format_quote,
+    TextSystemReferenceTargetKind.source => Icons.picture_as_pdf_outlined,
+    TextSystemReferenceTargetKind.document => Icons.description_outlined,
+    TextSystemReferenceTargetKind.project => Icons.folder_open,
+    TextSystemReferenceTargetKind.todo => Icons.check_circle_outline,
+    TextSystemReferenceTargetKind.link => Icons.link,
+    TextSystemReferenceTargetKind.figure => Icons.image_outlined,
+    TextSystemReferenceTargetKind.table => Icons.table_chart_outlined,
+    TextSystemReferenceTargetKind.unknown => Icons.bookmark_border,
+  };
+}
+
 
 class _ContinuationChip extends StatelessWidget {
   const _ContinuationChip({required this.label});

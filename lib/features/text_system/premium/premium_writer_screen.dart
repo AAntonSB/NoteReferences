@@ -1,9 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../../infrastructure/database/app_database.dart';
+import '../../notes/data/note_repository.dart';
+import '../../pdf_reader/presentation/pdf_reader_screen.dart';
+import '../../planning/data/study_planning_repository.dart';
 import '../fluent/fluent_document_command_controller.dart';
 import '../page/text_system_layout_style_resolver.dart';
 import '../page/text_system_page_canvas.dart';
@@ -33,6 +38,8 @@ class PremiumWriterScreen extends StatefulWidget {
     this.initialDocument,
     this.screenTitle = 'Premium Writer',
     this.showInspectorByDefault = false,
+    this.database,
+    this.planningRepository,
   });
 
   final TextSystemController? textController;
@@ -40,6 +47,8 @@ class PremiumWriterScreen extends StatefulWidget {
   final TextSystemDocument? initialDocument;
   final String screenTitle;
   final bool showInspectorByDefault;
+  final AppDatabase? database;
+  final StudyPlanningRepository? planningRepository;
 
   @override
   State<PremiumWriterScreen> createState() => _PremiumWriterScreenState();
@@ -57,7 +66,7 @@ enum _PremiumWriterPageMode {
       _PremiumWriterPageMode.pageless => 'Pageless',
       _PremiumWriterPageMode.hybrid => 'Hybrid pages',
       _PremiumWriterPageMode.chromeOnly => 'Page chrome',
-      _PremiumWriterPageMode.pagedBlocksExperimental => 'Real pages experiment',
+      _PremiumWriterPageMode.pagedBlocksExperimental => 'Real pages',
     };
   }
 
@@ -66,7 +75,7 @@ enum _PremiumWriterPageMode {
       _PremiumWriterPageMode.pageless => 'Continuous writing surface. No page chrome or break markers.',
       _PremiumWriterPageMode.hybrid => 'Continuous editor with physical page chrome and measured page-break markers.',
       _PremiumWriterPageMode.chromeOnly => 'Continuous editor with physical page frames only.',
-      _PremiumWriterPageMode.pagedBlocksExperimental => 'Fresh block-level page surface. Blocks/fragments are laid out inside real pages with experimental structural editing.',
+      _PremiumWriterPageMode.pagedBlocksExperimental => 'Primary long-form editor with physical pages, headers/footers, citations, footnotes, references, and app integrations.',
     };
   }
 }
@@ -75,10 +84,11 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
   late final bool _ownsTextController;
   late final bool _ownsAutosaveController;
   late final TextSystemController _textController;
-  late final InMemoryTextSystemPersistenceAdapter _persistenceAdapter;
+  late final TextSystemPersistenceAdapter _persistenceAdapter;
   late final TextSystemAutosaveController _autosaveController;
   late final FluentDocumentCommandController _fluentCommands;
   late final TextSystemReferenceActionRepository _referenceActionRepository;
+  late final TextSystemEmbeddedTodoRepository? _embeddedTodoRepository;
   late final ScrollController _pageScrollController;
 
   bool _overviewExpanded = false;
@@ -88,7 +98,7 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
   bool _widePage = false;
   bool _showMarginGuides = true;
   bool _showDetailedPageBreakLabels = true;
-  _PremiumWriterPageMode _pageMode = _PremiumWriterPageMode.hybrid;
+  _PremiumWriterPageMode _pageMode = _PremiumWriterPageMode.pagedBlocksExperimental;
   TextSystemPageSetup _pageSetup = TextSystemPagePreset.a4FivePages.setup;
   TextSystemPageFurniture _pageFurniture = const TextSystemPageFurniture.defaults();
   TextSystemPageViewport? _pageViewport;
@@ -100,9 +110,16 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
     super.initState();
     _showInspector = widget.showInspectorByDefault;
     _fluentCommands = FluentDocumentCommandController();
-    _referenceActionRepository = TextSystemMemoryReferenceActionRepository(
-      seedTargets: TextSystemReferenceActionRepositorySeed.academicDemoTargets(),
-    );
+    _referenceActionRepository = widget.database == null
+        ? TextSystemMemoryReferenceActionRepository()
+        : TextSystemPdfLibraryReferenceActionRepository(
+            database: widget.database!,
+          );
+    _embeddedTodoRepository = widget.database == null
+        ? null
+        : TextSystemEmbeddedTodoRepository(
+            noteRepository: NoteRepository(widget.database!),
+          );
     _pageScrollController = ScrollController();
 
     _ownsTextController = widget.textController == null;
@@ -116,7 +133,12 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
       );
     }
 
-    _persistenceAdapter = InMemoryTextSystemPersistenceAdapter()..seed(_textController.document);
+    _persistenceAdapter = const LocalFileTextSystemPersistenceAdapter();
+    if (_ownsTextController) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_loadSavedPremiumWriterDraft());
+      });
+    }
     _ownsAutosaveController = widget.autosaveController == null;
     _autosaveController = widget.autosaveController ??
         TextSystemAutosaveController(
@@ -136,6 +158,113 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
       _textController.dispose();
     }
     super.dispose();
+  }
+
+  Future<void> _loadSavedPremiumWriterDraft() async {
+    final loaded = await _autosaveController.load(_textController.document.id);
+    if (!mounted || loaded == null) return;
+
+    final hydrated = await _hydrateSavedInlineReferences(
+      _textController.document,
+    );
+    final refreshed = TextSystemCitationBibliographyGenerator.refreshDocument(
+      hydrated,
+    );
+    if (jsonEncode(refreshed.toJson()) != jsonEncode(_textController.document.toJson())) {
+      _textController.replaceDocument(
+        refreshed,
+        label: 'Load PDF citation targets',
+      );
+      await _autosaveController.saveNow(message: 'Loaded and refreshed citations.');
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      const SnackBar(
+        content: Text('Loaded saved premium writer draft.'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<TextSystemDocument> _hydrateSavedInlineReferences(
+    TextSystemDocument document,
+  ) async {
+    final targetCache = <String, TextSystemReferenceTarget?>{};
+    var changed = false;
+    final nextBlocks = <TextSystemBlock>[];
+
+    for (final block in document.blocks) {
+      if (TextSystemCitationBibliographyGenerator.isGeneratedBibliographyBlock(block)) {
+        nextBlocks.add(block);
+        continue;
+      }
+
+      var blockChanged = false;
+      final nextMarks = <TextMark>[];
+      for (final mark in block.marks) {
+        final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(
+          mark.attributes,
+        );
+        if (inlineReference == null || inlineReference.targetId.trim().isEmpty) {
+          nextMarks.add(mark);
+          continue;
+        }
+
+        final target = targetCache.containsKey(inlineReference.targetId)
+            ? targetCache[inlineReference.targetId]
+            : await _referenceActionRepository.resolveTarget(inlineReference.targetId);
+        targetCache[inlineReference.targetId] = target;
+        if (target == null) {
+          nextMarks.add(mark);
+          continue;
+        }
+
+        final hydrated = _hydrateInlineReferenceFromTarget(
+          inlineReference: inlineReference,
+          target: target,
+        );
+        final attributes = hydrated.toTextMarkAttributes();
+        if (jsonEncode(attributes) != jsonEncode(mark.attributes)) {
+          changed = true;
+          blockChanged = true;
+          nextMarks.add(mark.copyWith(attributes: attributes));
+        } else {
+          nextMarks.add(mark);
+        }
+      }
+
+      nextBlocks.add(
+        blockChanged ? block.copyWith(marks: nextMarks).normalizeMarks() : block,
+      );
+    }
+
+    if (!changed) return document;
+    return document.copyWith(blocks: nextBlocks, updatedAt: DateTime.now());
+  }
+
+  TextSystemInlineReferenceMark _hydrateInlineReferenceFromTarget({
+    required TextSystemInlineReferenceMark inlineReference,
+    required TextSystemReferenceTarget target,
+  }) {
+    final citationInlineMode = inlineReference.metadata['citationInlineMode'];
+    final citationStyleId = inlineReference.metadata['citationStyleId'];
+    final citationText = inlineReference.metadata['citationText'];
+
+    return inlineReference.copyWith(
+      kind: target.kind,
+      label: target.title,
+      uri: target.uri ?? inlineReference.uri,
+      citationKey: target.citationKey ?? inlineReference.citationKey,
+      updatedAt: target.updatedAt ?? inlineReference.updatedAt,
+      metadata: <String, Object?>{
+        ...inlineReference.metadata,
+        ...target.metadata,
+        if (citationInlineMode != null) 'citationInlineMode': citationInlineMode,
+        if (citationStyleId != null) 'citationStyleId': citationStyleId,
+        if (citationText != null) 'citationText': citationText,
+      },
+    );
   }
 
   TextSystemDocument _seedDocument() {
@@ -216,12 +345,86 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
     );
   }
 
+  Future<void> _openReferenceTarget(TextSystemInlineReferenceMark inlineReference) async {
+    final database = widget.database;
+    final locator = TextSystemSourceLocator.tryFromInlineReference(inlineReference);
+    final pdfDocumentId = locator?.effectivePdfDocumentId;
+
+    if (database != null && pdfDocumentId != null && pdfDocumentId.trim().isNotEmpty) {
+      final documents = await database.getAllDocuments();
+      PdfDocument? document;
+      for (final candidate in documents) {
+        if (candidate.documentId == pdfDocumentId) {
+          document = candidate;
+          break;
+        }
+      }
+
+      if (!mounted) return;
+      if (document == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not find PDF target: $pdfDocumentId.')),
+        );
+        return;
+      }
+
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => PdfReaderScreen(
+            database: database,
+            documentId: document!.documentId,
+            filePath: document!.filePath,
+            title: document!.name,
+            planningRepository: widget.planningRepository,
+            initialPageNumber: locator?.effectivePageNumber,
+            initialSourceRects: locator?.sourceRects
+                    .map((rect) => PdfSourceRect(
+                          pageNumber: rect.pageNumber,
+                          left: rect.left,
+                          top: rect.top,
+                          right: rect.right,
+                          bottom: rect.bottom,
+                        ))
+                    .toList(growable: false) ??
+                const <PdfSourceRect>[],
+            initialSidecarNoteId: locator?.sidecarNoteId,
+            initialOpenLabel: locator?.pageLabel ?? locator?.excerpt,
+          ),
+        ),
+      );
+      return;
+    }
+
+    final uri = inlineReference.uri?.toString();
+    if (uri != null && uri.trim().isNotEmpty) {
+      await Clipboard.setData(ClipboardData(text: uri));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Copied target URI: $uri')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('No openable PDF/source target is attached to ${inlineReference.label}.')),
+    );
+  }
+
   Future<void> _saveNow() async {
     await _autosaveController.saveNow(message: 'Saved premium writer draft.');
   }
 
   void _resetDemo() {
     _textController.replaceDocument(_seedDocument(), label: 'Reset premium writer demo');
+  }
+
+  void _applyCitationSettings(TextSystemCitationSettings settings) {
+    final nextDocument = TextSystemCitationBibliographyGenerator.refreshDocument(
+      settings.applyToDocument(_textController.document),
+      settings: settings,
+    );
+    _textController.replaceDocument(nextDocument, label: 'Change citation settings');
   }
 
   Future<void> _copyReport() async {
@@ -233,7 +436,9 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
   }
 
   Future<void> _exportDocument(TextSystemExportFormat format) async {
-    final exportDocument = _documentWithPremiumWriterDemoListFix(_textController.document);
+    final exportDocument = TextSystemCitationBibliographyGenerator.refreshDocument(
+      _documentWithPremiumWriterDemoListFix(_textController.document),
+    );
     final result = await TextSystemExportService.exportDocument(
       document: exportDocument,
       format: format,
@@ -750,6 +955,8 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
                   onToggleInspector: () => setState(() => _showInspector = !_showInspector),
                   pageSetup: _pageSetup,
                   pageMode: _pageMode,
+                  citationSettings: TextSystemCitationSettings.fromDocument(document),
+                  onCitationSettingsChanged: _applyCitationSettings,
                   onPageModeChanged: (mode) => setState(() => _pageMode = mode),
                   onPageSetupChanged: (setup) => setState(() {
                     _pageSetup = setup;
@@ -814,6 +1021,8 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
                             showMarginGuides: _showMarginGuides,
                             scrollController: _pageScrollController,
                             referenceActionRepository: _referenceActionRepository,
+                            embeddedTodoRepository: _embeddedTodoRepository,
+                            onOpenReferenceTarget: _openReferenceTarget,
                           ),
                         _ => TextSystemPageCanvas(
                             pageMaxWidth: pageMaxWidth,
@@ -910,6 +1119,8 @@ class _PremiumWriterToolbar extends StatelessWidget {
     required this.widePage,
     required this.pageSetup,
     required this.pageMode,
+    required this.citationSettings,
+    required this.onCitationSettingsChanged,
     required this.onPageSetupChanged,
     required this.onPageModeChanged,
     required this.onToggleOverview,
@@ -928,6 +1139,8 @@ class _PremiumWriterToolbar extends StatelessWidget {
   final bool widePage;
   final TextSystemPageSetup pageSetup;
   final _PremiumWriterPageMode pageMode;
+  final TextSystemCitationSettings citationSettings;
+  final ValueChanged<TextSystemCitationSettings> onCitationSettingsChanged;
   final ValueChanged<TextSystemPageSetup> onPageSetupChanged;
   final ValueChanged<_PremiumWriterPageMode> onPageModeChanged;
   final bool showMarginGuides;
@@ -996,6 +1209,10 @@ class _PremiumWriterToolbar extends StatelessWidget {
               onPressed: commandController.canFormatSelection ? commandController.code : null,
             ),
             _ReferenceActionMenu(commandController: commandController),
+            _CitationSettingsMenu(
+              settings: citationSettings,
+              onChanged: onCitationSettingsChanged,
+            ),
             _ToolbarButton(
               tooltip: 'Quick source link (Ctrl/Cmd+K)',
               icon: Icons.link_rounded,
@@ -1121,6 +1338,71 @@ enum _PremiumReferenceAction {
         controller.addReferenceLink();
         break;
     }
+  }
+}
+
+
+class _CitationSettingsMenu extends StatelessWidget {
+  const _CitationSettingsMenu({
+    required this.settings,
+    required this.onChanged,
+  });
+
+  final TextSystemCitationSettings settings;
+  final ValueChanged<TextSystemCitationSettings> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<Object>(
+      tooltip: 'Citation style and inline citation mode',
+      onSelected: (value) {
+        if (value is TextSystemCitationStyle) {
+          onChanged(settings.copyWith(style: value));
+        } else if (value is TextSystemCitationInlineMode) {
+          onChanged(settings.copyWith(inlineMode: value));
+        }
+      },
+      itemBuilder: (context) => <PopupMenuEntry<Object>>[
+        const PopupMenuItem<Object>(enabled: false, child: Text('Reference style')),
+        for (final style in TextSystemCitationStyle.values)
+          PopupMenuItem<Object>(
+            value: style,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(width: 22, child: settings.style == style ? const Icon(Icons.check_rounded, size: 18) : null),
+                Text(style.label),
+              ],
+            ),
+          ),
+        const PopupMenuDivider(),
+        const PopupMenuItem<Object>(enabled: false, child: Text('Inline citation mode')),
+        for (final mode in TextSystemCitationInlineMode.values)
+          PopupMenuItem<Object>(
+            value: mode,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(width: 22, child: settings.inlineMode == mode ? const Icon(Icons.check_rounded, size: 18) : null),
+                Text(mode.label),
+              ],
+            ),
+          ),
+      ],
+      child: _ToolbarButtonShell(
+        enabled: true,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.menu_book_outlined, size: 18),
+            const SizedBox(width: 6),
+            Text('Cite: ${settings.style.label}'),
+            const SizedBox(width: 2),
+            const Icon(Icons.arrow_drop_down_rounded, size: 18),
+          ],
+        ),
+      ),
+    );
   }
 }
 

@@ -15,6 +15,7 @@ import '../page/text_system_page_furniture.dart';
 import '../page/text_system_page_setup.dart';
 import '../styles/text_system_document_style.dart';
 import '../structure/text_system_document_structure.dart';
+import '../references/citations/text_system_citation.dart';
 
 enum TextSystemExportFormat {
   markdown,
@@ -96,7 +97,8 @@ class TextSystemExportService {
     required TextSystemExportFormat format,
     TextSystemExportOptions options = const TextSystemExportOptions(),
   }) async {
-    final semanticDocument = _buildSemanticExportDocument(document, options);
+    final exportSourceDocument = TextSystemCitationBibliographyGenerator.refreshDocument(document);
+    final semanticDocument = _buildSemanticExportDocument(exportSourceDocument, options);
 
     return switch (format) {
       TextSystemExportFormat.markdown => TextSystemExportResult(
@@ -156,7 +158,7 @@ class TextSystemExportService {
       TextSystemExportFormat.pdf => TextSystemExportResult(
           format: format,
           fileExtension: format.fileExtension,
-          bytes: _toPdfSnapshot(document, options: options),
+          bytes: _toPdfSnapshot(exportSourceDocument, options: options),
           pipelineKind: TextSystemExportPipelineKind.visual,
           notes: const <String>[
             'Visual PDF export: renders pages, measured lines, page furniture, list/todo markers, and footnotes from TextSystemDocumentLayoutTree.',
@@ -423,7 +425,7 @@ class TextSystemExportService {
     state.startPage();
 
     for (final block in model.bodyBlocks) {
-      if (block.type == TextSystemBlockType.custom) continue;
+      if (block.type == TextSystemBlockType.custom && block.metadata['kind'] == 'footnote') continue;
 
       if (block.type == TextSystemBlockType.divider) {
         final kind = block.metadata['kind'];
@@ -546,7 +548,7 @@ class TextSystemExportService {
           : block.metadata['kind'] == 'pageBreak'
               ? '\n<!-- page break -->\n'
               : '---',
-      TextSystemBlockType.custom => '',
+      TextSystemBlockType.custom => block.metadata['kind'] == 'bibliography' ? block.text : '',
     };
   }
 
@@ -1147,7 +1149,7 @@ class _PdfExportState {
       TextSystemBlockType.quote => TextSystemExportService._renderPlainInline(block, model),
       TextSystemBlockType.code => block.text,
       TextSystemBlockType.divider => '',
-      TextSystemBlockType.custom => '',
+      TextSystemBlockType.custom => block.metadata['kind'] == 'bibliography' ? block.text : '',
     };
   }
 

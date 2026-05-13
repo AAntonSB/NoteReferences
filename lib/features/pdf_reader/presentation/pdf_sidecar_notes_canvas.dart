@@ -66,6 +66,8 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
   String? _noteIdToFocus;
   String? _activeEditingNoteId;
   String? _revealedNoteId;
+  String? _pendingRevealScrollNoteId;
+  DateTime? _manualRevealScrollUntil;
 
   bool _syncScheduled = false;
   late bool _debugEnabled;
@@ -265,7 +267,9 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
     if (!mounted) return;
 
     setState(() {
+      _noteIdToFocus = request.noteId;
       _revealedNoteId = request.noteId;
+      _pendingRevealScrollNoteId = request.noteId;
       _outlineOpen = false;
     });
 
@@ -478,6 +482,84 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
     return metrics;
   }
 
+  void _schedulePendingRevealScroll(
+    List<NoteWithAnchor> notes,
+    List<SidecarPageMetrics> metrics,
+  ) {
+    final noteId = _pendingRevealScrollNoteId;
+    if (noteId == null || notes.isEmpty || metrics.isEmpty) {
+      return;
+    }
+
+    NoteWithAnchor? note;
+    for (final candidate in notes) {
+      if (candidate.note.id == noteId) {
+        note = candidate;
+        break;
+      }
+    }
+    if (note == null) {
+      return;
+    }
+
+    SidecarPageMetrics? metric;
+    for (final candidate in metrics) {
+      if (candidate.pageNumber == note.sidecarPlacement.pageNumber) {
+        metric = candidate;
+        break;
+      }
+    }
+    if (metric == null) {
+      return;
+    }
+
+    _pendingRevealScrollNoteId = null;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _scrollToSidecarNote(note!, metric!);
+    });
+  }
+
+  void _scrollToSidecarNote(NoteWithAnchor note, SidecarPageMetrics metric) {
+    if (!_scrollController.hasClients) {
+      _pendingRevealScrollNoteId = note.note.id;
+      return;
+    }
+
+    final placement = note.sidecarPlacement;
+    final y = metric.top + placement.y.clamp(0.0, 1.0).toDouble() * metric.height;
+    final maxExtent = _scrollController.position.maxScrollExtent;
+    final viewportHeight = math.max(1.0, _latestSidecarViewportHeight);
+    final targetOffset = (y - viewportHeight * 0.28).clamp(0.0, maxExtent).toDouble();
+
+    _manualRevealScrollUntil = DateTime.now().add(const Duration(milliseconds: 1200));
+    unawaited(
+      _scrollController.animateTo(
+        targetOffset,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      ),
+    );
+
+    final sourceRects = note.sourceRects;
+    if (sourceRects.isNotEmpty) {
+      final rect = sourceRects.firstWhere(
+        (candidate) => candidate.pageNumber == metric.pageNumber,
+        orElse: () => sourceRects.first,
+      );
+      final sourceY = math.min(rect.top, rect.bottom)
+          .clamp(0.0, math.max(1.0, metric.pdfPageRect.height))
+          .toDouble();
+      widget.onRequestPdfJumpToDocumentY?.call(metric.pdfPageRect.top + sourceY);
+      return;
+    }
+
+    widget.onRequestPdfJumpToDocumentY?.call(
+      metric.pdfPageRect.top + placement.y.clamp(0.0, 1.0).toDouble() * metric.pdfPageRect.height,
+    );
+  }
+
   void _scheduleSyncToPdf() {
     if (_syncScheduled) {
       return;
@@ -495,6 +577,12 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
   }
 
   void _syncToPdfPosition() {
+    final manualRevealScrollUntil = _manualRevealScrollUntil;
+    if (manualRevealScrollUntil != null &&
+        DateTime.now().isBefore(manualRevealScrollUntil)) {
+      return;
+    }
+
     if (!_scrollController.hasClients || _latestPageMetrics.isEmpty) {
       return;
     }
@@ -797,6 +885,7 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
 
                           _latestPageMetrics = metrics;
                           _scheduleSyncToPdf();
+                          _schedulePendingRevealScroll(notes, metrics);
 
                           final totalHeight = _totalSidecarHeight(metrics);
 

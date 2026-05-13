@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/text_mark.dart';
 import '../core/text_system_block.dart';
+import '../references/actions/text_system_reference_action_models.dart';
 import 'fluent_buffer_segment.dart';
 import 'fluent_document_buffer.dart';
 
@@ -217,14 +218,35 @@ class FluentDocumentTextStyler {
             fontFamily: 'monospace',
             backgroundColor: theme.colorScheme.surfaceContainerHighest,
           ),
-        TextMarkKind.link => style.copyWith(
-            color: theme.colorScheme.primary,
-            decoration: _mergeDecoration(style.decoration, TextDecoration.underline),
-            decorationColor: theme.colorScheme.primary,
-          ),
+        TextMarkKind.link => _styleForLinkMark(theme, style, mark),
       };
     }
     return style;
+  }
+
+  TextStyle _styleForLinkMark(ThemeData theme, TextStyle style, TextMark mark) {
+    final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
+    if (inlineReference?.isCitation == true) {
+      return style.copyWith(
+        backgroundColor: const Color(0x14B08900),
+        decoration: _mergeDecoration(style.decoration, TextDecoration.underline),
+        decorationColor: const Color(0xFF8A6D1D),
+        decorationStyle: TextDecorationStyle.dotted,
+        decorationThickness: 1.2,
+      );
+    }
+    if (inlineReference != null) {
+      return style.copyWith(
+        decoration: _mergeDecoration(style.decoration, TextDecoration.underline),
+        decorationColor: const Color(0xFF6B5E8E),
+        decorationStyle: TextDecorationStyle.dotted,
+        decorationThickness: 1.15,
+      );
+    }
+    return style.copyWith(
+      decoration: _mergeDecoration(style.decoration, TextDecoration.underline),
+      decorationColor: theme.colorScheme.primary,
+    );
   }
 
   TextStyle _styleForComposing(TextStyle style) {

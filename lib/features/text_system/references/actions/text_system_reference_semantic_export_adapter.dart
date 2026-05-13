@@ -10,12 +10,23 @@ import 'text_system_reference_action_models.dart';
 class TextSystemReferenceSemanticExportAdapter {
   const TextSystemReferenceSemanticExportAdapter._();
 
+  static bool _hasPreRenderedCitationText({
+    required String visibleText,
+    required TextSystemInlineReferenceMark mark,
+  }) {
+    final citationText = mark.metadata['citationText']?.toString().trim();
+    return citationText != null && citationText.isNotEmpty && visibleText.trim() == citationText;
+  }
+
   static String markdown({
     required String visibleText,
     required TextSystemInlineReferenceMark mark,
   }) {
     switch (mark.kind) {
       case TextSystemReferenceTargetKind.citation:
+        if (_hasPreRenderedCitationText(visibleText: visibleText, mark: mark)) {
+          return _escapeMarkdownText(visibleText);
+        }
         return '${_escapeMarkdownText(visibleText)} [@${_markdownCitationKey(mark)}]';
       case TextSystemReferenceTargetKind.link:
       case TextSystemReferenceTargetKind.source:
@@ -40,6 +51,9 @@ class TextSystemReferenceSemanticExportAdapter {
   }) {
     switch (mark.kind) {
       case TextSystemReferenceTargetKind.citation:
+        if (_hasPreRenderedCitationText(visibleText: visibleText, mark: mark)) {
+          return _escapeLatex(visibleText);
+        }
         return '${_escapeLatex(visibleText)} \\cite{${_latexKey(mark.exportKey)}}';
       case TextSystemReferenceTargetKind.link:
       case TextSystemReferenceTargetKind.source:
@@ -64,6 +78,9 @@ class TextSystemReferenceSemanticExportAdapter {
   }) {
     switch (mark.kind) {
       case TextSystemReferenceTargetKind.citation:
+        if (_hasPreRenderedCitationText(visibleText: visibleText, mark: mark)) {
+          return _escapeTypstText(visibleText);
+        }
         return '${_escapeTypstText(visibleText)} @${_typstKey(mark.exportKey)}';
       case TextSystemReferenceTargetKind.link:
       case TextSystemReferenceTargetKind.source:

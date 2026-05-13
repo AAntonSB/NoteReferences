@@ -6,6 +6,7 @@ import '../core/text_system_document.dart';
 import '../page/text_system_layout_tree.dart';
 import '../references/actions/text_system_reference_action_models.dart';
 import '../references/actions/text_system_reference_semantic_export_adapter.dart';
+import '../references/citations/text_system_citation.dart';
 import '../styles/text_system_document_style.dart';
 import '../structure/text_system_document_structure.dart';
 
@@ -49,11 +50,12 @@ class TextSystemSemanticExportDocument {
     TextSystemDocumentLayoutTree? layoutTree,
     bool includeFootnotes = true,
   }) {
+    final exportSourceDocument = TextSystemCitationBibliographyGenerator.refreshDocument(document);
     final footnoteBlocksById = <String, TextSystemBlock>{};
     final nodes = <TextSystemExportNode>[];
 
-    for (var blockIndex = 0; blockIndex < document.blocks.length; blockIndex++) {
-      final block = document.blocks[blockIndex];
+    for (var blockIndex = 0; blockIndex < exportSourceDocument.blocks.length; blockIndex++) {
+      final block = exportSourceDocument.blocks[blockIndex];
       if (_isFootnoteBlock(block)) {
         final footnoteId = block.metadata['footnoteId'];
         if (footnoteId is String && footnoteId.isNotEmpty) {
@@ -112,11 +114,11 @@ class TextSystemSemanticExportDocument {
 
     return TextSystemSemanticExportDocument(
       metadata: TextSystemExportMetadata(
-        documentId: document.id,
-        title: document.title.trim().isEmpty ? 'Untitled document' : document.title.trim(),
-        createdAt: document.createdAt,
-        updatedAt: document.updatedAt,
-        rawMetadata: Map<String, Object?>.unmodifiable(document.metadata),
+        documentId: exportSourceDocument.id,
+        title: exportSourceDocument.title.trim().isEmpty ? 'Untitled document' : exportSourceDocument.title.trim(),
+        createdAt: exportSourceDocument.createdAt,
+        updatedAt: exportSourceDocument.updatedAt,
+        rawMetadata: Map<String, Object?>.unmodifiable(exportSourceDocument.metadata),
       ),
       nodes: List<TextSystemExportNode>.unmodifiable(nodes),
       footnotes: List<TextSystemExportFootnote>.unmodifiable(footnotes),

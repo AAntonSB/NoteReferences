@@ -134,43 +134,10 @@ class TextSystemMemoryReferenceActionRepository
 class TextSystemReferenceActionRepositorySeed {
   const TextSystemReferenceActionRepositorySeed._();
 
+  /// Legacy hook kept for older lab screens. Production integrations should not
+  /// seed fake references; the picker now starts with real app data plus
+  /// manually created session targets.
   static List<TextSystemReferenceTarget> academicDemoTargets() {
-    final now = DateTime.now();
-    return <TextSystemReferenceTarget>[
-      TextSystemReferenceTarget(
-        id: 'citation_acemoglu_restrepo_2019',
-        kind: TextSystemReferenceTargetKind.citation,
-        title: 'Acemoglu & Restrepo (2019)',
-        subtitle: 'Automation and new tasks',
-        citationKey: 'acemogluRestrepo2019',
-        createdAt: now.subtract(const Duration(days: 8)),
-        updatedAt: now.subtract(const Duration(days: 1)),
-      ),
-      TextSystemReferenceTarget(
-        id: 'citation_aghion_howitt_1992',
-        kind: TextSystemReferenceTargetKind.citation,
-        title: 'Aghion & Howitt (1992)',
-        subtitle: 'Creative destruction and growth',
-        citationKey: 'aghionHowitt1992',
-        createdAt: now.subtract(const Duration(days: 12)),
-        updatedAt: now.subtract(const Duration(days: 2)),
-      ),
-      TextSystemReferenceTarget(
-        id: 'source_pdf_ai_productivity_notes',
-        kind: TextSystemReferenceTargetKind.source,
-        title: 'AI productivity notes',
-        subtitle: 'PDF source',
-        createdAt: now.subtract(const Duration(days: 5)),
-        updatedAt: now.subtract(const Duration(hours: 12)),
-      ),
-      TextSystemReferenceTarget(
-        id: 'document_literature_review',
-        kind: TextSystemReferenceTargetKind.document,
-        title: 'Literature review',
-        subtitle: 'Internal document',
-        createdAt: now.subtract(const Duration(days: 20)),
-        updatedAt: now.subtract(const Duration(days: 4)),
-      ),
-    ];
+    return const <TextSystemReferenceTarget>[];
   }
 }

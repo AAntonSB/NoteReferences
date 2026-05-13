@@ -115,7 +115,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Future<void> _openTextSystemTestEnv() async {
     await Navigator.of(context).push<void>(
-      MaterialPageRoute(builder: (_) => const TextSystemTestEnvScreen()),
+      MaterialPageRoute(
+        builder: (_) => TextSystemTestEnvScreen(
+          database: widget.database,
+          planningRepository: _planningRepository,
+        ),
+      ),
     );
   }
 

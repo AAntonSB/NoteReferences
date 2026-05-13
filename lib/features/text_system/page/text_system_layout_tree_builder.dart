@@ -6,6 +6,7 @@ import 'package:flutter/widgets.dart';
 import '../core/text_mark.dart';
 import '../core/text_system_block.dart';
 import '../core/text_system_document.dart';
+import '../references/actions/text_system_reference_action_models.dart';
 import '../styles/text_system_document_style.dart';
 import 'text_system_layout_tree.dart';
 import 'text_system_page_furniture.dart';
@@ -544,6 +545,9 @@ class _LineMeasuredLayoutPass {
   TextStyle _styleWithMarks(TextStyle baseStyle, List<TextMark> marks) {
     var style = baseStyle;
     var decorations = <TextDecoration>[];
+    Color? referenceDecorationColor;
+    TextDecorationStyle? referenceDecorationStyle;
+    double? referenceDecorationThickness;
 
     for (final mark in marks) {
       switch (mark.kind) {
@@ -576,15 +580,32 @@ class _LineMeasuredLayoutPass {
               height: 0.95,
             );
           } else {
+            final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
             decorations.add(TextDecoration.underline);
-            style = style.copyWith(color: const Color(0xFF2B6CB0));
+            if (inlineReference?.isCitation == true) {
+              referenceDecorationColor = const Color(0xFF8A6D1D);
+              referenceDecorationStyle = TextDecorationStyle.dotted;
+              referenceDecorationThickness = 1.2;
+              style = style.copyWith(backgroundColor: const Color(0x14B08900));
+            } else if (inlineReference != null) {
+              referenceDecorationColor = const Color(0xFF6B5E8E);
+              referenceDecorationStyle = TextDecorationStyle.dotted;
+              referenceDecorationThickness = 1.15;
+            } else {
+              referenceDecorationColor = const Color(0xFF6B5E8E);
+            }
           }
           break;
       }
     }
 
     if (decorations.isNotEmpty) {
-      style = style.copyWith(decoration: TextDecoration.combine(decorations));
+      style = style.copyWith(
+        decoration: TextDecoration.combine(decorations),
+        decorationColor: referenceDecorationColor,
+        decorationStyle: referenceDecorationStyle,
+        decorationThickness: referenceDecorationThickness,
+      );
     }
 
     return style;
