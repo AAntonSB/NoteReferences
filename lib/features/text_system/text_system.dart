@@ -27,6 +27,7 @@ export 'persistence/text_system_save_state.dart';
 export 'surfaces/text_system_surface_config.dart';
 export 'commands/text_system_command_ids.dart';
 export 'commands/text_system_default_commands.dart';
+export 'commands/text_system_writer_command_registry.dart';
 export 'core/text_link_target.dart';
 export 'surfaces/text_system_editable_surface_frame.dart';
 export 'surfaces/text_system_keyboard_dispatcher.dart';

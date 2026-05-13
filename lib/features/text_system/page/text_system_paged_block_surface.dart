@@ -311,6 +311,132 @@ class _PagedFragmentNavigation {
   final TextSystemPagedCaretAnchor? nextAnchor;
 }
 
+/// Narrow command bridge used by the Premium Writer master header.
+///
+/// The real-page surface still owns caret, selection, and block-local editor
+/// state. The parent shell can ask for an editor command through this
+/// controller, but the implementation stays inside the paged surface. The
+/// controller intentionally does not notify listeners; that avoids parent
+/// rebuild loops while the user moves the caret or selection inside pages.
+class TextSystemPagedBlockCommandController {
+  _TextSystemPagedBlockSurfaceState? _state;
+
+  bool get isAttached => _state?.mounted == true;
+
+  bool get canRunEditorCommand {
+    final state = _state;
+    return state != null && state.mounted && state.widget.editable;
+  }
+
+  bool get canCreateEmbeddedTodo {
+    final state = _state;
+    return canRunEditorCommand && state!.widget.embeddedTodoRepository != null;
+  }
+
+  bool get canCreateReference {
+    final state = _state;
+    return canRunEditorCommand && state!.widget.referenceActionRepository != null;
+  }
+
+  bool get canUndo => canRunEditorCommand && (_state?.widget.textController.canUndo ?? false);
+  bool get canRedo => canRunEditorCommand && (_state?.widget.textController.canRedo ?? false);
+  bool get canCopySelection => canRunEditorCommand && (_state?._canCopySelection ?? false);
+  bool get canCutSelection => canRunEditorCommand && (_state?._canCutSelection ?? false);
+  bool get canPastePlainText => canRunEditorCommand && (_state?._canPastePlainText ?? false);
+  bool get canToggleBold => canRunEditorCommand && (_state?._canToggleBold ?? false);
+  bool get canToggleItalic => canRunEditorCommand && (_state?._canToggleItalic ?? false);
+  bool get canToggleUnderline => canRunEditorCommand && (_state?._canToggleUnderline ?? false);
+  bool get canToggleCode => canRunEditorCommand && (_state?._canToggleCode ?? false);
+  bool get canToggleHighlight => canRunEditorCommand && (_state?._canToggleHighlight ?? false);
+
+  bool get boldActive => _state?._activeSelectionIsBold ?? false;
+  bool get italicActive => _state?._activeSelectionIsItalic ?? false;
+  bool get underlineActive => _state?._activeSelectionIsUnderline ?? false;
+  bool get codeActive => _state?._activeSelectionIsCode ?? false;
+  bool get highlightActive => _state?._activeSelectionIsHighlighted ?? false;
+
+  void _attach(_TextSystemPagedBlockSurfaceState state) {
+    _state = state;
+  }
+
+  void _detach(_TextSystemPagedBlockSurfaceState state) {
+    if (identical(_state, state)) {
+      _state = null;
+    }
+  }
+
+  void undo() {
+    _state?._performUndo();
+  }
+
+  void redo() {
+    _state?._performRedo();
+  }
+
+  Future<void> copySelection() async {
+    await _state?._copyActiveSelectionToClipboard();
+  }
+
+  Future<void> cutSelection() async {
+    await _state?._cutActiveSelectionToClipboard();
+  }
+
+  Future<void> pastePlainText() async {
+    await _state?._pastePlainTextAtActiveSelection();
+  }
+
+  void toggleBold() {
+    _state?._toggleBoldForActiveSelection();
+  }
+
+  void toggleItalic() {
+    _state?._toggleItalicForActiveSelection();
+  }
+
+  void toggleUnderline() {
+    _state?._toggleUnderlineForActiveSelection();
+  }
+
+  void toggleInlineCode() {
+    _state?._toggleCodeForActiveSelection();
+  }
+
+  void toggleHighlight() {
+    _state?._toggleHighlightForActiveSelection();
+  }
+
+  void changeActiveBlockStyleById(String styleId) {
+    final state = _state;
+    if (state == null || !state.mounted || !state.widget.editable) return;
+    for (final style in _PagedBlockToolbarStyle.values) {
+      if (style.styleId == styleId) {
+        state._changeActiveBlockStyle(style);
+        return;
+      }
+    }
+  }
+
+  void insertPageBreak() {
+    _state?._insertPageBreakAtActiveSelection();
+  }
+
+  void insertSectionBreak() {
+    _state?._insertSectionBreakAtActiveSelection();
+  }
+
+  void insertFootnote() {
+    _state?._insertFootnoteAtActiveSelection();
+  }
+
+  Future<void> insertEmbeddedTodo() async {
+    await _state?._insertEmbeddedTodoAtActiveSelection();
+  }
+
+  Future<void> runReferenceAction(TextSystemReferenceActionType actionType) async {
+    await _state?._createReferenceForActiveSelection(actionType);
+  }
+}
+
 /// Experimental real-page surface for Phase 14O.
 ///
 /// This surface is intentionally separate from the fluent editor. It renders
@@ -328,8 +454,10 @@ class TextSystemPagedBlockSurface extends StatefulWidget {
     this.onPageFurnitureChanged,
     required this.focusMode,
     this.showMarginGuides = true,
+    this.showMarginMarkers = false,
     this.editable = true,
     this.scrollController,
+    this.commandController,
     this.referenceActionRepository,
     this.embeddedTodoRepository,
     this.onOpenReferenceTarget,
@@ -343,8 +471,10 @@ class TextSystemPagedBlockSurface extends StatefulWidget {
   final ValueChanged<TextSystemPageFurniture>? onPageFurnitureChanged;
   final bool focusMode;
   final bool showMarginGuides;
+  final bool showMarginMarkers;
   final bool editable;
   final ScrollController? scrollController;
+  final TextSystemPagedBlockCommandController? commandController;
   final TextSystemReferenceActionRepository? referenceActionRepository;
   final TextSystemEmbeddedTodoRepository? embeddedTodoRepository;
   final ValueChanged<TextSystemInlineReferenceMark>? onOpenReferenceTarget;
@@ -377,6 +507,7 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
   @override
   void initState() {
     super.initState();
+    widget.commandController?._attach(this);
     _embeddedTodoSnapshots = _embeddedTodoSnapshotsFor(widget.textController.document);
     widget.textController.addListener(_handleEmbeddedTodoDocumentChanged);
   }
@@ -384,6 +515,11 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
   @override
   void didUpdateWidget(covariant TextSystemPagedBlockSurface oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.commandController != widget.commandController) {
+      oldWidget.commandController?._detach(this);
+      widget.commandController?._attach(this);
+    }
 
     if (oldWidget.textController != widget.textController) {
       oldWidget.textController.removeListener(_handleEmbeddedTodoDocumentChanged);
@@ -398,6 +534,7 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
 
   @override
   void dispose() {
+    widget.commandController?._detach(this);
     _embeddedTodoSyncTimer?.cancel();
     widget.textController.removeListener(_handleEmbeddedTodoDocumentChanged);
     super.dispose();
@@ -992,10 +1129,25 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
     if (!mounted) return;
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(
       const SnackBar(
-        content: Text('Select text first, then choose a reference action.'),
+        content: Text('Select text or place the caret, then choose a reference action.'),
         duration: Duration(seconds: 2),
       ),
     );
+  }
+
+  String _visibleLabelForCollapsedReferenceInsertion(
+    TextSystemReferenceActionResult result,
+  ) {
+    final resultLabel = result.visibleLabel.trim();
+    if (resultLabel.isNotEmpty) return resultLabel;
+
+    final targetTitle = result.target.title.trim();
+    if (targetTitle.isNotEmpty) return targetTitle;
+
+    final inlineLabel = result.inlineMark.label.trim();
+    if (inlineLabel.isNotEmpty) return inlineLabel;
+
+    return result.actionType.label;
   }
 
   Future<void> _createReferenceForActiveSelection(TextSystemReferenceActionType actionType) async {
@@ -1012,7 +1164,7 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
         ? _activeDocumentSelection
         : TextSystemPagedDocumentSelection.fromAnchor(fieldSelectionAnchor);
 
-    if (documentRange == null && isCitationAction) {
+    if (documentRange == null) {
       final position = _activeInsertPosition();
       if (position != null) {
         documentRange = TextSystemDocumentRange.collapsed(position);
@@ -1031,15 +1183,10 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
     final effectiveDocumentRange = documentRange;
     final effectiveDocumentSelection = documentSelection;
 
-    if (!isCitationAction && effectiveDocumentRange.isCollapsed) {
-      _showReferenceSelectionRequiredMessage();
-      return;
-    }
-
     final selectedText = effectiveDocumentRange.isCollapsed
         ? ''
         : widget.textController.plainTextForDocumentRange(effectiveDocumentRange).trim();
-    if (!isCitationAction && selectedText.isEmpty) {
+    if (!isCitationAction && !effectiveDocumentRange.isCollapsed && selectedText.isEmpty) {
       _showReferenceSelectionRequiredMessage();
       return;
     }
@@ -1102,6 +1249,35 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
           TextSystemPagedSelectionAnchor.collapsed(
             blockId: block.id,
             textOffset: endPosition.offset + insertedText.length,
+          ).clampToBlock(block),
+        );
+      }
+      return;
+    }
+
+    if (effectiveDocumentRange.isCollapsed) {
+      final normalized = effectiveDocumentRange.normalized();
+      final visibleLabel = _visibleLabelForCollapsedReferenceInsertion(result);
+      final inlineMark = result.inlineMark.copyWith(selectedText: visibleLabel);
+      widget.textController.insertMarkedPlainTextAtDocumentPosition(
+        position: normalized.end,
+        text: visibleLabel,
+        marks: <TextMark>[
+          TextMark(
+            kind: TextMarkKind.link,
+            range: TextSystemRange(0, visibleLabel.length),
+            attributes: inlineMark.toTextMarkAttributes(),
+          ),
+        ],
+        label: result.actionType.verbLabel,
+      );
+
+      final block = widget.textController.document.blockById(normalized.end.blockId);
+      if (block != null) {
+        _requestSelectionRestore(
+          TextSystemPagedSelectionAnchor.collapsed(
+            blockId: block.id,
+            textOffset: normalized.end.offset + visibleLabel.length,
           ).clampToBlock(block),
         );
       }
@@ -1269,19 +1445,15 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
 
 
   void _insertPageBreakAtActiveSelection() {
-    final block = _activeBlock;
-    if (block == null || _isStructuralBreakBlock(block)) return;
+    final position = _activeInsertPosition();
+    if (position == null) return;
 
-    final selectionAnchor = (_activeSelectionAnchor ??
-            TextSystemPagedSelectionAnchor.collapsed(
-              blockId: block.id,
-              textOffset: _activeCaretAnchor?.textOffset ?? block.text.length,
-            ))
-        .clampToBlock(block);
+    final block = widget.textController.document.blockById(position.blockId);
+    if (block == null || _isStructuralBreakBlock(block) || _isFootnoteBlock(block)) return;
 
     final target = widget.textController.insertPageBreakAt(
-      block.id,
-      selectionAnchor.caretOffset,
+      position.blockId,
+      position.offset.clamp(0, block.text.length).toInt(),
     );
     if (target == null) return;
 
@@ -1294,19 +1466,15 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
   }
 
   void _insertSectionBreakAtActiveSelection() {
-    final block = _activeBlock;
-    if (block == null || _isStructuralBreakBlock(block)) return;
+    final position = _activeInsertPosition();
+    if (position == null) return;
 
-    final selectionAnchor = (_activeSelectionAnchor ??
-            TextSystemPagedSelectionAnchor.collapsed(
-              blockId: block.id,
-              textOffset: _activeCaretAnchor?.textOffset ?? block.text.length,
-            ))
-        .clampToBlock(block);
+    final block = widget.textController.document.blockById(position.blockId);
+    if (block == null || _isStructuralBreakBlock(block) || _isFootnoteBlock(block)) return;
 
     final target = widget.textController.insertSectionBreakAt(
-      block.id,
-      selectionAnchor.caretOffset,
+      position.blockId,
+      position.offset.clamp(0, block.text.length).toInt(),
       restartPageNumbering: true,
       pageNumberStartAt: 1,
     );
@@ -1321,19 +1489,15 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
   }
 
   void _insertFootnoteAtActiveSelection() {
-    final block = _activeBlock;
+    final position = _activeInsertPosition();
+    if (position == null) return;
+
+    final block = widget.textController.document.blockById(position.blockId);
     if (block == null || _isStructuralBreakBlock(block) || _isFootnoteBlock(block)) return;
 
-    final selectionAnchor = (_activeSelectionAnchor ??
-            TextSystemPagedSelectionAnchor.collapsed(
-              blockId: block.id,
-              textOffset: _activeCaretAnchor?.textOffset ?? block.text.length,
-            ))
-        .clampToBlock(block);
-
     final target = widget.textController.insertFootnoteAt(
-      block.id,
-      selectionAnchor.caretOffset,
+      position.blockId,
+      position.offset.clamp(0, block.text.length).toInt(),
       initialText: '',
     );
     if (target == null) return;
@@ -1744,6 +1908,7 @@ class _TextSystemPagedBlockSurfaceState extends State<TextSystemPagedBlockSurfac
                           pageHeight: pageHeight,
                           margins: margins,
                           showMarginGuides: widget.showMarginGuides,
+                          showMarginMarkers: widget.showMarginMarkers,
                           editable: widget.editable,
                           navigation: navigation,
                           restoreCaretAnchor: _restoreCaretAnchor,
@@ -2684,6 +2849,7 @@ class _PagedBlockPageView extends StatelessWidget {
     required this.pageHeight,
     required this.margins,
     required this.showMarginGuides,
+    required this.showMarginMarkers,
     required this.editable,
     required this.navigation,
     required this.restoreCaretAnchor,
@@ -2717,6 +2883,7 @@ class _PagedBlockPageView extends StatelessWidget {
   final double pageHeight;
   final EdgeInsets margins;
   final bool showMarginGuides;
+  final bool showMarginMarkers;
   final bool editable;
   final Map<String, _PagedFragmentNavigation> navigation;
   final TextSystemPagedCaretAnchor? restoreCaretAnchor;
@@ -2752,11 +2919,86 @@ class _PagedBlockPageView extends StatelessWidget {
     return document.title.trim().isNotEmpty ? document.title.trim() : 'Section';
   }
 
+  List<_PageMarginMarkerData> _marginMarkersForPage() {
+    final markers = <_PageMarginMarkerData>[];
+    final seen = <String>{};
+
+    for (final fragment in page.fragments) {
+      final block = document.blockById(fragment.blockId);
+      if (block == null) continue;
+      final markerTop = margins.top + fragment.rect.top;
+
+      if (TextSystemEmbeddedTodoMetadata.isEmbeddedTodoBlock(block) && seen.add('todo:${block.id}')) {
+        final metadata = TextSystemEmbeddedTodoMetadata.fromBlock(block);
+        final dueLabel = metadata.deadline == null
+            ? null
+            : metadata.deadline!.toLocal().toIso8601String().split('T').first;
+        final detail = <String>[
+          if (metadata.priority.trim().isNotEmpty) metadata.priority.toUpperCase(),
+          if (dueLabel != null) 'Due $dueLabel',
+        ].join(' · ');
+        markers.add(
+          _PageMarginMarkerData(
+            key: 'todo:${block.id}',
+            top: markerTop,
+            type: _PageMarginMarkerType.todo,
+            label: 'TODO',
+            tooltip: detail.isEmpty ? 'Synced app TODO' : 'Synced app TODO · $detail',
+          ),
+        );
+      }
+
+      final fragmentStart = fragment.visualTextStartOffset.clamp(0, block.text.length).toInt();
+      final fragmentEnd = fragment.visualTextEndOffset.clamp(fragmentStart, block.text.length).toInt();
+      final fragmentRange = TextSystemRange(fragmentStart, fragmentEnd);
+      if (!fragmentRange.isCollapsed) {
+        for (final mark in block.marks) {
+          if (mark.kind != TextMarkKind.link || !mark.range.overlaps(fragmentRange)) continue;
+          if (_isFootnoteReferenceMark(mark)) {
+            if (seen.add('footnote:${block.id}:${mark.range.start}')) {
+              markers.add(
+                _PageMarginMarkerData(
+                  key: 'footnote:${block.id}:${mark.range.start}',
+                  top: markerTop,
+                  type: _PageMarginMarkerType.footnote,
+                  label: 'Note',
+                  tooltip: 'Footnote anchor',
+                ),
+              );
+            }
+            continue;
+          }
+
+          final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
+          if (inlineReference == null) continue;
+          final isCitation = inlineReference.isCitation;
+          final markerKey = '${isCitation ? 'citation' : 'reference'}:${inlineReference.targetId}:${block.id}:${mark.range.start}';
+          if (!seen.add(markerKey)) continue;
+          markers.add(
+            _PageMarginMarkerData(
+              key: markerKey,
+              top: markerTop,
+              type: isCitation ? _PageMarginMarkerType.citation : _PageMarginMarkerType.reference,
+              label: isCitation ? 'Cite' : 'Link',
+              tooltip: isCitation
+                  ? 'Citation: ${inlineReference.label}'
+                  : '${inlineReference.kind.label}: ${inlineReference.label}',
+            ),
+          );
+        }
+      }
+    }
+
+    markers.sort((a, b) => a.top.compareTo(b.top));
+    return markers;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final dimensionLabel = '${pageSetup.pageWidthMm.toStringAsFixed(0)} × ${pageSetup.pageHeightMm.toStringAsFixed(0)} mm';
+    final marginMarkers = showMarginMarkers ? _marginMarkersForPage() : const <_PageMarginMarkerData>[];
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -2824,6 +3066,12 @@ class _PagedBlockPageView extends StatelessWidget {
                         ),
                       ),
                     ),
+                  ),
+                if (showMarginMarkers && marginMarkers.isNotEmpty)
+                  _PageMarginLayer(
+                    pageWidth: pageWidth,
+                    margins: margins,
+                    markers: marginMarkers,
                   ),
                 for (final fragment in page.fragments)
                   Positioned(
@@ -2963,6 +3211,162 @@ String _academicFootnoteNumber(int value) {
       .join();
 }
 
+
+enum _PageMarginMarkerType {
+  todo,
+  citation,
+  reference,
+  footnote,
+}
+
+@immutable
+class _PageMarginMarkerData {
+  const _PageMarginMarkerData({
+    required this.key,
+    required this.top,
+    required this.type,
+    required this.label,
+    required this.tooltip,
+  });
+
+  final String key;
+  final double top;
+  final _PageMarginMarkerType type;
+  final String label;
+  final String tooltip;
+}
+
+class _PageMarginLayer extends StatelessWidget {
+  const _PageMarginLayer({
+    required this.pageWidth,
+    required this.margins,
+    required this.markers,
+  });
+
+  final double pageWidth;
+  final EdgeInsets margins;
+  final List<_PageMarginMarkerData> markers;
+
+  @override
+  Widget build(BuildContext context) {
+    if (markers.isEmpty || margins.right < 34) return const SizedBox.shrink();
+
+    final laneWidth = math.max(28.0, math.min(76.0, margins.right - 12));
+    final laneLeft = math.min(
+      pageWidth - laneWidth - 6,
+      pageWidth - margins.right + 8,
+    );
+
+    final placedTopByKey = <String, double>{};
+    var nextAvailableTop = margins.top;
+    const markerHeight = 22.0;
+    const markerGap = 3.0;
+    for (final marker in markers) {
+      final desiredTop = marker.top.clamp(margins.top, double.infinity).toDouble();
+      final placedTop = math.max(desiredTop, nextAvailableTop);
+      placedTopByKey[marker.key] = placedTop;
+      nextAvailableTop = placedTop + markerHeight + markerGap;
+    }
+
+    return Stack(
+      children: [
+        Positioned(
+          left: laneLeft,
+          top: margins.top,
+          width: laneWidth,
+          bottom: margins.bottom,
+          child: IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border(
+                  left: BorderSide(
+                    color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.34),
+                    width: 1,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        for (final marker in markers)
+          Positioned(
+            key: ValueKey<String>('margin-marker-${marker.key}'),
+            left: laneLeft + 5,
+            top: placedTopByKey[marker.key] ?? marker.top.clamp(margins.top, double.infinity).toDouble(),
+            width: math.max(20.0, laneWidth - 10),
+            child: _PageMarginMarker(marker: marker),
+          ),
+      ],
+    );
+  }
+}
+
+class _PageMarginMarker extends StatelessWidget {
+  const _PageMarginMarker({required this.marker});
+
+  final _PageMarginMarkerData marker;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    late final IconData icon;
+    late final Color color;
+    switch (marker.type) {
+      case _PageMarginMarkerType.todo:
+        icon = Icons.task_alt_rounded;
+        color = colorScheme.tertiary;
+        break;
+      case _PageMarginMarkerType.citation:
+        icon = Icons.format_quote_rounded;
+        color = const Color(0xFF8A6D1D);
+        break;
+      case _PageMarginMarkerType.reference:
+        icon = Icons.link_rounded;
+        color = colorScheme.primary;
+        break;
+      case _PageMarginMarkerType.footnote:
+        icon = Icons.sticky_note_2_outlined;
+        color = colorScheme.secondary;
+        break;
+    }
+
+    return Tooltip(
+      waitDuration: const Duration(milliseconds: 900),
+      message: marker.tooltip,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: color.withValues(alpha: 0.24)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 11, color: color.withValues(alpha: 0.82)),
+              const SizedBox(width: 3),
+              Flexible(
+                child: Text(
+                  marker.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    fontSize: 9.5,
+                    height: 1,
+                    color: color.withValues(alpha: 0.92),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _PagedCrossBlockSelectionOverlay extends StatelessWidget {
   const _PagedCrossBlockSelectionOverlay({
@@ -3813,94 +4217,60 @@ class _EmbeddedTodoBlockChrome extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final metadata = TextSystemEmbeddedTodoMetadata.fromBlock(block);
-    final isFirstFragment = !fragment.continuesFromPreviousPage;
-    final dueLabel = metadata.deadline == null
-        ? null
-        : metadata.deadline!.toLocal().toIso8601String().split('T').first;
-
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colorScheme.tertiaryContainer.withValues(alpha: 0.34),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: colorScheme.tertiary.withValues(alpha: 0.22),
-        ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 7, 10, 7),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (isFirstFragment)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.task_alt_rounded,
-                      size: 14,
-                      color: colorScheme.onTertiaryContainer.withValues(alpha: 0.82),
-                    ),
-                    const SizedBox(width: 5),
-                    Text(
-                      'App TODO',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: colorScheme.onTertiaryContainer.withValues(alpha: 0.82),
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    _EmbeddedTodoPill(label: metadata.priority.toUpperCase()),
-                    if (dueLabel != null) ...[
-                      const SizedBox(width: 6),
-                      _EmbeddedTodoPill(label: 'Due $dueLabel'),
-                    ],
-                    const Spacer(),
-                    Icon(
-                      Icons.sync_rounded,
-                      size: 13,
-                      color: colorScheme.onTertiaryContainer.withValues(alpha: 0.58),
-                    ),
-                  ],
-                ),
-              ),
-            child,
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _EmbeddedTodoPill extends StatelessWidget {
-  const _EmbeddedTodoPill({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colorScheme.surface.withValues(alpha: 0.72),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.55)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        child: Text(
-          label,
-          style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w700,
-                fontSize: 10,
+    final isFirstFragment = !fragment.continuesFromPreviousPage;
+    final todoTitle = block.text.trim();
+
+    // This decoration is intentionally layout-neutral. The paged layout tree
+    // already measured the text fragment height, so embedded app TODO chrome
+    // must not add a header row, vertical padding, or any extra intrinsic
+    // height. The margin layer now carries the richer TODO metadata affordance.
+    return Semantics(
+      container: true,
+      label: todoTitle.isEmpty ? 'Embedded app TODO' : 'Embedded app TODO, $todoTitle',
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+        Positioned.fill(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: colorScheme.tertiaryContainer.withValues(alpha: 0.22),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: colorScheme.tertiary.withValues(alpha: 0.18),
               ),
+            ),
+          ),
         ),
+        Positioned(
+          left: 0,
+          top: 0,
+          bottom: 0,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: colorScheme.tertiary.withValues(alpha: 0.68),
+              borderRadius: const BorderRadius.horizontal(left: Radius.circular(6)),
+            ),
+            child: const SizedBox(width: 3),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(left: 8, right: 4),
+          child: child,
+        ),
+        if (isFirstFragment)
+          Positioned(
+            right: 4,
+            top: 1,
+            child: IgnorePointer(
+              child: Icon(
+                Icons.task_alt_rounded,
+                size: 12,
+                color: colorScheme.tertiary.withValues(alpha: 0.58),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
