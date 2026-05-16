@@ -529,6 +529,57 @@ class TextSystemController extends ChangeNotifier {
     return fragment;
   }
 
+
+  /// Copies complete document blocks as a structured internal fragment.
+  ///
+  /// This is primarily used by object-level editors. A figure/table/equation
+  /// block may have empty visible text but still carries semantic metadata, so
+  /// it cannot be represented correctly by the flattened text-range mapper.
+  TextSystemDocumentFragment copyDocumentBlocksAsFragment(
+    Iterable<String> blockIds, {
+    String label = 'Copy blocks',
+  }) {
+    final idSet = blockIds.toSet();
+    if (idSet.isEmpty || _document.blocks.isEmpty) {
+      final empty = TextSystemDocumentFragment.empty();
+      _internalDocumentClipboard = empty;
+      _internalClipboard = empty.toFlatClipboardFragment();
+      notifyListeners();
+      return empty;
+    }
+
+    final fragmentBlocks = <TextSystemBlock>[];
+    for (var i = 0; i < _document.blocks.length; i++) {
+      final block = _document.blocks[i];
+      if (!idSet.contains(block.id)) continue;
+      fragmentBlocks.add(
+        block.copyWith(
+          id: 'fragment-${block.id}',
+          metadata: <String, Object?>{
+            ...block.metadata,
+            'sourceBlockId': block.id,
+            'sourceBlockIndex': i,
+            'partial': false,
+          },
+        ).normalizeMarks(),
+      );
+    }
+
+    final fragment = TextSystemDocumentFragment(
+      blocks: fragmentBlocks,
+      metadata: <String, Object?>{
+        'sourceDocumentId': _document.id,
+        'sourceDocumentTitle': _document.title,
+        'source': 'completeBlocks',
+        'label': label,
+      },
+    );
+    _internalDocumentClipboard = fragment;
+    _internalClipboard = fragment.toFlatClipboardFragment();
+    notifyListeners();
+    return fragment;
+  }
+
   TextClipboardFragment copyFragment(String blockId, TextSystemRange range) {
     final block = _document.blockById(blockId);
     if (block == null) {

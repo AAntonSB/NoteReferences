@@ -16,6 +16,7 @@ class TextSystemReferenceIndex {
       TextSystemStructureReferenceKind.todo,
       TextSystemStructureReferenceKind.figure,
       TextSystemStructureReferenceKind.table,
+      TextSystemStructureReferenceKind.equation,
       TextSystemStructureReferenceKind.unknown,
     ];
 

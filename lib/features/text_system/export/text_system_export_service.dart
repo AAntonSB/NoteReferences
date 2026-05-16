@@ -138,7 +138,7 @@ class TextSystemExportService {
           pipelineKind: TextSystemExportPipelineKind.semantic,
           notes: const <String>[
             'Export v2 semantic Typst: modern typesetting export, not visual page export.',
-            'Future pass should add templates, bibliography, and figure/table mapping.',
+            'Figure/table/caption blocks export semantically; future pass should add templates and bibliography polish.',
           ],
         ),
       TextSystemExportFormat.html => TextSystemExportResult(

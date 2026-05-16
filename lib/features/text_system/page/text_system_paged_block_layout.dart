@@ -183,6 +183,7 @@ class TextSystemPagedBlockLayoutEngine {
     required TextSystemDocument document,
     required TextSystemPageSetup pageSetup,
     required double pageWidthPx,
+    String? activeDisplayEquationBlockId,
   }) {
     final safePageWidth = math.max(240.0, pageWidthPx);
     final pageHeightPx = safePageWidth * pageSetup.heightToWidthRatio;
@@ -299,6 +300,58 @@ class TextSystemPagedBlockLayoutEngine {
           sectionId: sectionId,
           logicalPageStartAt: restart ? startAt : currentLogicalPageNumber + 1,
         );
+        continue;
+      }
+
+      if (_isDisplayEquationTextBlock(block)) {
+        final equationHeight = _displayEquationTextBlockHeight(
+          block,
+          contentHeightPx,
+          activeDisplayEquationBlockId: activeDisplayEquationBlockId,
+        );
+        if (contentHeightPx - cursorY < equationHeight && !getCurrentPage().isEmpty) {
+          startNewPage();
+        }
+
+        final fragmentHeight = math.min(equationHeight, math.max(0.0, contentHeightPx - cursorY));
+        getCurrentPage().fragments.add(
+              TextSystemPagedBlockFragment(
+                blockId: block.id,
+                blockIndex: blockIndex,
+                blockType: block.type,
+                blockLevel: block.level,
+                text: block.text,
+                visualTextStartOffset: 0,
+                visualTextEndOffset: block.text.length,
+                rect: Rect.fromLTWH(0, cursorY, contentWidthPx, fragmentHeight),
+                oversized: equationHeight > contentHeightPx,
+              ),
+            );
+        cursorY = math.min(contentHeightPx, cursorY + equationHeight);
+        continue;
+      }
+
+      if (_isAcademicObjectBlock(block)) {
+        final objectHeight = _academicObjectBlockHeight(block, contentHeightPx);
+        if (contentHeightPx - cursorY < objectHeight && !getCurrentPage().isEmpty) {
+          startNewPage();
+        }
+
+        final fragmentHeight = math.min(objectHeight, math.max(0.0, contentHeightPx - cursorY));
+        getCurrentPage().fragments.add(
+              TextSystemPagedBlockFragment(
+                blockId: block.id,
+                blockIndex: blockIndex,
+                blockType: block.type,
+                blockLevel: block.level,
+                text: block.text,
+                visualTextStartOffset: 0,
+                visualTextEndOffset: block.text.length,
+                rect: Rect.fromLTWH(0, cursorY, contentWidthPx, fragmentHeight),
+                oversized: objectHeight > contentHeightPx,
+              ),
+            );
+        cursorY = math.min(contentHeightPx, cursorY + objectHeight);
         continue;
       }
 
@@ -606,6 +659,101 @@ class TextSystemPagedBlockLayoutEngine {
 
   static bool _isSectionBreakBlock(TextSystemBlock block) {
     return block.type == TextSystemBlockType.divider && block.metadata['kind'] == 'sectionBreak';
+  }
+
+  static bool _isDisplayEquationTextBlock(TextSystemBlock block) {
+    return block.metadata['kind'] == 'displayEquation';
+  }
+
+  static double _displayEquationTextBlockHeight(
+    TextSystemBlock block,
+    double contentHeightPx, {
+    String? activeDisplayEquationBlockId,
+  }) {
+    final source = _displayEquationSourceForLayout(block);
+    final active = activeDisplayEquationBlockId == block.id;
+    final hasTallOperators = source.contains(r'\frac') ||
+        source.contains(r'\dfrac') ||
+        source.contains(r'\tfrac') ||
+        source.contains(r'\sum') ||
+        source.contains(r'\int') ||
+        source.contains(r'\sqrt');
+    final hasEnvironment = source.contains(r'\begin');
+    final explicitLineCount = math.max(1, '\n'.allMatches(source).length + 1);
+    final softLineCount = math.max(1, (source.length / 88).ceil());
+    final sourceLineCount = math.max(explicitLineCount, softLineCount);
+    final hasNote = (block.metadata['note'] as String?)?.trim().isNotEmpty == true;
+    final noteAllowance = hasNote ? 24.0 : 0.0;
+
+    if (active) {
+      final sourceAllowance = math.max(0, sourceLineCount - 1) * 24.0;
+      final complexityAllowance = hasEnvironment ? 42.0 : hasTallOperators ? 22.0 : 0.0;
+      return math.min(contentHeightPx, 366.0 + sourceAllowance + complexityAllowance + noteAllowance);
+    }
+
+    // In display/render mode the equation should participate in the document
+    // like an academic display equation, not like a full source editor. The
+    // focused authoring surface gets the larger height only while this equation
+    // is active.
+    final lineAllowance = math.max(0, sourceLineCount - 1) * 18.0;
+    final complexityAllowance = hasEnvironment ? 36.0 : hasTallOperators ? 20.0 : 0.0;
+    return math.min(contentHeightPx, 58.0 + lineAllowance + complexityAllowance + noteAllowance);
+  }
+
+  static String _displayEquationSourceForLayout(TextSystemBlock block) {
+    final rawText = block.text.trim().isNotEmpty
+        ? block.text.trim()
+        : (block.metadata['latex'] as String?)?.trim() ?? '';
+    if (rawText.startsWith(r'\(') && rawText.endsWith(r'\)') && rawText.length >= 4) {
+      return rawText.substring(2, rawText.length - 2).trim();
+    }
+    if (rawText.startsWith(r'\[') && rawText.endsWith(r'\]') && rawText.length >= 4) {
+      return rawText.substring(2, rawText.length - 2).trim();
+    }
+    if (rawText.startsWith(r'$$') && rawText.endsWith(r'$$') && rawText.length >= 4) {
+      return rawText.substring(2, rawText.length - 2).trim();
+    }
+    return rawText;
+  }
+
+  static bool _isAcademicObjectBlock(TextSystemBlock block) {
+    final kind = block.metadata['kind'];
+    return block.type == TextSystemBlockType.custom &&
+        (kind == 'figure' || kind == 'table' || kind == 'equation');
+  }
+
+  static double _academicObjectBlockHeight(TextSystemBlock block, double contentHeightPx) {
+    final kind = block.metadata['kind'];
+    if (kind == 'equation') {
+      final latex = block.metadata['latex'] is String ? (block.metadata['latex'] as String).trim() : block.text.trim();
+      final extraLines = latex.length > 80 ? 1 : 0;
+      return math.min(contentHeightPx, 96.0 + extraLines * 26.0);
+    }
+    if (kind == 'table') {
+      final rawRows = block.metadata['rows'];
+      final rows = rawRows is int ? rawRows.clamp(1, 50).toInt() : 3;
+      final rawColumns = block.metadata['columns'];
+      final columns = rawColumns is int ? rawColumns.clamp(1, 26).toInt() : 3;
+      final hasCaption = (block.metadata['caption'] as String?)?.trim().isNotEmpty == true;
+      final hasNote = (block.metadata['note'] as String?)?.trim().isNotEmpty == true;
+      final hasLabel = (block.metadata['label'] as String?)?.trim().isNotEmpty == true;
+      final captionAllowance = hasCaption ? 42.0 : 8.0;
+      final metaAllowance = (hasNote || hasLabel) ? 26.0 : 0.0;
+      final contextualToolbarAllowance = 42.0;
+      final columnHeaderAllowance = 28.0;
+      final gridHeight = math.max(72.0, rows * 36.0 + columnHeaderAllowance);
+      final horizontalScrollAllowance = columns > 6 ? 22.0 : 0.0;
+      return math.min(contentHeightPx, captionAllowance + contextualToolbarAllowance + gridHeight + metaAllowance + horizontalScrollAllowance + 26.0);
+    }
+
+    final size = block.metadata['figureSize'];
+    final figurePreviewHeight = switch (size) {
+      'small' => 82.0,
+      'large' => 156.0,
+      'fullWidth' => 188.0,
+      _ => 118.0,
+    };
+    return math.min(contentHeightPx, 108.0 + figurePreviewHeight);
   }
 
   static bool _isPlainTextEditableBlock(TextSystemBlock block) {

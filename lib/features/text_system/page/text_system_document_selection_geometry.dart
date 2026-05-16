@@ -137,12 +137,30 @@ class TextSystemDocumentSelectionGeometry {
     final rects = <Rect>[];
 
     for (final fragment in page.fragments) {
-      if (!_fragmentCanReceiveSelection(fragment)) continue;
-
       final block = document.blockById(fragment.blockId);
       if (block == null) continue;
       if (fragment.blockIndex < range.start.blockIndex ||
           fragment.blockIndex > range.end.blockIndex) {
+        continue;
+      }
+
+      if (!_fragmentCanReceiveSelection(fragment)) {
+        // Phase 8 rule: document-level cross-block selections treat non-text
+        // fragments as atomic objects. If a drag range passes through a figure,
+        // table, equation, divider, page break, or section break, the whole
+        // object receives a selection rectangle. The object itself remains
+        // responsible for its own internal editing mode; this is only the
+        // document-level selection visual.
+        if (_fragmentShouldSelectAsObject(fragment, range)) {
+          rects.add(
+            Rect.fromLTWH(
+              margins.left + fragment.rect.left,
+              margins.top + fragment.rect.top,
+              fragment.rect.width,
+              fragment.rect.height,
+            ).inflate(2.0),
+          );
+        }
         continue;
       }
 
@@ -203,6 +221,20 @@ class TextSystemDocumentSelectionGeometry {
     }
 
     return rects;
+  }
+
+
+  static bool _fragmentShouldSelectAsObject(
+    TextSystemPagedBlockFragment fragment,
+    TextSystemDocumentRange range,
+  ) {
+    // A non-text object is selected only when the normalized document range
+    // actually spans across it. This avoids making ordinary clicks near an
+    // object look like whole-object selection while still supporting the first
+    // proper cross-block rule: paragraph -> object -> paragraph selects the
+    // object as part of the range.
+    return fragment.blockIndex > range.start.blockIndex &&
+        fragment.blockIndex < range.end.blockIndex;
   }
 
   static double _scoreLine(Offset point, Rect rect) {

@@ -37,6 +37,16 @@ class TextSystemLayoutStyleResolver {
     final body = editorBodyStyle(context: context, pageSetup: pageSetup);
     final typography = pageSetup.typography;
 
+    if (block.metadata['kind'] == 'displayEquation') {
+      return body.copyWith(
+        fontSize: pageSetup.defaultFontSize * 1.30,
+        fontWeight: FontWeight.w800,
+        height: 1.80,
+        color: theme.colorScheme.onSurface,
+        fontFamilyFallback: null,
+      );
+    }
+
     return switch (block.type) {
       TextSystemBlockType.heading => body.copyWith(
           fontSize: typography.headingFontSizeForLevel(block.level ?? 2),
@@ -83,6 +93,7 @@ class TextSystemLayoutStyleResolver {
         },
       TextSystemBlockType.listItem => baseSpacing * 0.25,
       TextSystemBlockType.todo => baseSpacing * 0.25,
+      _ when block.metadata['kind'] == 'displayEquation' => baseSpacing * 0.85,
       TextSystemBlockType.divider when block.metadata['kind'] == 'pageBreak' => baseSpacing * 0.4,
       TextSystemBlockType.divider => baseSpacing * 0.8,
       _ => baseSpacing,

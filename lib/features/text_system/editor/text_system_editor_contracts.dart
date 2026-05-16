@@ -1,0 +1,16 @@
+export 'text_system_current_paged_editor_surface.dart';
+export 'text_system_editor_hit_test.dart';
+export 'text_system_editor_caret_overlay.dart';
+export 'text_system_editor_layout_snapshot.dart';
+export 'text_system_editor_selection_controller.dart';
+export 'text_system_editor_selection_overlay.dart';
+export 'text_system_owned_editor_command_controller.dart';
+export 'text_system_owned_document_editor_surface.dart';
+export 'text_system_editor_position_mapper.dart';
+export 'text_system_editor_selection_state.dart';
+export 'text_system_editor_surface_mode.dart';
+export 'text_system_editor_composing_overlay.dart';
+export 'text_system_editor_text_input_client.dart';
+export 'text_system_inline_atom_renderer.dart';
+export 'text_system_inline_reference_interaction_controller.dart';
+export 'text_system_inline_math_editor_controller.dart';

@@ -18,10 +18,48 @@ class TextSystemReferenceSemanticExportAdapter {
     return citationText != null && citationText.isNotEmpty && visibleText.trim() == citationText;
   }
 
+  static bool _isCrossReference(TextSystemInlineReferenceMark mark) {
+    return mark.metadata['crossReference'] == true ||
+        (mark.metadata['crossReferenceKind']?.toString().trim().isNotEmpty ?? false);
+  }
+
+  static String _crossReferenceKind(TextSystemInlineReferenceMark mark) {
+    final value = mark.metadata['crossReferenceKind']?.toString().trim().toLowerCase();
+    if (value == 'figure' || value == 'table' || value == 'equation') return value!;
+    if (mark.kind == TextSystemReferenceTargetKind.figure) return 'figure';
+    if (mark.kind == TextSystemReferenceTargetKind.table) return 'table';
+    return 'reference';
+  }
+
+  static String _crossReferenceLabel(TextSystemInlineReferenceMark mark) {
+    if (mark.metadata.containsKey('crossReferenceLabel')) {
+      return mark.metadata['crossReferenceLabel']?.toString().trim() ?? '';
+    }
+    return mark.exportKey.trim();
+  }
+
+  static String _crossReferenceNoun(String kind) {
+    switch (kind) {
+      case 'figure':
+        return 'Figure';
+      case 'table':
+        return 'Table';
+      case 'equation':
+        return 'Equation';
+      default:
+        return 'Reference';
+    }
+  }
+
   static String markdown({
     required String visibleText,
     required TextSystemInlineReferenceMark mark,
   }) {
+    if (_isCrossReference(mark)) {
+      final label = _crossReferenceLabel(mark);
+      if (label.isEmpty) return _escapeMarkdownText(visibleText);
+      return '[${_escapeMarkdownLinkText(visibleText)}](#${_escapeMarkdownUrl(label)})';
+    }
     switch (mark.kind) {
       case TextSystemReferenceTargetKind.citation:
         if (_hasPreRenderedCitationText(visibleText: visibleText, mark: mark)) {
@@ -49,6 +87,13 @@ class TextSystemReferenceSemanticExportAdapter {
     required String visibleText,
     required TextSystemInlineReferenceMark mark,
   }) {
+    if (_isCrossReference(mark)) {
+      final label = _crossReferenceLabel(mark);
+      if (label.isEmpty) return _escapeLatex(visibleText);
+      final kind = _crossReferenceKind(mark);
+      if (kind == 'equation') return 'Equation~\\ref{${_latexKey(label)}}';
+      return '${_crossReferenceNoun(kind)}~\\ref{${_latexKey(label)}}';
+    }
     switch (mark.kind) {
       case TextSystemReferenceTargetKind.citation:
         if (_hasPreRenderedCitationText(visibleText: visibleText, mark: mark)) {
@@ -76,6 +121,11 @@ class TextSystemReferenceSemanticExportAdapter {
     required String visibleText,
     required TextSystemInlineReferenceMark mark,
   }) {
+    if (_isCrossReference(mark)) {
+      final label = _crossReferenceLabel(mark);
+      if (label.isEmpty) return _escapeTypstText(visibleText);
+      return '@${_typstKey(label)}';
+    }
     switch (mark.kind) {
       case TextSystemReferenceTargetKind.citation:
         if (_hasPreRenderedCitationText(visibleText: visibleText, mark: mark)) {
@@ -103,6 +153,14 @@ class TextSystemReferenceSemanticExportAdapter {
     required String visibleText,
     required TextSystemInlineReferenceMark mark,
   }) {
+    if (_isCrossReference(mark)) {
+      final label = _crossReferenceLabel(mark);
+      final kind = _crossReferenceKind(mark);
+      if (label.isEmpty) {
+        return '<span class="ts-cross-reference ts-cross-reference-missing" data-reference-kind="${_escapeHtmlAttribute(kind)}">${_escapeHtml(visibleText)}</span>';
+      }
+      return '<a class="ts-cross-reference ts-cross-reference-${_escapeHtmlAttribute(kind)}" href="#${_escapeHtmlAttribute(label)}" data-reference-id="${_escapeHtmlAttribute(mark.id)}" data-reference-kind="${_escapeHtmlAttribute(kind)}">${_escapeHtml(visibleText)}</a>';
+    }
     switch (mark.kind) {
       case TextSystemReferenceTargetKind.citation:
         return '<span class="ts-citation" data-reference-id="${_escapeHtmlAttribute(mark.id)}" data-citation-key="${_escapeHtmlAttribute(mark.exportKey)}">${_escapeHtml(visibleText)}</span>';

@@ -56,7 +56,12 @@ class TextSystemDocumentFragment {
   final List<TextSystemBlock> blocks;
   final Map<String, Object?> metadata;
 
-  bool get isEmpty => blocks.isEmpty || blocks.every((block) => block.text.isEmpty);
+  bool get isEmpty => blocks.isEmpty || blocks.every((block) =>
+      block.text.isEmpty &&
+      block.marks.isEmpty &&
+      block.metadata.isEmpty &&
+      block.type != TextSystemBlockType.custom &&
+      block.type != TextSystemBlockType.divider);
   int get blockCount => blocks.length;
   int get markCount => blocks.fold<int>(0, (count, block) => count + block.marks.length);
   String get plainText => blocks.map((block) => block.text).join('\n');

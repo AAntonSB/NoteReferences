@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import '../core/text_mark.dart';
 import '../core/text_system_block.dart';
@@ -27,6 +28,7 @@ enum TextSystemExportNodeType {
   divider,
   figure,
   table,
+  equation,
   caption,
   bibliography,
   custom,
@@ -178,11 +180,13 @@ class TextSystemSemanticExportDocument {
           ? TextSystemExportNodeType.figure
           : kind == 'table'
               ? TextSystemExportNodeType.table
-              : kind == 'caption'
-                  ? TextSystemExportNodeType.caption
-                  : kind == 'bibliography'
-                      ? TextSystemExportNodeType.bibliography
-                      : TextSystemExportNodeType.custom,
+              : kind == 'equation'
+                  ? TextSystemExportNodeType.equation
+                  : kind == 'caption'
+                      ? TextSystemExportNodeType.caption
+                      : kind == 'bibliography'
+                          ? TextSystemExportNodeType.bibliography
+                          : TextSystemExportNodeType.custom,
     };
 
     return TextSystemExportNode(
@@ -375,8 +379,9 @@ class TextSystemSemanticMarkdownExporter {
         TextSystemExportNodeType.pageBreak => '<!-- pagebreak -->',
         TextSystemExportNodeType.sectionBreak => '\n---',
         TextSystemExportNodeType.divider => '---',
-        TextSystemExportNodeType.figure => '<!-- figure: ${_escapeMarkdown(node.text.trim())} -->',
-        TextSystemExportNodeType.table => '<!-- table: ${_escapeMarkdown(node.text.trim())} -->',
+        TextSystemExportNodeType.figure => _markdownAcademicFigure(node),
+        TextSystemExportNodeType.table => _markdownAcademicTable(node),
+        TextSystemExportNodeType.equation => _markdownAcademicEquation(node),
         TextSystemExportNodeType.caption => '*${_markdownInline(node, document)}*',
         TextSystemExportNodeType.bibliography => _markdownInline(node, document),
         TextSystemExportNodeType.custom => _markdownInline(node, document),
@@ -521,10 +526,13 @@ class TextSystemSemanticLatexExporter {
           buffer.writeln(r'\medskip\hrule\medskip');
           buffer.writeln();
         case TextSystemExportNodeType.figure:
-          buffer.writeln('% TODO figure: ${_escapeLatex(node.text)}');
+          buffer.writeln(_latexAcademicFigure(node));
           buffer.writeln();
         case TextSystemExportNodeType.table:
-          buffer.writeln('% TODO table: ${_escapeLatex(node.text)}');
+          buffer.writeln(_latexAcademicTable(node));
+          buffer.writeln();
+        case TextSystemExportNodeType.equation:
+          buffer.writeln(_latexAcademicEquation(node));
           buffer.writeln();
         case TextSystemExportNodeType.caption:
           buffer.writeln(r'\caption{' + _latexInline(node, document) + '}');
@@ -608,8 +616,9 @@ class TextSystemSemanticTypstExporter {
         TextSystemExportNodeType.pageBreak => '#pagebreak()',
         TextSystemExportNodeType.sectionBreak => '#pagebreak()',
         TextSystemExportNodeType.divider => '#line(length: 100%)',
-        TextSystemExportNodeType.figure => '#figure(rect(width: 100%, height: 20pt), caption: [${_typstInline(node, document)}])',
-        TextSystemExportNodeType.table => '// TODO table: ${_escapeTypstText(node.text)}',
+        TextSystemExportNodeType.figure => _typstAcademicFigure(node),
+        TextSystemExportNodeType.table => _typstAcademicTable(node),
+        TextSystemExportNodeType.equation => _typstAcademicEquation(node),
         TextSystemExportNodeType.caption => '#align(center)[_${_typstInline(node, document)}_]',
         TextSystemExportNodeType.bibliography => _typstInline(node, document),
         TextSystemExportNodeType.custom => _typstInline(node, document),
@@ -715,9 +724,11 @@ class TextSystemSemanticHtmlExporter {
         case TextSystemExportNodeType.divider:
           buffer.writeln('<hr>');
         case TextSystemExportNodeType.figure:
-          buffer.writeln('<figure><figcaption>${_htmlInline(node, document)}</figcaption></figure>');
+          buffer.writeln(_htmlAcademicFigure(node));
         case TextSystemExportNodeType.table:
-          buffer.writeln('<figure class="table-placeholder"><figcaption>${_htmlInline(node, document)}</figcaption></figure>');
+          buffer.writeln(_htmlAcademicTable(node));
+        case TextSystemExportNodeType.equation:
+          buffer.writeln(_htmlAcademicEquation(node));
         case TextSystemExportNodeType.caption:
           buffer.writeln('<figcaption>${_htmlInline(node, document)}</figcaption>');
         case TextSystemExportNodeType.bibliography:
@@ -880,4 +891,318 @@ extension _IterableLastOrNull<T> on Iterable<T> {
     }
     return found ? value : null;
   }
+}
+
+
+String _academicExportCaption(TextSystemExportNode node) {
+  final caption = node.metadata['caption'];
+  if (caption is String && caption.trim().isNotEmpty) return caption.trim();
+  return node.text.trim();
+}
+
+String _academicExportLabel(TextSystemExportNode node) {
+  final label = node.metadata['label'];
+  if (label is String) return label.trim();
+  return '';
+}
+
+String _academicExportSource(TextSystemExportNode node) {
+  final imagePath = node.metadata['imagePath'];
+  if (imagePath is String && imagePath.trim().isNotEmpty) return imagePath.trim();
+  final source = node.metadata['source'];
+  if (source is String) return source.trim();
+  return '';
+}
+
+String _academicExportAltText(TextSystemExportNode node) {
+  final altText = node.metadata['altText'];
+  if (altText is String) return altText.trim();
+  return '';
+}
+
+String _academicExportNote(TextSystemExportNode node) {
+  final note = node.metadata['note'];
+  if (note is String) return note.trim();
+  return '';
+}
+
+int _academicExportHeaderRows(TextSystemExportNode node) {
+  final headerRows = node.metadata['headerRows'];
+  if (headerRows is int) return headerRows.clamp(0, 3).toInt();
+  return 1;
+}
+
+String _academicExportFigureSize(TextSystemExportNode node) {
+  final size = node.metadata['figureSize'];
+  if (size is String && const ['small', 'medium', 'large', 'fullWidth'].contains(size)) return size;
+  return 'medium';
+}
+
+List<List<String>> _academicExportTableCells(TextSystemExportNode node) {
+  final rawCells = node.metadata['cells'];
+  if (rawCells is List) {
+    final parsed = <List<String>>[];
+    for (final rawRow in rawCells) {
+      if (rawRow is List) parsed.add([for (final cell in rawRow) cell?.toString() ?? '']);
+    }
+    if (parsed.isNotEmpty) return _normalizeAcademicExportTableCells(parsed);
+  }
+  return const <List<String>>[];
+}
+
+List<List<String>> _normalizeAcademicExportTableCells(List<List<String>> cells) {
+  if (cells.isEmpty) return const <List<String>>[];
+  final columnCount = cells.fold<int>(0, (maxColumns, row) => math.max(maxColumns, row.length)).clamp(1, 12).toInt();
+  return [
+    for (final row in cells.take(50))
+      [for (var i = 0; i < columnCount; i++) i < row.length ? row[i] : ''],
+  ];
+}
+
+
+String _academicExportEquationLatex(TextSystemExportNode node) {
+  final latex = node.metadata['latex'];
+  if (latex is String && latex.trim().isNotEmpty) return latex.trim();
+  return node.text.trim();
+}
+
+bool _academicExportEquationNumbered(TextSystemExportNode node) {
+  final presentation = node.metadata['presentation'] ?? node.metadata['equationPresentation'];
+  return presentation == 'numbered';
+}
+
+String _markdownAcademicEquation(TextSystemExportNode node) {
+  final latex = _academicExportEquationLatex(node);
+  final label = _academicExportLabel(node);
+  final note = _academicExportNote(node);
+  final buffer = StringBuffer();
+  if (label.isNotEmpty) buffer.writeln('<!-- label: ${_escapeMarkdown(label)} -->');
+  buffer.writeln(r'$$');
+  buffer.writeln(latex);
+  buffer.writeln(r'$$');
+  if (note.isNotEmpty) buffer.writeln('_Note: ${_escapeMarkdown(note)}_');
+  return buffer.toString().trimRight();
+}
+
+String _markdownAcademicFigure(TextSystemExportNode node) {
+  final caption = _academicExportCaption(node);
+  final source = _academicExportSource(node);
+  final alt = _academicExportAltText(node).isEmpty ? caption : _academicExportAltText(node);
+  final label = _academicExportLabel(node);
+  final buffer = StringBuffer();
+  if (source.isNotEmpty) {
+    buffer.writeln('![${_escapeMarkdown(alt)}](${_escapeMarkdown(source)})');
+  } else {
+    buffer.writeln('<!-- figure placeholder -->');
+  }
+  if (caption.isNotEmpty) buffer.writeln('*${_escapeMarkdown(caption)}*');
+  if (label.isNotEmpty) buffer.writeln('<!-- label: ${_escapeMarkdown(label)} -->');
+  return buffer.toString().trimRight();
+}
+
+String _markdownAcademicTable(TextSystemExportNode node) {
+  final cells = _academicExportTableCells(node);
+  final caption = _academicExportCaption(node);
+  final label = _academicExportLabel(node);
+  final note = _academicExportNote(node);
+  final headerRows = _academicExportHeaderRows(node);
+  final buffer = StringBuffer();
+  if (caption.isNotEmpty) buffer.writeln('**${_escapeMarkdown(caption)}**');
+  if (label.isNotEmpty) buffer.writeln('<!-- label: ${_escapeMarkdown(label)} -->');
+  if (cells.isEmpty) {
+    buffer.writeln('<!-- table placeholder -->');
+  } else {
+    final header = cells.first;
+    buffer.writeln('| ${header.map(_escapeMarkdownTableCell).join(' | ')} |');
+    buffer.writeln('| ${List<String>.filled(header.length, '---').join(' | ')} |');
+    final bodyStart = headerRows <= 0 ? 0 : 1;
+    final bodyRows = cells.length <= bodyStart
+        ? <List<String>>[List<String>.filled(header.length, '')]
+        : cells.skip(bodyStart).toList();
+    for (final row in bodyRows) {
+      buffer.writeln('| ${row.map(_escapeMarkdownTableCell).join(' | ')} |');
+    }
+  }
+  if (note.isNotEmpty) buffer.writeln('_Note: ${_escapeMarkdown(note)}_');
+  return buffer.toString().trimRight();
+}
+
+String _escapeMarkdownTableCell(String value) {
+  return _escapeMarkdown(value).replaceAll('|', r'\|');
+}
+
+
+String _latexAcademicEquation(TextSystemExportNode node) {
+  final latex = _academicExportEquationLatex(node);
+  final label = _academicExportLabel(node);
+  final note = _academicExportNote(node);
+  final numbered = _academicExportEquationNumbered(node);
+  final buffer = StringBuffer();
+  if (note.isNotEmpty) buffer.writeln('% ${_escapeLatex(note)}');
+  if (numbered) {
+    buffer.writeln(r'\begin{equation}');
+    if (label.isNotEmpty) buffer.writeln(r'\label{' + _escapeLatex(label) + '}');
+    buffer.writeln(latex);
+    buffer.writeln(r'\end{equation}');
+  } else {
+    buffer.writeln(r'\[');
+    buffer.writeln(latex);
+    buffer.writeln(r'\]');
+  }
+  return buffer.toString().trimRight();
+}
+
+String _latexAcademicFigure(TextSystemExportNode node) {
+  final caption = _academicExportCaption(node);
+  final label = _academicExportLabel(node);
+  final source = _academicExportSource(node);
+  final alt = _academicExportAltText(node);
+  final size = _academicExportFigureSize(node);
+  final width = switch (size) {
+    'small' => r'0.52\linewidth',
+    'large' => r'0.94\linewidth',
+    'fullWidth' => r'\linewidth',
+    _ => r'0.76\linewidth',
+  };
+  final placeholder = source.isNotEmpty
+      ? _escapeLatex(source)
+      : alt.isNotEmpty
+          ? _escapeLatex(alt)
+          : 'Figure placeholder';
+  final buffer = StringBuffer();
+  buffer.writeln(r'\begin{figure}[htbp]');
+  buffer.writeln(r'\centering');
+  buffer.writeln(r'\fbox{\parbox{' + width + r'}{\centering ' + placeholder + r'}}');
+  if (caption.isNotEmpty) buffer.writeln(r'\caption{' + _escapeLatex(caption) + '}');
+  if (label.isNotEmpty) buffer.writeln(r'\label{' + _escapeLatex(label) + '}');
+  buffer.writeln(r'\end{figure}');
+  return buffer.toString().trimRight();
+}
+
+String _latexAcademicTable(TextSystemExportNode node) {
+  final cells = _academicExportTableCells(node);
+  final caption = _academicExportCaption(node);
+  final label = _academicExportLabel(node);
+  final note = _academicExportNote(node);
+  final headerRows = _academicExportHeaderRows(node);
+  final columnCount = cells.isEmpty ? 1 : cells.first.length;
+  final columns = List<String>.filled(columnCount, 'l').join('');
+  final buffer = StringBuffer();
+  buffer.writeln(r'\begin{table}[htbp]');
+  buffer.writeln(r'\centering');
+  if (caption.isNotEmpty) buffer.writeln(r'\caption{' + _escapeLatex(caption) + '}');
+  if (label.isNotEmpty) buffer.writeln(r'\label{' + _escapeLatex(label) + '}');
+  buffer.writeln(r'\begin{tabular}{' + columns + '}');
+  buffer.writeln(r'\hline');
+  if (cells.isEmpty) {
+    buffer.writeln(r'Table placeholder \\');
+  } else {
+    for (var rowIndex = 0; rowIndex < cells.length; rowIndex++) {
+      final row = cells[rowIndex];
+      buffer.writeln(row.map(_escapeLatex).join(' & ') + r' \\');
+      if (headerRows > 0 && rowIndex + 1 == headerRows.clamp(0, cells.length).toInt()) {
+        buffer.writeln(r'\hline');
+      }
+    }
+  }
+  buffer.writeln(r'\hline');
+  buffer.writeln(r'\end{tabular}');
+  if (note.isNotEmpty) buffer.writeln(r'\par\smallskip\footnotesize{' + _escapeLatex(note) + '}');
+  buffer.writeln(r'\end{table}');
+  return buffer.toString().trimRight();
+}
+
+
+String _typstAcademicEquation(TextSystemExportNode node) {
+  final latex = _academicExportEquationLatex(node);
+  final label = _academicExportLabel(node);
+  final suffix = label.isEmpty ? '' : ' <$label>';
+  final numbering = _academicExportEquationNumbered(node) ? ', numbering: "(1)"' : '';
+  return '#equation($latex$numbering)$suffix';
+}
+
+String _typstAcademicFigure(TextSystemExportNode node) {
+  final caption = _academicExportCaption(node);
+  final label = _academicExportLabel(node);
+  final source = _academicExportSource(node);
+  final size = _academicExportFigureSize(node);
+  final height = switch (size) {
+    'small' => '64pt',
+    'large' => '130pt',
+    'fullWidth' => '160pt',
+    _ => '90pt',
+  };
+  final body = source.isNotEmpty
+      ? 'rect(width: 100%, height: $height)[${_escapeTypstText(source)}]'
+      : 'rect(width: 100%, height: $height)[Figure placeholder]';
+  final suffix = label.isEmpty ? '' : ' <$label>';
+  return '#figure($body, caption: [${_escapeTypstText(caption)}])$suffix';
+}
+
+String _typstAcademicTable(TextSystemExportNode node) {
+  final cells = _academicExportTableCells(node);
+  final caption = _academicExportCaption(node);
+  final label = _academicExportLabel(node);
+  final suffix = label.isEmpty ? '' : ' <$label>';
+  if (cells.isEmpty) return '#figure(rect(width: 100%, height: 40pt)[Table placeholder], caption: [${_escapeTypstText(caption)}])$suffix';
+  final flatCells = cells.expand((row) => row).map((cell) => '[${_escapeTypstText(cell)}]').join(', ');
+  final columns = cells.first.length;
+  return '#figure(table(columns: $columns, $flatCells), caption: [${_escapeTypstText(caption)}])$suffix';
+}
+
+
+String _htmlAcademicEquation(TextSystemExportNode node) {
+  final latex = htmlEscape.convert(_academicExportEquationLatex(node));
+  final label = htmlEscape.convert(_academicExportLabel(node));
+  final note = htmlEscape.convert(_academicExportNote(node));
+  final numbered = _academicExportEquationNumbered(node).toString();
+  final buffer = StringBuffer();
+  buffer.writeln('<figure class="equation" data-label="$label" data-numbered="$numbered">');
+  buffer.writeln('  <pre class="latex-equation">$latex</pre>');
+  if (note.isNotEmpty) buffer.writeln('  <figcaption>$note</figcaption>');
+  buffer.writeln('</figure>');
+  return buffer.toString().trimRight();
+}
+
+String _htmlAcademicFigure(TextSystemExportNode node) {
+  final caption = htmlEscape.convert(_academicExportCaption(node));
+  final source = htmlEscape.convert(_academicExportSource(node));
+  final alt = htmlEscape.convert(_academicExportAltText(node));
+  final label = htmlEscape.convert(_academicExportLabel(node));
+  final size = htmlEscape.convert(_academicExportFigureSize(node));
+  final buffer = StringBuffer();
+  buffer.writeln('<figure data-label="$label" data-size="$size">');
+  if (source.isNotEmpty) {
+    buffer.writeln('  <div class="figure-placeholder" data-source="$source">${alt.isEmpty ? source : alt}</div>');
+  } else {
+    buffer.writeln('  <div class="figure-placeholder">Figure placeholder</div>');
+  }
+  if (caption.isNotEmpty) buffer.writeln('  <figcaption>$caption</figcaption>');
+  buffer.writeln('</figure>');
+  return buffer.toString().trimRight();
+}
+
+String _htmlAcademicTable(TextSystemExportNode node) {
+  final cells = _academicExportTableCells(node);
+  final caption = htmlEscape.convert(_academicExportCaption(node));
+  final label = htmlEscape.convert(_academicExportLabel(node));
+  final note = htmlEscape.convert(_academicExportNote(node));
+  final headerRows = _academicExportHeaderRows(node);
+  final buffer = StringBuffer();
+  buffer.writeln('<figure class="table" data-label="$label">');
+  if (caption.isNotEmpty) buffer.writeln('  <figcaption>$caption</figcaption>');
+  buffer.writeln('  <table>');
+  for (var rowIndex = 0; rowIndex < cells.length; rowIndex++) {
+    final tag = rowIndex < headerRows ? 'th' : 'td';
+    buffer.writeln('    <tr>');
+    for (final cell in cells[rowIndex]) {
+      buffer.writeln('      <$tag>${htmlEscape.convert(cell)}</$tag>');
+    }
+    buffer.writeln('    </tr>');
+  }
+  if (cells.isEmpty) buffer.writeln('    <tr><td>Table placeholder</td></tr>');
+  buffer.writeln('  </table>');
+  if (note.isNotEmpty) buffer.writeln('  <p class="table-note">$note</p>');
+  buffer.writeln('</figure>');
+  return buffer.toString().trimRight();
 }

@@ -19,6 +19,9 @@ import '../page/text_system_page_map.dart';
 import '../page/text_system_pagination_engine.dart';
 import '../page/text_system_section_page_metrics.dart';
 import '../page/text_system_page_work_plan.dart';
+import '../editor/text_system_current_paged_editor_surface.dart';
+import '../editor/text_system_owned_editor_command_controller.dart';
+import '../editor/text_system_owned_document_editor_surface.dart';
 import '../page/text_system_paged_block_surface.dart';
 import '../page/text_system_page_setup.dart';
 import '../page/text_system_page_furniture.dart';
@@ -28,9 +31,10 @@ import '../text_system.dart';
 
 /// Full-screen long-form writing shell built on the project-wide text system.
 ///
-/// Phase 12E adds scroll-aware page viewport metadata and a future render-window plan on top of page setup.
-/// The writer still uses a single fluent document surface, while the page
-/// presentation now understands page size, margins, orientation, and page limits.
+/// The writer can still open the older pageless/fluent paths, but its primary
+/// real-page mode now routes through [TextSystemCurrentPagedEditorSurface].
+/// Phase 16A deliberately isolates that current TextField-backed editor behind
+/// an editor-level seam so the owned document editor can be built beside it.
 class PremiumWriterScreen extends StatefulWidget {
   const PremiumWriterScreen({
     super.key,
@@ -60,14 +64,24 @@ enum _PremiumWriterPageMode {
   pageless,
   hybrid,
   chromeOnly,
-  pagedBlocksExperimental;
+  pagedBlocksExperimental,
+  ownedDocumentPreview;
+
+  static const List<_PremiumWriterPageMode> displayOrder = <_PremiumWriterPageMode>[
+    ownedDocumentPreview,
+    pagedBlocksExperimental,
+    pageless,
+    hybrid,
+    chromeOnly,
+  ];
 
   String get label {
     return switch (this) {
       _PremiumWriterPageMode.pageless => 'Pageless',
       _PremiumWriterPageMode.hybrid => 'Hybrid pages',
       _PremiumWriterPageMode.chromeOnly => 'Page chrome',
-      _PremiumWriterPageMode.pagedBlocksExperimental => 'Real pages',
+      _PremiumWriterPageMode.pagedBlocksExperimental => 'Real pages fallback',
+      _PremiumWriterPageMode.ownedDocumentPreview => 'Owned editor',
     };
   }
 
@@ -76,7 +90,8 @@ enum _PremiumWriterPageMode {
       _PremiumWriterPageMode.pageless => 'Continuous writing surface. No page chrome or break markers.',
       _PremiumWriterPageMode.hybrid => 'Continuous editor with physical page chrome and measured page-break markers.',
       _PremiumWriterPageMode.chromeOnly => 'Continuous editor with physical page frames only.',
-      _PremiumWriterPageMode.pagedBlocksExperimental => 'Primary long-form editor with physical pages, headers/footers, citations, footnotes, references, and app integrations.',
+      _PremiumWriterPageMode.pagedBlocksExperimental => 'Fallback TextField-backed real-page editor. Keep this available while the owned editor is promoted and hardened.',
+      _PremiumWriterPageMode.ownedDocumentPreview => 'Default owned document editor. Edits real pages without body TextFields and supports document-level selection, keyboard editing, clipboard, formatting, references, inline atoms, object blocks, and the text-input bridge.',
     };
   }
 }
@@ -120,21 +135,27 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
   late final TextSystemAutosaveController _autosaveController;
   late final FluentDocumentCommandController _fluentCommands;
   late final TextSystemPagedBlockCommandController _pagedBlockCommands;
+  late final TextSystemOwnedEditorCommandController _ownedEditorCommands;
   late final TextSystemWriterCommandRegistry _writerCommands;
   late final TextSystemReferenceActionRepository _referenceActionRepository;
   late final TextSystemEmbeddedTodoRepository? _embeddedTodoRepository;
   late final ScrollController _pageScrollController;
+  late final ValueNotifier<int> _writerCommandRevision;
 
   bool _overviewExpanded = false;
   bool _showToolbar = true;
   bool _showInspector = false;
   bool _showSourceManager = false;
+  bool _showObjectNavigator = false;
   bool _focusMode = false;
   bool _widePage = false;
   bool _showMarginGuides = true;
   bool _showDetailedPageBreakLabels = true;
   bool _showMarginMarkers = false;
-  _PremiumWriterPageMode _pageMode = _PremiumWriterPageMode.pagedBlocksExperimental;
+  bool _showMarginAnnotations = true;
+  bool _showInPageToolbar = false;
+  double _pageZoom = 1.15;
+  _PremiumWriterPageMode _pageMode = _PremiumWriterPageMode.ownedDocumentPreview;
   _PremiumWriterRibbonTab _activeRibbonTab = _PremiumWriterRibbonTab.home;
   TextSystemPageSetup _pageSetup = TextSystemPagePreset.a4FivePages.setup;
   TextSystemPageFurniture _pageFurniture = const TextSystemPageFurniture.defaults();
@@ -148,6 +169,10 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
     _showInspector = widget.showInspectorByDefault;
     _fluentCommands = FluentDocumentCommandController();
     _pagedBlockCommands = TextSystemPagedBlockCommandController();
+    _ownedEditorCommands = TextSystemOwnedEditorCommandController();
+    _writerCommandRevision = ValueNotifier<int>(_pagedBlockCommands.stateRevision + _ownedEditorCommands.stateRevision);
+    _pagedBlockCommands.addListener(_handlePagedBlockCommandStateChanged);
+    _ownedEditorCommands.addListener(_handlePagedBlockCommandStateChanged);
     _writerCommands = _buildWriterCommandRegistry();
     _referenceActionRepository = widget.database == null
         ? TextSystemMemoryReferenceActionRepository()
@@ -186,8 +211,18 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
         );
   }
 
+  void _handlePagedBlockCommandStateChanged() {
+    if (!mounted || !_isDocumentEditorCommandSurfaceActive) return;
+    _writerCommandRevision.value = _pagedBlockCommands.stateRevision + _ownedEditorCommands.stateRevision;
+  }
+
   @override
   void dispose() {
+    _pagedBlockCommands.removeListener(_handlePagedBlockCommandStateChanged);
+    _ownedEditorCommands.removeListener(_handlePagedBlockCommandStateChanged);
+    _pagedBlockCommands.dispose();
+    _ownedEditorCommands.dispose();
+    _writerCommandRevision.dispose();
     _pageScrollController.dispose();
     _fluentCommands.dispose();
     if (_ownsAutosaveController) {
@@ -466,8 +501,459 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
     _textController.replaceDocument(nextDocument, label: 'Change citation settings');
   }
 
+  Future<void> _editCitationSourceMetadata(TextSystemCitationRegistryItem item) async {
+    final source = item.source;
+    final authorsController = TextEditingController(text: source.authors.join('; '));
+    final yearController = TextEditingController(text: source.year ?? '');
+    final titleController = TextEditingController(text: source.title);
+    final containerController = TextEditingController(text: source.containerTitle ?? '');
+    final publisherController = TextEditingController(text: source.publisher ?? '');
+    final doiController = TextEditingController(text: source.doi ?? '');
+    final urlController = TextEditingController(text: source.url ?? '');
+    final locatorController = TextEditingController(text: source.locator ?? '');
+
+    final result = await showDialog<TextSystemCitationSource>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Edit citation source'),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: authorsController,
+                    decoration: const InputDecoration(
+                      labelText: 'Authors',
+                      helperText: 'Separate multiple authors with semicolons.',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: yearController,
+                    decoration: const InputDecoration(labelText: 'Year'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: titleController,
+                    decoration: const InputDecoration(labelText: 'Title'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: containerController,
+                    decoration: const InputDecoration(labelText: 'Journal, book, site, or container'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: publisherController,
+                    decoration: const InputDecoration(labelText: 'Publisher'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: doiController,
+                    decoration: const InputDecoration(labelText: 'DOI'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: urlController,
+                    decoration: const InputDecoration(labelText: 'URL'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: locatorController,
+                    decoration: const InputDecoration(labelText: 'Locator / page'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final authors = authorsController.text
+                    .split(RegExp(r';|\n'))
+                    .map((part) => part.trim())
+                    .where((part) => part.isNotEmpty)
+                    .toList(growable: false);
+                Navigator.of(context).pop(
+                  TextSystemCitationSource(
+                    id: source.id,
+                    title: titleController.text.trim().isEmpty ? 'Untitled source' : titleController.text.trim(),
+                    authors: authors,
+                    year: _optionalText(yearController.text),
+                    containerTitle: _optionalText(containerController.text),
+                    publisher: _optionalText(publisherController.text),
+                    doi: _optionalText(doiController.text),
+                    url: _optionalText(urlController.text),
+                    locator: _optionalText(locatorController.text),
+                    citationKey: source.citationKey,
+                    kind: source.kind,
+                  ),
+                );
+              },
+              child: const Text('Save source'),
+            ),
+          ],
+        );
+      },
+    );
+
+    authorsController.dispose();
+    yearController.dispose();
+    titleController.dispose();
+    containerController.dispose();
+    publisherController.dispose();
+    doiController.dispose();
+    urlController.dispose();
+    locatorController.dispose();
+
+    if (result == null) return;
+    _replaceCitationSourceMetadata(
+      targetId: item.mark.targetId,
+      source: result,
+    );
+  }
+
+  static String? _optionalText(String value) {
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  void _replaceCitationSourceMetadata({
+    required String targetId,
+    required TextSystemCitationSource source,
+  }) {
+    final updatedAt = DateTime.now();
+    var changed = false;
+    final nextBlocks = <TextSystemBlock>[];
+
+    for (final block in _textController.document.blocks) {
+      if (TextSystemCitationBibliographyGenerator.isGeneratedBibliographyBlock(block)) {
+        continue;
+      }
+
+      var blockChanged = false;
+      final nextMarks = <TextMark>[];
+      for (final mark in block.marks) {
+        final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
+        if (inlineReference == null ||
+            inlineReference.kind != TextSystemReferenceTargetKind.citation ||
+            inlineReference.targetId != targetId) {
+          nextMarks.add(mark);
+          continue;
+        }
+
+        final preserved = Map<String, Object?>.of(inlineReference.metadata)
+          ..remove('authors')
+          ..remove('year')
+          ..remove('title')
+          ..remove('sourceTitle')
+          ..remove('containerTitle')
+          ..remove('publisher')
+          ..remove('doi')
+          ..remove('url')
+          ..remove('locator');
+        final metadata = <String, Object?>{
+          ...preserved,
+          ...source.toMetadata(),
+          'title': source.title,
+          'sourceTitle': source.title,
+          if (source.citationKey != null && source.citationKey!.trim().isNotEmpty)
+            'citationKey': source.citationKey!.trim(),
+        };
+
+        final updatedReference = inlineReference.copyWith(
+          label: source.title,
+          citationKey: source.citationKey ?? inlineReference.citationKey,
+          updatedAt: updatedAt,
+          metadata: metadata,
+        );
+        nextMarks.add(mark.copyWith(attributes: updatedReference.toTextMarkAttributes()));
+        changed = true;
+        blockChanged = true;
+      }
+
+      nextBlocks.add(blockChanged ? block.copyWith(marks: nextMarks).normalizeMarks() : block);
+    }
+
+    if (!changed) return;
+    final withoutGenerated = _textController.document.copyWith(
+      blocks: nextBlocks,
+      updatedAt: updatedAt,
+    );
+    final refreshed = TextSystemCitationBibliographyGenerator.refreshDocument(withoutGenerated);
+    _textController.replaceDocument(refreshed, label: 'Edit citation source');
+  }
+
+  Future<void> _repairCitationTargets() async {
+    final hydrated = await _hydrateSavedInlineReferences(_textController.document);
+    final refreshed = TextSystemCitationBibliographyGenerator.refreshDocument(hydrated);
+    final changed = jsonEncode(refreshed.toJson()) != jsonEncode(_textController.document.toJson());
+    if (changed) {
+      _textController.replaceDocument(refreshed, label: 'Repair citation targets');
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(changed ? 'Citation/source targets repaired.' : 'No repairable citation/source targets found.')),
+    );
+  }
+
+  void _deduplicateCitationSources() {
+    final canonicalBySignature = <String, TextSystemInlineReferenceMark>{};
+    var mergedCount = 0;
+    var changed = false;
+    final nextBlocks = <TextSystemBlock>[];
+
+    for (final block in _textController.document.blocks) {
+      if (TextSystemCitationBibliographyGenerator.isGeneratedBibliographyBlock(block)) {
+        continue;
+      }
+
+      var blockChanged = false;
+      final nextMarks = <TextMark>[];
+      for (final mark in block.marks) {
+        final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
+        if (inlineReference == null || inlineReference.kind != TextSystemReferenceTargetKind.citation) {
+          nextMarks.add(mark);
+          continue;
+        }
+
+        final signature = _citationSignature(TextSystemCitationSource.fromInlineMark(inlineReference));
+        if (signature.isEmpty) {
+          nextMarks.add(mark);
+          continue;
+        }
+        final canonical = canonicalBySignature[signature];
+        if (canonical == null) {
+          canonicalBySignature[signature] = inlineReference;
+          nextMarks.add(mark);
+          continue;
+        }
+        if (canonical.targetId == inlineReference.targetId) {
+          nextMarks.add(mark);
+          continue;
+        }
+
+        final merged = inlineReference.copyWith(
+          targetId: canonical.targetId,
+          label: canonical.label,
+          citationKey: canonical.citationKey ?? inlineReference.citationKey,
+          metadata: <String, Object?>{
+            ...inlineReference.metadata,
+            ...canonical.metadata,
+            'deduplicatedFromTargetId': inlineReference.targetId,
+          },
+        );
+        nextMarks.add(mark.copyWith(attributes: merged.toTextMarkAttributes()));
+        changed = true;
+        blockChanged = true;
+        mergedCount += 1;
+      }
+      nextBlocks.add(blockChanged ? block.copyWith(marks: nextMarks).normalizeMarks() : block);
+    }
+
+    if (!changed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No duplicate citation sources found.')),
+      );
+      return;
+    }
+
+    final withoutGenerated = _textController.document.copyWith(
+      blocks: nextBlocks,
+      updatedAt: DateTime.now(),
+    );
+    final refreshed = TextSystemCitationBibliographyGenerator.refreshDocument(withoutGenerated);
+    _textController.replaceDocument(refreshed, label: 'Deduplicate citation sources');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Merged $mergedCount duplicate citation occurrence${mergedCount == 1 ? '' : 's'}.')),
+    );
+  }
+
+  String _citationSignature(TextSystemCitationSource source) {
+    final title = source.title.trim().toLowerCase();
+    final year = (source.year ?? '').trim().toLowerCase();
+    final authors = source.authors.map((author) => author.trim().toLowerCase()).where((author) => author.isNotEmpty).join('|');
+    final fallbackAuthor = source.authorLabel.trim().toLowerCase();
+    final authorPart = authors.isEmpty ? fallbackAuthor : authors;
+    final value = '$authorPart::$year::$title';
+    return value.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  Future<void> _openCitationSourceFromManager(TextSystemCitationRegistryItem item) async {
+    await _openReferenceTarget(item.mark);
+  }
+
+  Future<void> _openLinkedReferenceFromManager(TextSystemStructureReference reference) async {
+    final inlineReference = _inlineReferenceForStructureReference(reference);
+    if (inlineReference != null) {
+      await _openReferenceTarget(inlineReference);
+      return;
+    }
+
+    final url = reference.url;
+    if (url != null && url.trim().isNotEmpty) {
+      await Clipboard.setData(ClipboardData(text: url.trim()));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Copied target URL: ${url.trim()}')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('No openable target is attached to ${reference.label}.')),
+    );
+  }
+
+  TextSystemInlineReferenceMark? _inlineReferenceForStructureReference(TextSystemStructureReference reference) {
+    final document = _textController.document;
+    for (final block in document.blocks) {
+      if (block.id != reference.blockId) continue;
+      for (final mark in block.marks) {
+        final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
+        if (inlineReference == null) continue;
+        final sameId = inlineReference.id == reference.id;
+        final sameTarget = reference.targetId != null && inlineReference.targetId == reference.targetId;
+        final sameOffset = mark.range.start == reference.offset;
+        if (sameId || (sameTarget && sameOffset)) return inlineReference;
+      }
+    }
+    return null;
+  }
+
+  void _showCitationOccurrences(TextSystemCitationRegistryItem item) {
+    final occurrences = _citationOccurrencesForTarget(item.mark.targetId);
+    _showSourceOccurrencesDialog(
+      title: 'Citation occurrences',
+      subtitle: item.source.title,
+      occurrences: occurrences,
+    );
+  }
+
+  void _showLinkedReferenceOccurrences(TextSystemStructureReference reference) {
+    final occurrences = _linkedReferenceOccurrences(reference);
+    _showSourceOccurrencesDialog(
+      title: '${reference.kind.label} occurrences',
+      subtitle: reference.label,
+      occurrences: occurrences,
+    );
+  }
+
+  List<_SourceOccurrence> _citationOccurrencesForTarget(String targetId) {
+    final occurrences = <_SourceOccurrence>[];
+    final blocks = _textController.document.blocks;
+    for (var blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
+      final block = blocks[blockIndex];
+      if (TextSystemCitationBibliographyGenerator.isGeneratedBibliographyBlock(block)) continue;
+      for (final mark in block.marks) {
+        final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
+        if (inlineReference == null ||
+            inlineReference.kind != TextSystemReferenceTargetKind.citation ||
+            inlineReference.targetId != targetId) {
+          continue;
+        }
+        occurrences.add(_SourceOccurrence.fromBlock(block, blockIndex, mark.range.start));
+      }
+    }
+    return occurrences;
+  }
+
+  List<_SourceOccurrence> _linkedReferenceOccurrences(TextSystemStructureReference reference) {
+    final occurrences = <_SourceOccurrence>[];
+    final blocks = _textController.document.blocks;
+    for (var blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
+      final block = blocks[blockIndex];
+      for (final mark in block.marks) {
+        final inlineReference = TextSystemInlineReferenceMark.tryFromTextMarkAttributes(mark.attributes);
+        if (inlineReference == null) continue;
+        final matchesTarget = reference.targetId != null && inlineReference.targetId == reference.targetId;
+        final matchesUrl = reference.url != null && inlineReference.uri?.toString() == reference.url;
+        final matchesKind = inlineReference.kind.id == reference.role || inlineReference.kind.name == reference.kind.name;
+        if (matchesTarget || matchesUrl || (matchesKind && block.id == reference.blockId && mark.range.start == reference.offset)) {
+          occurrences.add(_SourceOccurrence.fromBlock(block, blockIndex, mark.range.start));
+        }
+      }
+    }
+    return occurrences;
+  }
+
+  void _showSourceOccurrencesDialog({
+    required String title,
+    required String subtitle,
+    required List<_SourceOccurrence> occurrences,
+  }) {
+    showDialog<void>(
+      context: context,
+      builder: (context) {
+        final theme = Theme.of(context);
+        return AlertDialog(
+          title: Text(title),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  subtitle.trim().isEmpty ? 'Untitled source' : subtitle,
+                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                ),
+                const SizedBox(height: 12),
+                if (occurrences.isEmpty)
+                  const Text('No occurrences found in the editable document body.')
+                else
+                  SizedBox(
+                    height: 340,
+                    child: ListView.builder(
+                      itemCount: occurrences.length,
+                      itemBuilder: (context, index) {
+                        final occurrence = occurrences[index];
+                        return ListTile(
+                          dense: true,
+                          leading: CircleAvatar(
+                            radius: 13,
+                            child: Text('${index + 1}', style: theme.textTheme.labelSmall),
+                          ),
+                          title: Text(
+                            occurrence.snippet,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text('Block ${occurrence.blockIndex + 1}'),
+                          onTap: () {
+                            Navigator.of(context).pop();
+                            _navigateToBlock(occurrence.blockId);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
 
   bool get _isRealPageEditorActive => _pageMode == _PremiumWriterPageMode.pagedBlocksExperimental;
+  bool get _isOwnedDocumentEditorActive => _pageMode == _PremiumWriterPageMode.ownedDocumentPreview;
+  bool get _isDocumentEditorCommandSurfaceActive => _isRealPageEditorActive || _isOwnedDocumentEditorActive;
 
   bool get _canRunRealPageInsertCommand {
     return _isRealPageEditorActive && _pagedBlockCommands.canRunEditorCommand;
@@ -485,14 +971,214 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
     return _isRealPageEditorActive && _pagedBlockCommands.canRunEditorCommand;
   }
 
+  bool get _canRunActiveDocumentHomeCommand {
+    if (_isOwnedDocumentEditorActive) return _ownedEditorCommands.canRunEditorCommand;
+    return _canRunRealPageHomeCommand;
+  }
+
+  bool get _canRunActiveDocumentInsertCommand {
+    if (_isOwnedDocumentEditorActive) return _ownedEditorCommands.canInsertAtSelection;
+    return _canRunRealPageInsertCommand;
+  }
+
+  bool get _canRunActiveDocumentStyleCommand {
+    if (_isOwnedDocumentEditorActive) return _ownedEditorCommands.canChangeActiveBlockStyle;
+    return _canRunRealPageHomeCommand;
+  }
+
+  bool get _canRunActiveDocumentEmbeddedTodoCommand {
+    if (_isOwnedDocumentEditorActive) return _ownedEditorCommands.canInsertEmbeddedTodo;
+    return _canRunRealPageEmbeddedTodoCommand;
+  }
+
+  bool get _canUndoActiveDocumentEditor => _isOwnedDocumentEditorActive
+      ? _ownedEditorCommands.canUndo
+      : _isRealPageEditorActive && _pagedBlockCommands.canUndo;
+  bool get _canRedoActiveDocumentEditor => _isOwnedDocumentEditorActive
+      ? _ownedEditorCommands.canRedo
+      : _isRealPageEditorActive && _pagedBlockCommands.canRedo;
+
   String? _realPageCommandUnavailableReason() {
     if (!_isRealPageEditorActive) {
-      return 'Switch to Real pages to use this command from the master header.';
+      return 'Switch to Real pages fallback to use this legacy-only command.';
     }
     if (!_pagedBlockCommands.isAttached) {
-      return 'The real-page editor is still initializing.';
+      return 'The real-page fallback editor is still initializing.';
     }
     return null;
+  }
+
+  String? _activeDocumentCommandUnavailableReason() {
+    if (_isOwnedDocumentEditorActive) {
+      if (!_ownedEditorCommands.isAttached) {
+        return 'The owned editor is still initializing.';
+      }
+      return null;
+    }
+    return _realPageCommandUnavailableReason();
+  }
+
+
+  bool get _canRunDocumentReferenceCommand {
+    if (_isOwnedDocumentEditorActive) return _ownedEditorCommands.canCreateReference;
+    return _canRunRealPageReferenceCommand;
+  }
+
+  bool get _canCopyActiveDocumentSelection => _isOwnedDocumentEditorActive
+      ? _ownedEditorCommands.canCopySelection
+      : _isRealPageEditorActive && _pagedBlockCommands.canCopySelection;
+  bool get _canCutActiveDocumentSelection => _isOwnedDocumentEditorActive
+      ? _ownedEditorCommands.canCutSelection
+      : _isRealPageEditorActive && _pagedBlockCommands.canCutSelection;
+  bool get _canPasteIntoActiveDocumentSelection => _isOwnedDocumentEditorActive
+      ? _ownedEditorCommands.canPastePlainText
+      : _isRealPageEditorActive && _pagedBlockCommands.canPastePlainText;
+  bool get _canToggleActiveBold => _isOwnedDocumentEditorActive
+      ? _ownedEditorCommands.canToggleBold
+      : _isRealPageEditorActive && _pagedBlockCommands.canToggleBold;
+  bool get _canToggleActiveItalic => _isOwnedDocumentEditorActive
+      ? _ownedEditorCommands.canToggleItalic
+      : _isRealPageEditorActive && _pagedBlockCommands.canToggleItalic;
+  bool get _canToggleActiveUnderline => _isOwnedDocumentEditorActive
+      ? _ownedEditorCommands.canToggleUnderline
+      : _isRealPageEditorActive && _pagedBlockCommands.canToggleUnderline;
+  bool get _canToggleActiveCode => _isOwnedDocumentEditorActive
+      ? _ownedEditorCommands.canToggleCode
+      : _isRealPageEditorActive && _pagedBlockCommands.canToggleCode;
+  bool get _canToggleActiveHighlight => _isOwnedDocumentEditorActive
+      ? _ownedEditorCommands.canToggleHighlight
+      : _isRealPageEditorActive && _pagedBlockCommands.canToggleHighlight;
+
+  bool get _activeBoldSelected => _isOwnedDocumentEditorActive ? _ownedEditorCommands.boldActive : _pagedBlockCommands.boldActive;
+  bool get _activeItalicSelected => _isOwnedDocumentEditorActive ? _ownedEditorCommands.italicActive : _pagedBlockCommands.italicActive;
+  bool get _activeUnderlineSelected => _isOwnedDocumentEditorActive ? _ownedEditorCommands.underlineActive : _pagedBlockCommands.underlineActive;
+  bool get _activeCodeSelected => _isOwnedDocumentEditorActive ? _ownedEditorCommands.codeActive : _pagedBlockCommands.codeActive;
+  bool get _activeHighlightSelected => _isOwnedDocumentEditorActive ? _ownedEditorCommands.highlightActive : _pagedBlockCommands.highlightActive;
+
+  Future<void> _copyActiveDocumentSelection() async {
+    if (_isOwnedDocumentEditorActive) {
+      await _ownedEditorCommands.copySelection();
+      return;
+    }
+    await _pagedBlockCommands.copySelection();
+  }
+
+  Future<void> _cutActiveDocumentSelection() async {
+    if (_isOwnedDocumentEditorActive) {
+      await _ownedEditorCommands.cutSelection();
+      return;
+    }
+    await _pagedBlockCommands.cutSelection();
+  }
+
+  Future<void> _pasteIntoActiveDocumentSelection() async {
+    if (_isOwnedDocumentEditorActive) {
+      await _ownedEditorCommands.pastePlainText();
+      return;
+    }
+    await _pagedBlockCommands.pastePlainText();
+  }
+
+  void _toggleActiveBold() => _isOwnedDocumentEditorActive ? _ownedEditorCommands.toggleBold() : _pagedBlockCommands.toggleBold();
+  void _toggleActiveItalic() => _isOwnedDocumentEditorActive ? _ownedEditorCommands.toggleItalic() : _pagedBlockCommands.toggleItalic();
+  void _toggleActiveUnderline() => _isOwnedDocumentEditorActive ? _ownedEditorCommands.toggleUnderline() : _pagedBlockCommands.toggleUnderline();
+  void _toggleActiveCode() => _isOwnedDocumentEditorActive ? _ownedEditorCommands.toggleInlineCode() : _pagedBlockCommands.toggleInlineCode();
+  void _toggleActiveHighlight() => _isOwnedDocumentEditorActive ? _ownedEditorCommands.toggleHighlight() : _pagedBlockCommands.toggleHighlight();
+
+  Future<void> _runActiveReferenceAction(TextSystemReferenceActionType actionType) async {
+    if (_isOwnedDocumentEditorActive) {
+      await _ownedEditorCommands.runReferenceAction(actionType);
+      return;
+    }
+    await _pagedBlockCommands.runReferenceAction(actionType);
+  }
+
+  void _undoActiveDocumentEditor() {
+    if (_isOwnedDocumentEditorActive) {
+      _ownedEditorCommands.undo();
+      return;
+    }
+    _pagedBlockCommands.undo();
+  }
+
+  void _redoActiveDocumentEditor() {
+    if (_isOwnedDocumentEditorActive) {
+      _ownedEditorCommands.redo();
+      return;
+    }
+    _pagedBlockCommands.redo();
+  }
+
+  void _changeActiveBlockStyleById(String styleId) {
+    if (_isOwnedDocumentEditorActive) {
+      _ownedEditorCommands.changeActiveBlockStyleById(styleId);
+      return;
+    }
+    _pagedBlockCommands.changeActiveBlockStyleById(styleId);
+  }
+
+  void _insertActivePageBreak() {
+    if (_isOwnedDocumentEditorActive) {
+      _ownedEditorCommands.insertPageBreak();
+      return;
+    }
+    _pagedBlockCommands.insertPageBreak();
+  }
+
+  void _insertActiveSectionBreak() {
+    if (_isOwnedDocumentEditorActive) {
+      _ownedEditorCommands.insertSectionBreak();
+      return;
+    }
+    _pagedBlockCommands.insertSectionBreak();
+  }
+
+  void _insertActiveFootnote() {
+    if (_isOwnedDocumentEditorActive) {
+      _ownedEditorCommands.insertFootnote();
+      return;
+    }
+    _pagedBlockCommands.insertFootnote();
+  }
+
+  Future<void> _insertActiveEmbeddedTodo() async {
+    if (_isOwnedDocumentEditorActive) {
+      await _ownedEditorCommands.insertEmbeddedTodo();
+      return;
+    }
+    await _pagedBlockCommands.insertEmbeddedTodo();
+  }
+
+  Future<void> _insertActiveFigure() async {
+    if (_isOwnedDocumentEditorActive) {
+      await _ownedEditorCommands.insertFigure();
+      return;
+    }
+    await _pagedBlockCommands.insertFigure();
+  }
+
+  Future<void> _insertActiveTable() async {
+    if (_isOwnedDocumentEditorActive) {
+      await _ownedEditorCommands.insertTable();
+      return;
+    }
+    await _pagedBlockCommands.insertTable();
+  }
+
+  Future<void> _insertActiveEquation() async {
+    if (_isOwnedDocumentEditorActive) {
+      await _ownedEditorCommands.insertEquation();
+      return;
+    }
+    await _pagedBlockCommands.insertEquation();
+  }
+
+  Future<void> _insertActiveInlineMath() async {
+    if (_isOwnedDocumentEditorActive) {
+      await _ownedEditorCommands.insertInlineMath();
+      return;
+    }
+    await _pagedBlockCommands.insertInlineMath();
   }
 
   TextSystemWriterCommandBinding _realPageInsertCommand({
@@ -508,9 +1194,9 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
       label: label,
       description: description,
       execute: execute,
-      isEnabled: isEnabled ?? () => _canRunRealPageInsertCommand,
+      isEnabled: isEnabled ?? () => _canRunActiveDocumentInsertCommand,
       disabledReason: () => disabledReason ??
-          _realPageCommandUnavailableReason() ??
+          _activeDocumentCommandUnavailableReason() ??
           'Place the caret in the document before using this command.',
     );
   }
@@ -529,11 +1215,11 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
       label: label,
       description: description,
       execute: execute,
-      isEnabled: isEnabled ?? () => _canRunRealPageHomeCommand,
+      isEnabled: isEnabled ?? () => _canRunActiveDocumentHomeCommand,
       isSelected: isSelected,
       disabledReason: () => disabledReason ??
-          _realPageCommandUnavailableReason() ??
-          'Click inside the real-page document before using this command.',
+          _activeDocumentCommandUnavailableReason() ??
+          'Click inside the active document editor before using this command.',
     );
   }
 
@@ -568,6 +1254,13 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
         isSelected: () => _showInspector,
       ),
       TextSystemWriterCommandBinding(
+        id: TextSystemWriterCommandId.objectNavigator,
+        label: 'Objects',
+        description: 'Show or hide the figure and table navigator.',
+        execute: () => setState(() => _showObjectNavigator = !_showObjectNavigator),
+        isSelected: () => _showObjectNavigator,
+      ),
+      TextSystemWriterCommandBinding(
         id: TextSystemWriterCommandId.toggleWidePage,
         label: 'Wide',
         description: 'Toggle the wide writing canvas.',
@@ -590,8 +1283,8 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
       ),
       TextSystemWriterCommandBinding(
         id: TextSystemWriterCommandId.toggleMarginMarkers,
-        label: 'Markers',
-        description: 'Show or hide passive margin markers for TODOs, citations, links, and footnotes.',
+        label: 'Source marks',
+        description: 'Show or hide compact in-page markers for citations, links, footnotes, and synced TODOs.',
         execute: () => setState(() => _showMarginMarkers = !_showMarginMarkers),
         isSelected: () => _showMarginMarkers,
       ),
@@ -605,40 +1298,40 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
         id: TextSystemWriterCommandId.undo,
         label: 'Undo',
         description: 'Undo the latest document edit.',
-        execute: _pagedBlockCommands.undo,
-        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canUndo,
+        execute: _undoActiveDocumentEditor,
+        isEnabled: () => _canUndoActiveDocumentEditor,
         disabledReason: 'There is nothing to undo yet.',
       ),
       _realPageHomeCommand(
         id: TextSystemWriterCommandId.redo,
         label: 'Redo',
         description: 'Redo the latest undone document edit.',
-        execute: _pagedBlockCommands.redo,
-        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canRedo,
+        execute: _redoActiveDocumentEditor,
+        isEnabled: () => _canRedoActiveDocumentEditor,
         disabledReason: 'There is nothing to redo yet.',
       ),
       _realPageHomeCommand(
         id: TextSystemWriterCommandId.copy,
         label: 'Copy',
         description: 'Copy the current selection.',
-        execute: _pagedBlockCommands.copySelection,
-        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canCopySelection,
+        execute: _copyActiveDocumentSelection,
+        isEnabled: () => _canCopyActiveDocumentSelection,
         disabledReason: 'Select text before copying.',
       ),
       _realPageHomeCommand(
         id: TextSystemWriterCommandId.cut,
         label: 'Cut',
         description: 'Cut the current selection.',
-        execute: _pagedBlockCommands.cutSelection,
-        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canCutSelection,
+        execute: _cutActiveDocumentSelection,
+        isEnabled: () => _canCutActiveDocumentSelection,
         disabledReason: 'Select text before cutting.',
       ),
       _realPageHomeCommand(
         id: TextSystemWriterCommandId.paste,
         label: 'Paste',
         description: 'Paste clipboard content into the document.',
-        execute: _pagedBlockCommands.pastePlainText,
-        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canPastePlainText,
+        execute: _pasteIntoActiveDocumentSelection,
+        isEnabled: () => _canPasteIntoActiveDocumentSelection,
         disabledReason: 'Click inside an editable text block before pasting.',
       ),
       disabledTextSystemWriterCommand(
@@ -651,64 +1344,67 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
         id: TextSystemWriterCommandId.bold,
         label: 'Bold',
         description: 'Toggle bold text.',
-        execute: _pagedBlockCommands.toggleBold,
-        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canToggleBold,
-        isSelected: () => _pagedBlockCommands.boldActive,
+        execute: _toggleActiveBold,
+        isEnabled: () => _canToggleActiveBold,
+        isSelected: () => _activeBoldSelected,
         disabledReason: 'Select text before toggling bold.',
       ),
       _realPageHomeCommand(
         id: TextSystemWriterCommandId.italic,
         label: 'Italic',
         description: 'Toggle italic text.',
-        execute: _pagedBlockCommands.toggleItalic,
-        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canToggleItalic,
-        isSelected: () => _pagedBlockCommands.italicActive,
+        execute: _toggleActiveItalic,
+        isEnabled: () => _canToggleActiveItalic,
+        isSelected: () => _activeItalicSelected,
         disabledReason: 'Select text before toggling italic.',
       ),
       _realPageHomeCommand(
         id: TextSystemWriterCommandId.underline,
         label: 'Underline',
         description: 'Toggle underline text.',
-        execute: _pagedBlockCommands.toggleUnderline,
-        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canToggleUnderline,
-        isSelected: () => _pagedBlockCommands.underlineActive,
+        execute: _toggleActiveUnderline,
+        isEnabled: () => _canToggleActiveUnderline,
+        isSelected: () => _activeUnderlineSelected,
         disabledReason: 'Select text before toggling underline.',
       ),
       _realPageHomeCommand(
         id: TextSystemWriterCommandId.inlineCode,
         label: 'Code',
         description: 'Toggle inline code.',
-        execute: _pagedBlockCommands.toggleInlineCode,
-        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canToggleCode,
-        isSelected: () => _pagedBlockCommands.codeActive,
+        execute: _toggleActiveCode,
+        isEnabled: () => _canToggleActiveCode,
+        isSelected: () => _activeCodeSelected,
         disabledReason: 'Select text before toggling inline code.',
       ),
       _realPageHomeCommand(
         id: TextSystemWriterCommandId.highlight,
         label: 'Highlight',
         description: 'Toggle highlight.',
-        execute: _pagedBlockCommands.toggleHighlight,
-        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canToggleHighlight,
-        isSelected: () => _pagedBlockCommands.highlightActive,
+        execute: _toggleActiveHighlight,
+        isEnabled: () => _canToggleActiveHighlight,
+        isSelected: () => _activeHighlightSelected,
         disabledReason: 'Select text before toggling highlight.',
       ),
       _realPageHomeCommand(
         id: TextSystemWriterCommandId.bulletList,
         label: 'Bullets',
         description: 'Convert the active block/list group to a bullet list.',
-        execute: () => _pagedBlockCommands.changeActiveBlockStyleById(TextSystemDocumentStyleSheet.listParagraph),
+        execute: () => _changeActiveBlockStyleById(TextSystemDocumentStyleSheet.listParagraph),
+        isEnabled: () => _canRunActiveDocumentStyleCommand,
       ),
       _realPageHomeCommand(
         id: TextSystemWriterCommandId.numberedList,
         label: 'Numbered',
         description: 'Convert the active block/list group to a numbered list.',
-        execute: () => _pagedBlockCommands.changeActiveBlockStyleById(TextSystemDocumentStyleSheet.numberedList),
+        execute: () => _changeActiveBlockStyleById(TextSystemDocumentStyleSheet.numberedList),
+        isEnabled: () => _canRunActiveDocumentStyleCommand,
       ),
       _realPageHomeCommand(
         id: TextSystemWriterCommandId.documentTodo,
         label: 'Doc TODO',
         description: 'Convert the active block/list group to a document-local todo.',
-        execute: () => _pagedBlockCommands.changeActiveBlockStyleById(TextSystemDocumentStyleSheet.todo),
+        execute: () => _changeActiveBlockStyleById(TextSystemDocumentStyleSheet.todo),
+        isEnabled: () => _canRunActiveDocumentStyleCommand,
       ),
       disabledTextSystemWriterCommand(
         id: TextSystemWriterCommandId.align,
@@ -720,48 +1416,70 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
         id: TextSystemWriterCommandId.pageBreak,
         label: 'Page break',
         description: 'Insert a structural page break at the active caret.',
-        execute: _pagedBlockCommands.insertPageBreak,
+        execute: _insertActivePageBreak,
       ),
       _realPageInsertCommand(
         id: TextSystemWriterCommandId.sectionBreak,
         label: 'Section',
         description: 'Insert a next-page section break at the active caret.',
-        execute: _pagedBlockCommands.insertSectionBreak,
+        execute: _insertActiveSectionBreak,
       ),
       _realPageInsertCommand(
         id: TextSystemWriterCommandId.footnote,
         label: 'Footnote',
         description: 'Insert a footnote anchor at the active caret.',
-        execute: _pagedBlockCommands.insertFootnote,
+        execute: _insertActiveFootnote,
       ),
       _realPageInsertCommand(
         id: TextSystemWriterCommandId.appTodo,
         label: 'App TODO',
         description: 'Insert a TODO block synced with the app TODO system.',
-        execute: _pagedBlockCommands.insertEmbeddedTodo,
-        isEnabled: () => _canRunRealPageEmbeddedTodoCommand,
+        execute: _insertActiveEmbeddedTodo,
+        isEnabled: () => _canRunActiveDocumentEmbeddedTodoCommand,
         disabledReason: widget.database == null
             ? 'Open the writer from the app/library route to create synced app TODOs.'
             : null,
       ),
-      disabledTextSystemWriterCommand(
+      _realPageInsertCommand(
         id: TextSystemWriterCommandId.table,
         label: 'Table',
-        description: 'Insert a table block.',
-        disabledReason: 'Tables are planned for a later academic-object phase.',
+        description: 'Insert an academic table block with caption and label metadata.',
+        execute: _insertActiveTable,
       ),
-      disabledTextSystemWriterCommand(
+      _realPageInsertCommand(
         id: TextSystemWriterCommandId.figure,
         label: 'Figure',
-        description: 'Insert a figure block.',
-        disabledReason: 'Figures are planned for a later academic-object phase.',
+        description: 'Insert an academic figure block with caption and label metadata.',
+        execute: _insertActiveFigure,
+      ),
+      _realPageInsertCommand(
+        id: TextSystemWriterCommandId.equation,
+        label: 'Equation',
+        description: 'Insert an unnumbered centered LaTeX display equation block.',
+        execute: _insertActiveEquation,
+      ),
+      _realPageInsertCommand(
+        id: TextSystemWriterCommandId.inlineMath,
+        label: 'Inline math',
+        description: r'Insert inline LaTeX math using \( ... \) delimiters at the caret or around the selection.',
+        execute: _insertActiveInlineMath,
+      ),
+      TextSystemWriterCommandBinding(
+        id: TextSystemWriterCommandId.crossReference,
+        label: 'Cross-ref',
+        description: 'Insert a cross-reference to a figure, table, or equation.',
+        execute: _pagedBlockCommands.insertCrossReference,
+        isEnabled: () => _canRunRealPageInsertCommand,
+        disabledReason: () => _realPageCommandUnavailableReason() ??
+            'Place the caret where the cross-reference should be inserted.',
       ),
       _realPageInsertCommand(
         id: TextSystemWriterCommandId.addCitation,
         label: 'Cite',
         description: 'Insert an academic citation from the active caret or selection.',
-        execute: () => _pagedBlockCommands.runReferenceAction(TextSystemReferenceActionType.citation),
-        isEnabled: () => _canRunRealPageReferenceCommand,
+        execute: () => _runActiveReferenceAction(TextSystemReferenceActionType.citation),
+        isEnabled: () => _canRunDocumentReferenceCommand,
+        disabledReason: 'Select text or place the caret before creating a citation.',
       ),
       TextSystemWriterCommandBinding(
         id: TextSystemWriterCommandId.sourceManager,
@@ -774,36 +1492,41 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
         id: TextSystemWriterCommandId.linkSource,
         label: 'Source',
         description: 'Link the active caret or selection to a source/PDF.',
-        execute: () => _pagedBlockCommands.runReferenceAction(TextSystemReferenceActionType.source),
-        isEnabled: () => _canRunRealPageReferenceCommand,
+        execute: () => _runActiveReferenceAction(TextSystemReferenceActionType.source),
+        isEnabled: () => _canRunDocumentReferenceCommand,
+        disabledReason: 'Select text or place the caret before linking a source.',
       ),
       _realPageInsertCommand(
         id: TextSystemWriterCommandId.linkDocument,
         label: 'Document',
         description: 'Link the active caret or selection to another document.',
-        execute: () => _pagedBlockCommands.runReferenceAction(TextSystemReferenceActionType.document),
-        isEnabled: () => _canRunRealPageReferenceCommand,
+        execute: () => _runActiveReferenceAction(TextSystemReferenceActionType.document),
+        isEnabled: () => _canRunDocumentReferenceCommand,
+        disabledReason: 'Select text or place the caret before linking a document.',
       ),
       _realPageInsertCommand(
         id: TextSystemWriterCommandId.linkProject,
         label: 'Project',
         description: 'Link the active caret or selection to a project.',
-        execute: () => _pagedBlockCommands.runReferenceAction(TextSystemReferenceActionType.project),
-        isEnabled: () => _canRunRealPageReferenceCommand,
+        execute: () => _runActiveReferenceAction(TextSystemReferenceActionType.project),
+        isEnabled: () => _canRunDocumentReferenceCommand,
+        disabledReason: 'Select text or place the caret before linking a project.',
       ),
       _realPageInsertCommand(
         id: TextSystemWriterCommandId.linkTodo,
         label: 'Todo',
         description: 'Link the active caret or selection to an app TODO.',
-        execute: () => _pagedBlockCommands.runReferenceAction(TextSystemReferenceActionType.todo),
-        isEnabled: () => _canRunRealPageReferenceCommand,
+        execute: () => _runActiveReferenceAction(TextSystemReferenceActionType.todo),
+        isEnabled: () => _canRunDocumentReferenceCommand,
+        disabledReason: 'Select text or place the caret before linking a todo.',
       ),
       _realPageInsertCommand(
         id: TextSystemWriterCommandId.externalLink,
         label: 'Link',
         description: 'Insert or apply an external link.',
-        execute: () => _pagedBlockCommands.runReferenceAction(TextSystemReferenceActionType.link),
-        isEnabled: () => _canRunRealPageReferenceCommand,
+        execute: () => _runActiveReferenceAction(TextSystemReferenceActionType.link),
+        isEnabled: () => _canRunDocumentReferenceCommand,
+        disabledReason: 'Select text or place the caret before creating a link.',
       ),
       disabledTextSystemWriterCommand(
         id: TextSystemWriterCommandId.headerFooter,
@@ -815,11 +1538,12 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
         label: 'Numbers',
         description: 'Configure page numbers.',
       ),
-      disabledTextSystemWriterCommand(
+      _realPageInsertCommand(
         id: TextSystemWriterCommandId.comment,
         label: 'Comment',
-        description: 'Add a margin comment.',
-        disabledReason: 'Comments are planned for the margin-layer phase.',
+        description: 'Open a Google Docs-style comment card beside the active caret position.',
+        execute: _pagedBlockCommands.addMarginComment,
+        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canRunEditorCommand,
       ),
       disabledTextSystemWriterCommand(
         id: TextSystemWriterCommandId.checkReferences,
@@ -827,10 +1551,12 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
         description: 'Review broken or incomplete references.',
         disabledReason: 'Reference validation will move into the source manager/review panel later.',
       ),
-      disabledTextSystemWriterCommand(
+      _realPageInsertCommand(
         id: TextSystemWriterCommandId.documentTodos,
-        label: 'Todos',
-        description: 'Review document TODOs.',
+        label: 'Doc TODO',
+        description: 'Open a Google Docs-style action-item card beside the active caret position.',
+        execute: _pagedBlockCommands.addMarginTodo,
+        isEnabled: () => _isRealPageEditorActive && _pagedBlockCommands.canRunEditorCommand,
       ),
       disabledTextSystemWriterCommand(
         id: TextSystemWriterCommandId.stats,
@@ -859,7 +1585,7 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
   }
 
   void _applyBlockStyleFromHeader(String styleId) {
-    _pagedBlockCommands.changeActiveBlockStyleById(styleId);
+    _changeActiveBlockStyleById(styleId);
     if (mounted) setState(() {});
   }
 
@@ -918,6 +1644,20 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
         .replaceAll(RegExp(r'-+'), '-')
         .replaceAll(RegExp(r'^-|-$'), '');
     return sanitized.isEmpty ? 'premium-writer-export' : sanitized;
+  }
+
+  void _setPageZoom(double value) {
+    final clamped = value.clamp(0.75, 1.75).toDouble();
+    final roundedToPercent = (clamped * 100).roundToDouble() / 100;
+    setState(() => _pageZoom = roundedToPercent);
+  }
+
+  void _zoomIn() {
+    _setPageZoom(_pageZoom + 0.05);
+  }
+
+  void _zoomOut() {
+    _setPageZoom(_pageZoom - 0.05);
   }
 
   TextSystemDocumentLayoutTree _buildUnifiedLayoutTree({TextSystemDocument? document}) {
@@ -1062,6 +1802,81 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
       'document': document.toJson(),
     };
     return const JsonEncoder.withIndent('  ').convert(payload);
+  }
+
+
+
+  List<_AcademicObjectNavigatorItem> _academicObjectItems(
+    TextSystemDocument document,
+    TextSystemDocumentStructure documentStructure,
+  ) {
+    final pageByBlockId = <String, int>{
+      for (final reference in documentStructure.references)
+        if (reference.kind == TextSystemStructureReferenceKind.figure ||
+            reference.kind == TextSystemStructureReferenceKind.table ||
+            reference.kind == TextSystemStructureReferenceKind.equation)
+          reference.blockId: reference.pageNumber,
+    };
+
+    final items = <_AcademicObjectNavigatorItem>[];
+    var figureOrdinal = 0;
+    var tableOrdinal = 0;
+    var equationOrdinal = 0;
+
+    for (var blockIndex = 0; blockIndex < document.blocks.length; blockIndex++) {
+      final block = document.blocks[blockIndex];
+      if (block.type != TextSystemBlockType.custom) continue;
+      final rawKind = block.metadata['kind'];
+      if (rawKind != 'figure' && rawKind != 'table' && rawKind != 'equation') continue;
+
+      final kind = rawKind == 'table'
+          ? TextSystemStructureReferenceKind.table
+          : rawKind == 'equation'
+              ? TextSystemStructureReferenceKind.equation
+              : TextSystemStructureReferenceKind.figure;
+      final ordinal = kind == TextSystemStructureReferenceKind.figure
+          ? ++figureOrdinal
+          : kind == TextSystemStructureReferenceKind.table
+              ? ++tableOrdinal
+              : ++equationOrdinal;
+      final caption = rawKind == 'equation'
+          ? _stringMetadata(block.metadata, 'latex').trim().isNotEmpty
+              ? _stringMetadata(block.metadata, 'latex').trim()
+              : block.text.trim()
+          : _stringMetadata(block.metadata, 'caption').trim().isNotEmpty
+              ? _stringMetadata(block.metadata, 'caption').trim()
+              : block.text.trim();
+      final label = _stringMetadata(block.metadata, 'label').trim();
+      final source = _stringMetadata(block.metadata, 'source').trim();
+      final note = _stringMetadata(block.metadata, 'note').trim();
+      final imagePath = _stringMetadata(block.metadata, 'imagePath').trim();
+      final rows = _metadataInt(block.metadata, 'rows');
+      final columns = _metadataInt(block.metadata, 'columns');
+
+      items.add(
+        _AcademicObjectNavigatorItem(
+          blockId: block.id,
+          blockIndex: blockIndex,
+          kind: kind,
+          ordinal: ordinal,
+          caption: caption,
+          label: label,
+          pageNumber: pageByBlockId[block.id] ?? 1,
+          source: source,
+          note: note,
+          imagePath: imagePath,
+          rows: rows,
+          columns: columns,
+        ),
+      );
+    }
+
+    return items;
+  }
+
+  String _stringMetadata(Map<String, Object?> metadata, String key) {
+    final value = metadata[key];
+    return value is String ? value : '';
   }
 
   int _wordCount(TextSystemDocument document) {
@@ -1216,7 +2031,8 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
     // The real-page block surface has toolbar/banner chrome above the first
     // physical page. Account for it so page jumps do not undershoot in the
     // experimental paged-block editor.
-    final topChromeOffset = _pageMode == _PremiumWriterPageMode.pagedBlocksExperimental
+    final topChromeOffset = (_pageMode == _PremiumWriterPageMode.pagedBlocksExperimental ||
+            _pageMode == _PremiumWriterPageMode.ownedDocumentPreview)
         ? _estimatedPagedBlockSurfaceTopChromeOffset()
         : 0.0;
 
@@ -1224,21 +2040,28 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
   }
 
   double _estimatedPagedBlockSurfaceTopChromeOffset() {
-    // This is intentionally conservative. The exact toolbar/banner height is
-    // responsive, but page navigation only needs to avoid landing above page 2+
-    // when the paged-block surface is active.
+    // The in-page toolbar is retired by default. Page navigation should account
+    // only for the scroll padding above the first physical page unless the
+    // legacy fallback toolbar is explicitly re-enabled.
+    if (!_showInPageToolbar) return _focusMode ? 38.0 : 68.0;
+
     return _focusMode ? 96.0 : 132.0;
   }
 
   double _estimatedNavigationPageExtent() {
     final pageMaxWidth = _widePage ? 900.0 : 794.0;
     final pageWidth = pageMaxWidth * _pageSetup.visualWidthScaleRelativeToA4Portrait;
-    final pageHeight = pageWidth * _pageSetup.heightToWidthRatio;
-    final pageHeaderAndGap = _pageMode == _PremiumWriterPageMode.pagedBlocksExperimental ? 50.0 : 32.0;
-    final pageGap = _pageMode == _PremiumWriterPageMode.pagedBlocksExperimental
-        ? 76.0
-        : (_focusMode ? 72.0 : 96.0);
-    return pageHeaderAndGap + pageHeight + pageGap;
+    final visualPageHeight = pageWidth * _pageSetup.heightToWidthRatio * _pageZoom;
+    final pageHeaderAndGap = ((_pageMode == _PremiumWriterPageMode.pagedBlocksExperimental ||
+            _pageMode == _PremiumWriterPageMode.ownedDocumentPreview)
+        ? 50.0
+        : 32.0) * _pageZoom;
+    final pageGap = ((_pageMode == _PremiumWriterPageMode.pagedBlocksExperimental ||
+            _pageMode == _PremiumWriterPageMode.ownedDocumentPreview)
+            ? 76.0
+            : (_focusMode ? 72.0 : 96.0)) *
+        _pageZoom;
+    return pageHeaderAndGap + visualPageHeight + pageGap;
   }
 
   Widget _buildDocumentSurface({
@@ -1261,6 +2084,7 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
       ),
     );
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -1328,12 +2152,12 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
             surfaceTintColor: Colors.transparent,
             actions: [
               IconButton(
-                tooltip: _focusMode ? 'Exit focus mode' : 'Enter focus mode',
+                tooltip: null,
                 onPressed: () => unawaited(_executeWriterCommand(TextSystemWriterCommandId.toggleFocusMode)),
                 icon: Icon(_focusMode ? Icons.center_focus_strong_rounded : Icons.center_focus_weak_rounded),
               ),
               PopupMenuButton<TextSystemExportFormat>(
-                tooltip: 'Export document',
+                tooltip: null,
                 icon: const Icon(Icons.ios_share_rounded),
                 onSelected: _exportDocument,
                 itemBuilder: (context) => <PopupMenuEntry<TextSystemExportFormat>>[
@@ -1363,17 +2187,17 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
                 ],
               ),
               IconButton(
-                tooltip: 'Copy writer report',
+                tooltip: null,
                 onPressed: _copyReport,
                 icon: const Icon(Icons.copy_all_rounded),
               ),
               IconButton(
-                tooltip: 'Save now',
+                tooltip: null,
                 onPressed: () => unawaited(_executeWriterCommand(TextSystemWriterCommandId.save)),
                 icon: const Icon(Icons.save_rounded),
               ),
               IconButton(
-                tooltip: 'Reset demo document',
+                tooltip: null,
                 onPressed: _ownsTextController ? _resetDemo : null,
                 icon: const Icon(Icons.restart_alt_rounded),
               ),
@@ -1382,39 +2206,54 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
           body: Column(
             children: [
               if (_showToolbar && !_focusMode)
-                _PremiumWriterMasterHeader(
-                  activeTab: _activeRibbonTab,
-                  onTabChanged: (tab) => setState(() => _activeRibbonTab = tab),
-                  overviewExpanded: _overviewExpanded,
-                  showInspector: _showInspector,
-                  showSourceManager: _showSourceManager,
-                  widePage: _widePage,
-                  pageSetup: _pageSetup,
-                  pageMode: _pageMode,
-                  citationSettings: TextSystemCitationSettings.fromDocument(document),
-                  showMarginGuides: _showMarginGuides,
-                  showDetailedPageBreakLabels: _showDetailedPageBreakLabels,
-                  showMarginMarkers: _showMarginMarkers,
-                  writerCommands: _writerCommands,
-                  onExecuteCommand: _executeWriterCommand,
-                  onApplyBlockStyle: _applyBlockStyleFromHeader,
-                  onToggleOverview: () => setState(() => _overviewExpanded = !_overviewExpanded),
-                  onToggleInspector: () => setState(() => _showInspector = !_showInspector),
-                  onToggleSourceManager: () => setState(() => _showSourceManager = !_showSourceManager),
-                  onToggleWidePage: () => setState(() => _widePage = !_widePage),
-                  onToggleMarginGuides: () => setState(() => _showMarginGuides = !_showMarginGuides),
-                  onTogglePageBreakLabels: () => setState(() => _showDetailedPageBreakLabels = !_showDetailedPageBreakLabels),
-                  onToggleMarginMarkers: () => setState(() => _showMarginMarkers = !_showMarginMarkers),
-                  onCitationSettingsChanged: _applyCitationSettings,
-                  onPageModeChanged: (mode) => setState(() => _pageMode = mode),
-                  onPageSetupChanged: (setup) => setState(() {
-                    _pageSetup = setup;
-                    final maxPages = setup.constraint.maxPages;
-                    if (maxPages != null && maxPages > 0) {
-                      _targetPageCount = maxPages.toDouble();
-                    }
-                  }),
-                  onHideHeader: () => setState(() => _showToolbar = false),
+                ValueListenableBuilder<int>(
+                  valueListenable: _writerCommandRevision,
+                  builder: (context, _, __) => _PremiumWriterMasterHeader(
+                    activeTab: _activeRibbonTab,
+                    onTabChanged: (tab) => setState(() => _activeRibbonTab = tab),
+                    overviewExpanded: _overviewExpanded,
+                    showInspector: _showInspector,
+                    showSourceManager: _showSourceManager,
+                    showObjectNavigator: _showObjectNavigator,
+                    widePage: _widePage,
+                    pageSetup: _pageSetup,
+                    pageMode: _pageMode,
+                    pageZoom: _pageZoom,
+                    citationSettings: TextSystemCitationSettings.fromDocument(document),
+                    showMarginGuides: _showMarginGuides,
+                    showDetailedPageBreakLabels: _showDetailedPageBreakLabels,
+                    showMarginMarkers: _showMarginMarkers,
+                    showMarginAnnotations: _showMarginAnnotations,
+                    showInPageToolbar: _showInPageToolbar,
+                    writerCommands: _writerCommands,
+                    pagedBlockCommands: _pagedBlockCommands,
+                    ownedEditorCommands: _ownedEditorCommands,
+                    onExecuteCommand: _executeWriterCommand,
+                    onApplyBlockStyle: _applyBlockStyleFromHeader,
+                    onToggleOverview: () => setState(() => _overviewExpanded = !_overviewExpanded),
+                    onToggleInspector: () => setState(() => _showInspector = !_showInspector),
+                    onToggleSourceManager: () => setState(() => _showSourceManager = !_showSourceManager),
+                    onToggleObjectNavigator: () => setState(() => _showObjectNavigator = !_showObjectNavigator),
+                    onToggleWidePage: () => setState(() => _widePage = !_widePage),
+                    onToggleMarginGuides: () => setState(() => _showMarginGuides = !_showMarginGuides),
+                    onTogglePageBreakLabels: () => setState(() => _showDetailedPageBreakLabels = !_showDetailedPageBreakLabels),
+                    onToggleMarginMarkers: () => setState(() => _showMarginMarkers = !_showMarginMarkers),
+                    onToggleMarginAnnotations: () => setState(() => _showMarginAnnotations = !_showMarginAnnotations),
+                    onToggleInPageToolbar: () => setState(() => _showInPageToolbar = !_showInPageToolbar),
+                    onPageZoomChanged: _setPageZoom,
+                    onZoomIn: _zoomIn,
+                    onZoomOut: _zoomOut,
+                    onCitationSettingsChanged: _applyCitationSettings,
+                    onPageModeChanged: (mode) => setState(() => _pageMode = mode),
+                    onPageSetupChanged: (setup) => setState(() {
+                      _pageSetup = setup;
+                      final maxPages = setup.constraint.maxPages;
+                      if (maxPages != null && maxPages > 0) {
+                        _targetPageCount = maxPages.toDouble();
+                      }
+                    }),
+                    onHideHeader: () => setState(() => _showToolbar = false),
+                  ),
                 )
               else if (!_focusMode)
                 Align(
@@ -1454,20 +2293,38 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
                               textStyle: editorBodyStyle,
                             ),
                           ),
-                        _PremiumWriterPageMode.pagedBlocksExperimental => TextSystemPagedBlockSurface(
+                        _PremiumWriterPageMode.pagedBlocksExperimental => TextSystemCurrentPagedEditorSurface(
                             textController: _textController,
                             document: document,
                             pageSetup: _pageSetup,
                             pageFurniture: _pageFurniture,
                             onPageFurnitureChanged: (value) => setState(() => _pageFurniture = value),
                             pageMaxWidth: pageMaxWidth,
+                            pageZoom: _pageZoom,
+                            onPageZoomChanged: _setPageZoom,
                             focusMode: _focusMode,
                             showMarginGuides: _showMarginGuides,
                             showMarginMarkers: _showMarginMarkers,
+                            showMarginAnnotations: _showMarginAnnotations,
+                            showSurfaceToolbar: _showInPageToolbar,
                             scrollController: _pageScrollController,
                             commandController: _pagedBlockCommands,
                             referenceActionRepository: _referenceActionRepository,
                             embeddedTodoRepository: _embeddedTodoRepository,
+                            onOpenReferenceTarget: _openReferenceTarget,
+                          ),
+                        _PremiumWriterPageMode.ownedDocumentPreview => TextSystemOwnedDocumentEditorSurface(
+                            textController: _textController,
+                            document: document,
+                            pageSetup: _pageSetup,
+                            pageFurniture: _pageFurniture,
+                            pageMaxWidth: pageMaxWidth,
+                            pageZoom: _pageZoom,
+                            focusMode: _focusMode,
+                            showMarginGuides: _showMarginGuides,
+                            scrollController: _pageScrollController,
+                            commandController: _ownedEditorCommands,
+                            referenceActionRepository: _referenceActionRepository,
                             onOpenReferenceTarget: _openReferenceTarget,
                           ),
                         _ => TextSystemPageCanvas(
@@ -1492,6 +2349,17 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
                           ),
                       },
                     ),
+                    if (showPanels && _showObjectNavigator)
+                      SizedBox(
+                        width: 320,
+                        child: _AcademicObjectNavigatorPanel(
+                          items: _academicObjectItems(document, documentStructure),
+                          onNavigateToBlock: (blockId) {
+                            _navigateToBlock(blockId);
+                          },
+                          onClose: () => setState(() => _showObjectNavigator = false),
+                        ),
+                      ),
                     if (showPanels && _showInspector)
                       SizedBox(
                         width: 300,
@@ -1537,6 +2405,13 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
                           onNavigateToBlock: (blockId) {
                             _navigateToBlock(blockId);
                           },
+                          onEditCitationSource: _editCitationSourceMetadata,
+                          onOpenCitationSource: _openCitationSourceFromManager,
+                          onShowCitationOccurrences: _showCitationOccurrences,
+                          onOpenLinkedReference: _openLinkedReferenceFromManager,
+                          onShowLinkedReferenceOccurrences: _showLinkedReferenceOccurrences,
+                          onRepairCitations: _repairCitationTargets,
+                          onDeduplicateSources: _deduplicateCitationSources,
                           onClose: () => setState(() => _showSourceManager = false),
                         ),
                       ),
@@ -1577,25 +2452,37 @@ class _PremiumWriterMasterHeader extends StatelessWidget {
     required this.overviewExpanded,
     required this.showInspector,
     required this.showSourceManager,
+    required this.showObjectNavigator,
     required this.widePage,
     required this.pageSetup,
     required this.pageMode,
+    required this.pageZoom,
     required this.citationSettings,
     required this.showMarginGuides,
     required this.showDetailedPageBreakLabels,
     required this.showMarginMarkers,
+    required this.showMarginAnnotations,
+    required this.showInPageToolbar,
     required this.onToggleOverview,
     required this.onToggleInspector,
     required this.onToggleSourceManager,
+    required this.onToggleObjectNavigator,
     required this.onToggleWidePage,
     required this.onToggleMarginGuides,
     required this.onTogglePageBreakLabels,
     required this.onToggleMarginMarkers,
+    required this.onToggleMarginAnnotations,
+    required this.onToggleInPageToolbar,
+    required this.onPageZoomChanged,
+    required this.onZoomIn,
+    required this.onZoomOut,
     required this.onCitationSettingsChanged,
     required this.onPageModeChanged,
     required this.onPageSetupChanged,
     required this.onHideHeader,
     required this.writerCommands,
+    required this.pagedBlockCommands,
+    required this.ownedEditorCommands,
     required this.onExecuteCommand,
     required this.onApplyBlockStyle,
   });
@@ -1605,25 +2492,37 @@ class _PremiumWriterMasterHeader extends StatelessWidget {
   final bool overviewExpanded;
   final bool showInspector;
   final bool showSourceManager;
+  final bool showObjectNavigator;
   final bool widePage;
   final TextSystemPageSetup pageSetup;
   final _PremiumWriterPageMode pageMode;
+  final double pageZoom;
   final TextSystemCitationSettings citationSettings;
   final bool showMarginGuides;
   final bool showDetailedPageBreakLabels;
   final bool showMarginMarkers;
+  final bool showMarginAnnotations;
+  final bool showInPageToolbar;
   final VoidCallback onToggleOverview;
   final VoidCallback onToggleInspector;
   final VoidCallback onToggleSourceManager;
+  final VoidCallback onToggleObjectNavigator;
   final VoidCallback onToggleWidePage;
   final VoidCallback onToggleMarginGuides;
   final VoidCallback onTogglePageBreakLabels;
   final VoidCallback onToggleMarginMarkers;
+  final VoidCallback onToggleMarginAnnotations;
+  final VoidCallback onToggleInPageToolbar;
+  final ValueChanged<double> onPageZoomChanged;
+  final VoidCallback onZoomIn;
+  final VoidCallback onZoomOut;
   final ValueChanged<TextSystemCitationSettings> onCitationSettingsChanged;
   final ValueChanged<_PremiumWriterPageMode> onPageModeChanged;
   final ValueChanged<TextSystemPageSetup> onPageSetupChanged;
   final VoidCallback onHideHeader;
   final TextSystemWriterCommandRegistry writerCommands;
+  final TextSystemPagedBlockCommandController pagedBlockCommands;
+  final TextSystemOwnedEditorCommandController ownedEditorCommands;
   final Future<void> Function(TextSystemWriterCommandId commandId) onExecuteCommand;
   final ValueChanged<String> onApplyBlockStyle;
 
@@ -1680,17 +2579,23 @@ class _PremiumWriterMasterHeader extends StatelessWidget {
                       overviewExpanded: overviewExpanded,
                       showInspector: showInspector,
                       showSourceManager: showSourceManager,
+                      showObjectNavigator: showObjectNavigator,
                       widePage: widePage,
                       showMarginGuides: showMarginGuides,
                       showDetailedPageBreakLabels: showDetailedPageBreakLabels,
                       showMarginMarkers: showMarginMarkers,
+                      showMarginAnnotations: showMarginAnnotations,
+                      showInPageToolbar: showInPageToolbar,
                       onToggleOverview: onToggleOverview,
                       onToggleInspector: onToggleInspector,
                       onToggleSourceManager: onToggleSourceManager,
+                      onToggleObjectNavigator: onToggleObjectNavigator,
                       onToggleWidePage: onToggleWidePage,
                       onToggleMarginGuides: onToggleMarginGuides,
                       onTogglePageBreakLabels: onTogglePageBreakLabels,
                       onToggleMarginMarkers: onToggleMarginMarkers,
+                      onToggleMarginAnnotations: onToggleMarginAnnotations,
+                      onToggleInPageToolbar: onToggleInPageToolbar,
                       onHideHeader: onHideHeader,
                     ),
                   ],
@@ -1706,20 +2611,28 @@ class _PremiumWriterMasterHeader extends StatelessWidget {
                   key: ValueKey(activeTab),
                   activeTab: activeTab,
                   pageSetup: pageSetup,
+                  pageZoom: pageZoom,
                   citationSettings: citationSettings,
                   onCitationSettingsChanged: onCitationSettingsChanged,
                   onPageSetupChanged: onPageSetupChanged,
+                  onPageZoomChanged: onPageZoomChanged,
+                  onZoomIn: onZoomIn,
+                  onZoomOut: onZoomOut,
                   overviewExpanded: overviewExpanded,
                   showInspector: showInspector,
+                  showObjectNavigator: showObjectNavigator,
                   widePage: widePage,
                   showMarginGuides: showMarginGuides,
                   showDetailedPageBreakLabels: showDetailedPageBreakLabels,
                   onToggleOverview: onToggleOverview,
                   onToggleInspector: onToggleInspector,
+                  onToggleObjectNavigator: onToggleObjectNavigator,
                   onToggleWidePage: onToggleWidePage,
                   onToggleMarginGuides: onToggleMarginGuides,
                   onTogglePageBreakLabels: onTogglePageBreakLabels,
                   writerCommands: writerCommands,
+                  pagedBlockCommands: pagedBlockCommands,
+                  ownedEditorCommands: ownedEditorCommands,
                   onExecuteCommand: onExecuteCommand,
                   onApplyBlockStyle: onApplyBlockStyle,
                 ),
@@ -1737,40 +2650,56 @@ class _RibbonTabContent extends StatelessWidget {
     super.key,
     required this.activeTab,
     required this.pageSetup,
+    required this.pageZoom,
     required this.citationSettings,
     required this.onCitationSettingsChanged,
     required this.onPageSetupChanged,
+    required this.onPageZoomChanged,
+    required this.onZoomIn,
+    required this.onZoomOut,
     required this.overviewExpanded,
     required this.showInspector,
+    required this.showObjectNavigator,
     required this.widePage,
     required this.showMarginGuides,
     required this.showDetailedPageBreakLabels,
     required this.onToggleOverview,
     required this.onToggleInspector,
+    required this.onToggleObjectNavigator,
     required this.onToggleWidePage,
     required this.onToggleMarginGuides,
     required this.onTogglePageBreakLabels,
     required this.writerCommands,
+    required this.pagedBlockCommands,
+    required this.ownedEditorCommands,
     required this.onExecuteCommand,
     required this.onApplyBlockStyle,
   });
 
   final _PremiumWriterRibbonTab activeTab;
   final TextSystemPageSetup pageSetup;
+  final double pageZoom;
   final TextSystemCitationSettings citationSettings;
   final ValueChanged<TextSystemCitationSettings> onCitationSettingsChanged;
   final ValueChanged<TextSystemPageSetup> onPageSetupChanged;
+  final ValueChanged<double> onPageZoomChanged;
+  final VoidCallback onZoomIn;
+  final VoidCallback onZoomOut;
   final bool overviewExpanded;
   final bool showInspector;
+  final bool showObjectNavigator;
   final bool widePage;
   final bool showMarginGuides;
   final bool showDetailedPageBreakLabels;
   final VoidCallback onToggleOverview;
   final VoidCallback onToggleInspector;
+  final VoidCallback onToggleObjectNavigator;
   final VoidCallback onToggleWidePage;
   final VoidCallback onToggleMarginGuides;
   final VoidCallback onTogglePageBreakLabels;
   final TextSystemWriterCommandRegistry writerCommands;
+  final TextSystemPagedBlockCommandController pagedBlockCommands;
+  final TextSystemOwnedEditorCommandController ownedEditorCommands;
   final Future<void> Function(TextSystemWriterCommandId commandId) onExecuteCommand;
   final ValueChanged<String> onApplyBlockStyle;
 
@@ -1780,7 +2709,10 @@ class _RibbonTabContent extends StatelessWidget {
       _PremiumWriterRibbonTab.home => _homeGroups(context),
       _PremiumWriterRibbonTab.insert => _insertGroups(context),
       _PremiumWriterRibbonTab.references => _referenceGroups(context),
-      _PremiumWriterRibbonTab.layout => _layoutGroups(context),
+      _PremiumWriterRibbonTab.layout => [
+          ..._contextualLayoutGroups(context),
+          ..._layoutGroups(context),
+        ],
       _PremiumWriterRibbonTab.review => _reviewGroups(context),
       _PremiumWriterRibbonTab.view => _viewGroups(context),
     };
@@ -1896,6 +2828,9 @@ class _RibbonTabContent extends StatelessWidget {
           _RibbonWriterCommand(registry: writerCommands, commandId: TextSystemWriterCommandId.appTodo, icon: Icons.task_alt_rounded, onExecuteCommand: onExecuteCommand),
           _RibbonWriterCommand(registry: writerCommands, commandId: TextSystemWriterCommandId.table, icon: Icons.table_chart_outlined, onExecuteCommand: onExecuteCommand),
           _RibbonWriterCommand(registry: writerCommands, commandId: TextSystemWriterCommandId.figure, icon: Icons.image_outlined, onExecuteCommand: onExecuteCommand),
+          _RibbonWriterCommand(registry: writerCommands, commandId: TextSystemWriterCommandId.equation, icon: Icons.functions_rounded, onExecuteCommand: onExecuteCommand),
+          _RibbonWriterCommand(registry: writerCommands, commandId: TextSystemWriterCommandId.inlineMath, icon: Icons.calculate_outlined, onExecuteCommand: onExecuteCommand),
+          _RibbonWriterCommand(registry: writerCommands, commandId: TextSystemWriterCommandId.crossReference, icon: Icons.tag_rounded, onExecuteCommand: onExecuteCommand),
         ],
       ),
     ];
@@ -1925,6 +2860,160 @@ class _RibbonTabContent extends StatelessWidget {
         ],
       ),
     ];
+  }
+
+  List<Widget> _contextualLayoutGroups(BuildContext context) {
+    if (pagedBlockCommands.hasActiveTableContext) {
+      return [
+        _RibbonGroup(
+          label: 'Table layout',
+          children: [
+            _RibbonDirectCommand(
+              icon: Icons.vertical_align_top_rounded,
+              label: 'Row above',
+              onPressed: pagedBlockCommands.tableInsertRowAbove,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.vertical_align_bottom_rounded,
+              label: 'Row below',
+              onPressed: pagedBlockCommands.tableInsertRowBelow,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.align_horizontal_left_rounded,
+              label: 'Col left',
+              onPressed: pagedBlockCommands.tableInsertColumnLeft,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.align_horizontal_right_rounded,
+              label: 'Col right',
+              onPressed: pagedBlockCommands.tableInsertColumnRight,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.table_rows_outlined,
+              label: 'Del row',
+              enabled: pagedBlockCommands.canDeleteSelectedTableRow,
+              onPressed: pagedBlockCommands.tableDeleteRow,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.view_column_outlined,
+              label: 'Del col',
+              enabled: pagedBlockCommands.canDeleteSelectedTableColumn,
+              onPressed: pagedBlockCommands.tableDeleteColumn,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.table_chart_outlined,
+              label: 'Headers ${pagedBlockCommands.tableHeaderRows}',
+              onPressed: pagedBlockCommands.tableCycleHeaderRows,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.content_paste_go_outlined,
+              label: 'Paste',
+              onPressed: pagedBlockCommands.tablePaste,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.tune_rounded,
+              label: 'Props',
+              onPressed: pagedBlockCommands.tableProperties,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.check_rounded,
+              label: 'Done',
+              onPressed: pagedBlockCommands.tableDone,
+            ),
+          ],
+        ),
+      ];
+    }
+
+    if (ownedEditorCommands.hasSelectedObject) {
+      final objectKind = ownedEditorCommands.selectedObjectKind;
+      final objectLabel = objectKind.isEmpty
+          ? 'Object'
+          : '${objectKind[0].toUpperCase()}${objectKind.substring(1)}';
+      return [
+        _RibbonGroup(
+          label: '$objectLabel layout',
+          children: [
+            _RibbonDirectCommand(
+              icon: Icons.copy_all_rounded,
+              label: 'Copy',
+              onPressed: () => unawaited(ownedEditorCommands.copySelection()),
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.copy_rounded,
+              label: 'Duplicate',
+              enabled: ownedEditorCommands.canDuplicateSelectedObject,
+              onPressed: ownedEditorCommands.duplicateSelectedObject,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.keyboard_arrow_up_rounded,
+              label: 'Move up',
+              enabled: ownedEditorCommands.canMoveSelectedObjectUp,
+              onPressed: ownedEditorCommands.moveSelectedObjectUp,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.keyboard_arrow_down_rounded,
+              label: 'Move down',
+              enabled: ownedEditorCommands.canMoveSelectedObjectDown,
+              onPressed: ownedEditorCommands.moveSelectedObjectDown,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.tag_rounded,
+              label: 'Copy ref',
+              enabled: ownedEditorCommands.canCopySelectedObjectReference,
+              onPressed: () => unawaited(ownedEditorCommands.copySelectedObjectReference()),
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.add_comment_outlined,
+              label: 'Comment',
+              enabled: ownedEditorCommands.canCommentOnSelectedObject,
+              onPressed: () => unawaited(ownedEditorCommands.addCommentToSelectedObject()),
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.delete_outline_rounded,
+              label: 'Delete',
+              enabled: ownedEditorCommands.canDeleteSelectedObject,
+              onPressed: ownedEditorCommands.deleteSelectedObject,
+            ),
+          ],
+        ),
+      ];
+    }
+
+    if (pagedBlockCommands.hasSelectedObject) {
+      final objectLabel = pagedBlockCommands.selectedObjectKind.isEmpty
+          ? 'Object'
+          : '${pagedBlockCommands.selectedObjectKind[0].toUpperCase()}${pagedBlockCommands.selectedObjectKind.substring(1)}';
+      return [
+        _RibbonGroup(
+          label: '$objectLabel layout',
+          children: [
+            _RibbonDirectCommand(
+              icon: Icons.copy_rounded,
+              label: 'Duplicate',
+              onPressed: pagedBlockCommands.duplicateSelectedObject,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.keyboard_arrow_up_rounded,
+              label: 'Move up',
+              onPressed: pagedBlockCommands.moveSelectedObjectUp,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.keyboard_arrow_down_rounded,
+              label: 'Move down',
+              onPressed: pagedBlockCommands.moveSelectedObjectDown,
+            ),
+            _RibbonDirectCommand(
+              icon: Icons.delete_outline_rounded,
+              label: 'Delete',
+              onPressed: pagedBlockCommands.deleteSelectedObject,
+            ),
+          ],
+        ),
+      ];
+    }
+
+    return const <Widget>[];
   }
 
   List<Widget> _layoutGroups(BuildContext context) {
@@ -1967,7 +3056,7 @@ class _RibbonTabContent extends StatelessWidget {
         children: [
           _RibbonWriterCommand(registry: writerCommands, commandId: TextSystemWriterCommandId.comment, icon: Icons.comment_outlined, onExecuteCommand: onExecuteCommand),
           _RibbonWriterCommand(registry: writerCommands, commandId: TextSystemWriterCommandId.checkReferences, icon: Icons.rule_rounded, onExecuteCommand: onExecuteCommand),
-          _RibbonWriterCommand(registry: writerCommands, commandId: TextSystemWriterCommandId.documentTodos, icon: Icons.task_alt_rounded, onExecuteCommand: onExecuteCommand),
+          _RibbonWriterCommand(registry: writerCommands, commandId: TextSystemWriterCommandId.documentTodos, icon: Icons.add_task_rounded, onExecuteCommand: onExecuteCommand),
         ],
       ),
       _RibbonGroup(
@@ -1999,6 +3088,12 @@ class _RibbonTabContent extends StatelessWidget {
           ),
           _RibbonWriterCommand(
             registry: writerCommands,
+            commandId: TextSystemWriterCommandId.objectNavigator,
+            icon: Icons.view_list_rounded,
+            onExecuteCommand: onExecuteCommand,
+          ),
+          _RibbonWriterCommand(
+            registry: writerCommands,
             commandId: TextSystemWriterCommandId.togglePageBreakLabels,
             icon: Icons.label_outline_rounded,
             onExecuteCommand: onExecuteCommand,
@@ -2008,6 +3103,17 @@ class _RibbonTabContent extends StatelessWidget {
             commandId: TextSystemWriterCommandId.toggleMarginMarkers,
             icon: Icons.comment_bank_outlined,
             onExecuteCommand: onExecuteCommand,
+          ),
+        ],
+      ),
+      _RibbonGroup(
+        label: 'Zoom',
+        children: [
+          _RibbonZoomControls(
+            zoom: pageZoom,
+            onZoomChanged: onPageZoomChanged,
+            onZoomIn: onZoomIn,
+            onZoomOut: onZoomOut,
           ),
         ],
       ),
@@ -2068,6 +3174,12 @@ class _HeaderQuickCommandStrip extends StatelessWidget {
               registry: registry,
               commandId: TextSystemWriterCommandId.toggleInspector,
               icon: Icons.analytics_outlined,
+              onExecuteCommand: onExecuteCommand,
+            ),
+            _HeaderQuickCommandButton(
+              registry: registry,
+              commandId: TextSystemWriterCommandId.objectNavigator,
+              icon: Icons.view_list_rounded,
               onExecuteCommand: onExecuteCommand,
             ),
           ],
@@ -2134,13 +3246,7 @@ class _HeaderQuickCommandButtonState extends State<_HeaderQuickCommandButton> {
                 ? colorScheme.outlineVariant.withValues(alpha: 0.92)
                 : Colors.transparent;
 
-    return Tooltip(
-      message: enabled
-          ? widget.registry.description(widget.commandId)
-          : (state.disabledReason ?? widget.registry.description(widget.commandId)),
-      waitDuration: const Duration(milliseconds: 1200),
-      showDuration: const Duration(milliseconds: 1600),
-      child: MouseRegion(
+    return MouseRegion(
         cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
         onEnter: (_) => _setHovered(true),
         onExit: (_) {
@@ -2173,8 +3279,7 @@ class _HeaderQuickCommandButtonState extends State<_HeaderQuickCommandButton> {
             ),
           ),
         ),
-      ),
-    );
+      );
   }
 }
 
@@ -2452,7 +3557,7 @@ class _RibbonStyleMenuCommand extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<String>(
-      tooltip: '',
+      tooltip: null,
       onSelected: onApplyStyle,
       itemBuilder: (context) => [
         for (final choice in _choices)
@@ -2486,6 +3591,31 @@ class _RibbonStyleChoice {
   final String label;
   final String styleId;
   final IconData icon;
+}
+
+class _RibbonDirectCommand extends StatelessWidget {
+  const _RibbonDirectCommand({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.enabled = true,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return _RibbonCommandSurface(
+      enabled: enabled,
+      icon: icon,
+      label: label,
+      tooltip: enabled ? null : '$label is not available for the current selection.',
+      onPressed: enabled ? onPressed : null,
+    );
+  }
 }
 
 class _RibbonWriterCommand extends StatelessWidget {
@@ -2567,6 +3697,106 @@ class _RibbonToggleCommand extends StatelessWidget {
 }
 
 
+
+class _RibbonZoomControls extends StatelessWidget {
+  const _RibbonZoomControls({
+    required this.zoom,
+    required this.onZoomChanged,
+    required this.onZoomIn,
+    required this.onZoomOut,
+  });
+
+  final double zoom;
+  final ValueChanged<double> onZoomChanged;
+  final VoidCallback onZoomIn;
+  final VoidCallback onZoomOut;
+
+  String get _label => '${(zoom * 100).round()}%';
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textStyle = Theme.of(context).textTheme.labelSmall?.copyWith(
+          fontWeight: FontWeight.w800,
+          color: colorScheme.onSurface,
+        );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.32),
+        border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.75)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: 'Zoom out',
+            visualDensity: VisualDensity.compact,
+            iconSize: 18,
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+            padding: EdgeInsets.zero,
+            onPressed: zoom <= 0.76 ? null : onZoomOut,
+            icon: const Icon(Icons.remove_rounded),
+          ),
+          Tooltip(
+            message: 'Drag to set page zoom',
+            child: SizedBox(
+              width: 120,
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                ),
+                child: Slider(
+                  value: zoom.clamp(0.75, 1.75).toDouble(),
+                  min: 0.75,
+                  max: 1.75,
+                  divisions: 100,
+                  label: _label,
+                  onChanged: onZoomChanged,
+                ),
+              ),
+            ),
+          ),
+          PopupMenuButton<double>(
+            tooltip: 'Page zoom presets',
+            onSelected: onZoomChanged,
+            itemBuilder: (context) => const <PopupMenuEntry<double>>[
+              PopupMenuItem<double>(value: 0.90, child: Text('90%')),
+              PopupMenuItem<double>(value: 1.00, child: Text('100%')),
+              PopupMenuItem<double>(value: 1.10, child: Text('110%')),
+              PopupMenuItem<double>(value: 1.15, child: Text('115%')),
+              PopupMenuItem<double>(value: 1.25, child: Text('125%')),
+              PopupMenuItem<double>(value: 1.50, child: Text('150%')),
+            ],
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(_label, style: textStyle),
+                  const SizedBox(width: 2),
+                  Icon(Icons.arrow_drop_down_rounded, size: 16, color: colorScheme.onSurfaceVariant),
+                ],
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Zoom in',
+            visualDensity: VisualDensity.compact,
+            iconSize: 18,
+            constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+            padding: EdgeInsets.zero,
+            onPressed: zoom >= 1.74 ? null : onZoomIn,
+            icon: const Icon(Icons.add_rounded),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _RibbonCommandSurface extends StatefulWidget {
   const _RibbonCommandSurface({
     required this.enabled,
@@ -2632,7 +3862,7 @@ class _RibbonCommandSurfaceState extends State<_RibbonCommandSurface> {
         : Colors.transparent;
 
     final tooltipMessage = widget.tooltip ??
-        (widget.enabled ? null : '${widget.label} is still available in the page toolbar during migration.');
+        (widget.enabled ? null : '${widget.label} is not available in this header yet.');
     final commandChild = MouseRegion(
         cursor: isInteractive ? SystemMouseCursors.click : SystemMouseCursors.basic,
         onEnter: (_) => _setHovered(true),
@@ -2709,16 +3939,7 @@ class _RibbonCommandSurfaceState extends State<_RibbonCommandSurface> {
         ),
       );
 
-    if (tooltipMessage == null || tooltipMessage.trim().isEmpty) {
-      return commandChild;
-    }
-
-    return Tooltip(
-      message: tooltipMessage,
-      waitDuration: const Duration(milliseconds: 1200),
-      showDuration: const Duration(milliseconds: 1800),
-      child: commandChild,
-    );
+    return commandChild;
   }
 }
 
@@ -2749,17 +3970,23 @@ class _EditorSurfaceSettingsMenu extends StatelessWidget {
     required this.overviewExpanded,
     required this.showInspector,
     required this.showSourceManager,
+    required this.showObjectNavigator,
     required this.widePage,
     required this.showMarginGuides,
     required this.showDetailedPageBreakLabels,
     required this.showMarginMarkers,
+    required this.showMarginAnnotations,
+    required this.showInPageToolbar,
     required this.onToggleOverview,
     required this.onToggleInspector,
     required this.onToggleSourceManager,
+    required this.onToggleObjectNavigator,
     required this.onToggleWidePage,
     required this.onToggleMarginGuides,
     required this.onTogglePageBreakLabels,
     required this.onToggleMarginMarkers,
+    required this.onToggleMarginAnnotations,
+    required this.onToggleInPageToolbar,
     required this.onHideHeader,
   });
 
@@ -2768,23 +3995,29 @@ class _EditorSurfaceSettingsMenu extends StatelessWidget {
   final bool overviewExpanded;
   final bool showInspector;
   final bool showSourceManager;
+  final bool showObjectNavigator;
   final bool widePage;
   final bool showMarginGuides;
   final bool showDetailedPageBreakLabels;
   final bool showMarginMarkers;
+  final bool showMarginAnnotations;
+  final bool showInPageToolbar;
   final VoidCallback onToggleOverview;
   final VoidCallback onToggleInspector;
   final VoidCallback onToggleSourceManager;
+  final VoidCallback onToggleObjectNavigator;
   final VoidCallback onToggleWidePage;
   final VoidCallback onToggleMarginGuides;
   final VoidCallback onTogglePageBreakLabels;
   final VoidCallback onToggleMarginMarkers;
+  final VoidCallback onToggleMarginAnnotations;
+  final VoidCallback onToggleInPageToolbar;
   final VoidCallback onHideHeader;
 
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<Object>(
-      tooltip: 'Writer settings',
+      tooltip: null,
       onSelected: (value) {
         if (value is _PremiumWriterPageMode) {
           onPageModeChanged(value);
@@ -2800,6 +4033,9 @@ class _EditorSurfaceSettingsMenu extends StatelessWidget {
           case 'source-manager':
             onToggleSourceManager();
             break;
+          case 'object-navigator':
+            onToggleObjectNavigator();
+            break;
           case 'wide':
             onToggleWidePage();
             break;
@@ -2812,6 +4048,12 @@ class _EditorSurfaceSettingsMenu extends StatelessWidget {
           case 'margin-markers':
             onToggleMarginMarkers();
             break;
+          case 'margin-annotations':
+            onToggleMarginAnnotations();
+            break;
+          case 'in-page-toolbar':
+            onToggleInPageToolbar();
+            break;
           case 'hide-header':
             onHideHeader();
             break;
@@ -2819,7 +4061,7 @@ class _EditorSurfaceSettingsMenu extends StatelessWidget {
       },
       itemBuilder: (context) => <PopupMenuEntry<Object>>[
         const PopupMenuItem<Object>(enabled: false, child: Text('Editor surface')),
-        for (final mode in _PremiumWriterPageMode.values)
+        for (final mode in _PremiumWriterPageMode.displayOrder)
           CheckedPopupMenuItem<Object>(
             value: mode,
             checked: mode == pageMode,
@@ -2847,6 +4089,11 @@ class _EditorSurfaceSettingsMenu extends StatelessWidget {
           child: const Text('Source manager'),
         ),
         CheckedPopupMenuItem<Object>(
+          value: 'object-navigator',
+          checked: showObjectNavigator,
+          child: const Text('Object navigator'),
+        ),
+        CheckedPopupMenuItem<Object>(
           value: 'wide',
           checked: widePage,
           child: const Text('Wide page'),
@@ -2864,7 +4111,17 @@ class _EditorSurfaceSettingsMenu extends StatelessWidget {
         CheckedPopupMenuItem<Object>(
           value: 'margin-markers',
           checked: showMarginMarkers,
-          child: const Text('Margin markers'),
+          child: const Text('Passive source markers'),
+        ),
+        CheckedPopupMenuItem<Object>(
+          value: 'margin-annotations',
+          checked: showMarginAnnotations,
+          child: const Text('Google Docs comment rail'),
+        ),
+        CheckedPopupMenuItem<Object>(
+          value: 'in-page-toolbar',
+          checked: showInPageToolbar,
+          child: const Text('Legacy in-page toolbar'),
         ),
         const PopupMenuDivider(),
         const PopupMenuItem<Object>(
@@ -2919,7 +4176,7 @@ class _MasterCitationSettingsMenu extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<Object>(
-      tooltip: 'Citation style and inline citation mode',
+      tooltip: null,
       onSelected: (value) {
         if (value is TextSystemCitationStyle) {
           onChanged(settings.copyWith(style: value));
@@ -2966,7 +4223,7 @@ class _MasterPageSetupMenu extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<Object>(
-      tooltip: 'Page setup',
+      tooltip: null,
       onSelected: (value) {
         if (value is TextSystemPagePreset) {
           onChanged(value.setup);
@@ -3051,6 +4308,7 @@ class _PremiumWriterToolbar extends StatelessWidget {
     required this.commandController,
     required this.overviewExpanded,
     required this.showInspector,
+    required this.showObjectNavigator,
     required this.widePage,
     required this.pageSetup,
     required this.pageMode,
@@ -3060,6 +4318,7 @@ class _PremiumWriterToolbar extends StatelessWidget {
     required this.onPageModeChanged,
     required this.onToggleOverview,
     required this.onToggleInspector,
+    required this.onToggleObjectNavigator,
     required this.onToggleWidePage,
     required this.showMarginGuides,
     required this.onToggleMarginGuides,
@@ -3071,6 +4330,7 @@ class _PremiumWriterToolbar extends StatelessWidget {
   final FluentDocumentCommandController commandController;
   final bool overviewExpanded;
   final bool showInspector;
+  final bool showObjectNavigator;
   final bool widePage;
   final TextSystemPageSetup pageSetup;
   final _PremiumWriterPageMode pageMode;
@@ -3082,6 +4342,7 @@ class _PremiumWriterToolbar extends StatelessWidget {
   final bool showDetailedPageBreakLabels;
   final VoidCallback onToggleOverview;
   final VoidCallback onToggleInspector;
+  final VoidCallback onToggleObjectNavigator;
   final VoidCallback onToggleWidePage;
   final VoidCallback onToggleMarginGuides;
   final VoidCallback onTogglePageBreakLabels;
@@ -3289,7 +4550,7 @@ class _CitationSettingsMenu extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<Object>(
-      tooltip: 'Citation style and inline citation mode',
+      tooltip: null,
       onSelected: (value) {
         if (value is TextSystemCitationStyle) {
           onChanged(settings.copyWith(style: value));
@@ -3444,7 +4705,7 @@ class _PageModeMenu extends StatelessWidget {
       initialValue: pageMode,
       onSelected: onChanged,
       itemBuilder: (context) => <PopupMenuEntry<_PremiumWriterPageMode>>[
-        for (final mode in _PremiumWriterPageMode.values)
+        for (final mode in _PremiumWriterPageMode.displayOrder)
           PopupMenuItem<_PremiumWriterPageMode>(
             value: mode,
             child: ListTile(
@@ -3488,7 +4749,7 @@ class _PageSetupMenu extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<Object>(
-      tooltip: 'Page setup',
+      tooltip: null,
       onSelected: (value) {
         if (value is TextSystemPagePreset) {
           onChanged(value.setup);
@@ -3638,6 +4899,417 @@ class _ParagraphStyleDropdown extends StatelessWidget {
   }
 }
 
+
+
+class _AcademicObjectNavigatorItem {
+  const _AcademicObjectNavigatorItem({
+    required this.blockId,
+    required this.blockIndex,
+    required this.kind,
+    required this.ordinal,
+    required this.caption,
+    required this.label,
+    required this.pageNumber,
+    required this.source,
+    required this.note,
+    required this.imagePath,
+    required this.rows,
+    required this.columns,
+  });
+
+  final String blockId;
+  final int blockIndex;
+  final TextSystemStructureReferenceKind kind;
+  final int ordinal;
+  final String caption;
+  final String label;
+  final int pageNumber;
+  final String source;
+  final String note;
+  final String imagePath;
+  final int rows;
+  final int columns;
+
+  bool get isFigure => kind == TextSystemStructureReferenceKind.figure;
+  bool get isTable => kind == TextSystemStructureReferenceKind.table;
+  bool get isEquation => kind == TextSystemStructureReferenceKind.equation;
+  bool get missingCaption => !isEquation && caption.trim().isEmpty;
+  bool get missingLabel => label.trim().isEmpty;
+  bool get missingImage => isFigure && imagePath.trim().isEmpty;
+  bool get hasIssue => missingCaption || missingLabel || missingImage || (isEquation && caption.trim().isEmpty);
+  String get noun => isTable ? 'Table' : isEquation ? 'Equation' : 'Figure';
+  String get title => '$noun $ordinal';
+  String get pageLabel => 'p. $pageNumber';
+  String get compactMeta {
+    if (isEquation) return 'LaTeX equation';
+    if (isTable && rows > 0 && columns > 0) return '$rows × $columns cells';
+    if (isFigure && imagePath.trim().isNotEmpty) {
+      final normalized = imagePath.trim().replaceAll('\\', '/');
+      final parts = normalized.split('/').where((part) => part.isNotEmpty).toList();
+      return parts.isEmpty ? 'Image attached' : parts.last;
+    }
+    return isFigure ? 'No image attached' : 'Table';
+  }
+}
+
+enum _AcademicObjectNavigatorFilter { all, figures, tables, equations, issues }
+
+class _AcademicObjectNavigatorPanel extends StatefulWidget {
+  const _AcademicObjectNavigatorPanel({
+    required this.items,
+    required this.onNavigateToBlock,
+    required this.onClose,
+  });
+
+  final List<_AcademicObjectNavigatorItem> items;
+  final ValueChanged<String> onNavigateToBlock;
+  final VoidCallback onClose;
+
+  @override
+  State<_AcademicObjectNavigatorPanel> createState() => _AcademicObjectNavigatorPanelState();
+}
+
+class _AcademicObjectNavigatorPanelState extends State<_AcademicObjectNavigatorPanel> {
+  _AcademicObjectNavigatorFilter _filter = _AcademicObjectNavigatorFilter.all;
+
+  List<_AcademicObjectNavigatorItem> get _visibleItems {
+    return switch (_filter) {
+      _AcademicObjectNavigatorFilter.all => widget.items,
+      _AcademicObjectNavigatorFilter.figures => widget.items.where((item) => item.isFigure).toList(growable: false),
+      _AcademicObjectNavigatorFilter.tables => widget.items.where((item) => item.isTable).toList(growable: false),
+      _AcademicObjectNavigatorFilter.equations => widget.items.where((item) => item.isEquation).toList(growable: false),
+      _AcademicObjectNavigatorFilter.issues => widget.items.where((item) => item.hasIssue).toList(growable: false),
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final figures = widget.items.where((item) => item.isFigure).length;
+    final tables = widget.items.where((item) => item.isTable).length;
+    final equations = widget.items.where((item) => item.isEquation).length;
+    final issues = widget.items.where((item) => item.hasIssue).length;
+    final visible = _visibleItems;
+
+    return Material(
+      color: colorScheme.surface,
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(
+            left: BorderSide(color: colorScheme.outlineVariant.withValues(alpha: 0.75)),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 10, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.view_list_rounded, size: 20, color: colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Object navigator',
+                          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close object navigator',
+                        onPressed: widget.onClose,
+                        icon: const Icon(Icons.close_rounded, size: 18),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '$figures figures · $tables tables · $equations equations · $issues issue${issues == 1 ? '' : 's'}',
+                    style: theme.textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 7,
+                    runSpacing: 7,
+                    children: [
+                      _ObjectNavigatorFilterChip(
+                        label: 'All',
+                        selected: _filter == _AcademicObjectNavigatorFilter.all,
+                        onSelected: () => setState(() => _filter = _AcademicObjectNavigatorFilter.all),
+                      ),
+                      _ObjectNavigatorFilterChip(
+                        label: 'Figures',
+                        selected: _filter == _AcademicObjectNavigatorFilter.figures,
+                        onSelected: () => setState(() => _filter = _AcademicObjectNavigatorFilter.figures),
+                      ),
+                      _ObjectNavigatorFilterChip(
+                        label: 'Tables',
+                        selected: _filter == _AcademicObjectNavigatorFilter.tables,
+                        onSelected: () => setState(() => _filter = _AcademicObjectNavigatorFilter.tables),
+                      ),
+                      _ObjectNavigatorFilterChip(
+                        label: 'Equations',
+                        selected: _filter == _AcademicObjectNavigatorFilter.equations,
+                        onSelected: () => setState(() => _filter = _AcademicObjectNavigatorFilter.equations),
+                      ),
+                      _ObjectNavigatorFilterChip(
+                        label: 'Issues',
+                        selected: _filter == _AcademicObjectNavigatorFilter.issues,
+                        onSelected: () => setState(() => _filter = _AcademicObjectNavigatorFilter.issues),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: colorScheme.outlineVariant.withValues(alpha: 0.75)),
+            Expanded(
+              child: visible.isEmpty
+                  ? _AcademicObjectNavigatorEmptyState(filter: _filter)
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(10, 10, 10, 16),
+                      itemCount: visible.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (context, index) {
+                        final item = visible[index];
+                        return _AcademicObjectNavigatorRow(
+                          item: item,
+                          onTap: () => widget.onNavigateToBlock(item.blockId),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ObjectNavigatorFilterChip extends StatelessWidget {
+  const _ObjectNavigatorFilterChip({
+    required this.label,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) => onSelected(),
+      visualDensity: VisualDensity.compact,
+      labelStyle: Theme.of(context).textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w700),
+    );
+  }
+}
+
+class _AcademicObjectNavigatorEmptyState extends StatelessWidget {
+  const _AcademicObjectNavigatorEmptyState({required this.filter});
+
+  final _AcademicObjectNavigatorFilter filter;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final message = switch (filter) {
+      _AcademicObjectNavigatorFilter.all => 'Insert a figure or table to build an academic object list.',
+      _AcademicObjectNavigatorFilter.figures => 'No figures in this document yet.',
+      _AcademicObjectNavigatorFilter.tables => 'No tables in this document yet.',
+      _AcademicObjectNavigatorFilter.equations => 'No equations in this document yet.',
+      _AcademicObjectNavigatorFilter.issues => 'No missing captions, labels, or figure images found.',
+    };
+
+    return Padding(
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.view_list_outlined, color: colorScheme.onSurfaceVariant),
+          const SizedBox(height: 12),
+          Text('No objects', style: theme.textTheme.titleSmall),
+          const SizedBox(height: 6),
+          Text(
+            message,
+            style: theme.textTheme.bodyMedium?.copyWith(color: colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AcademicObjectNavigatorRow extends StatelessWidget {
+  const _AcademicObjectNavigatorRow({
+    required this.item,
+    required this.onTap,
+  });
+
+  final _AcademicObjectNavigatorItem item;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final icon = item.isTable
+        ? Icons.table_chart_outlined
+        : item.isEquation
+            ? Icons.functions_rounded
+            : Icons.image_outlined;
+    final caption = item.caption.trim().isEmpty ? 'Missing caption' : item.caption.trim();
+    final issueParts = <String>[
+      if (item.missingCaption) 'caption',
+      if (item.missingLabel) 'label',
+      if (item.missingImage) 'image',
+    ];
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: item.hasIssue
+              ? colorScheme.errorContainer.withValues(alpha: 0.22)
+              : colorScheme.surfaceContainerHighest.withValues(alpha: 0.32),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: item.hasIssue
+                ? colorScheme.error.withValues(alpha: 0.24)
+                : colorScheme.outlineVariant.withValues(alpha: 0.78),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 18, color: item.hasIssue ? colorScheme.error : colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    item.title,
+                    style: theme.textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+                  ),
+                ),
+                _PageAnchorChip(label: item.pageLabel),
+              ],
+            ),
+            const SizedBox(height: 7),
+            Text(
+              caption,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: item.missingCaption ? colorScheme.error : colorScheme.onSurface,
+                fontWeight: item.missingCaption ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                _ObjectNavigatorMetaChip(
+                  icon: Icons.tag_rounded,
+                  label: item.label.isEmpty ? 'Missing label' : item.label,
+                  warning: item.label.isEmpty,
+                ),
+                _ObjectNavigatorMetaChip(
+                  icon: item.isTable ? Icons.grid_on_rounded : Icons.image_search_rounded,
+                  label: item.compactMeta,
+                  warning: item.missingImage,
+                ),
+                if (item.source.isNotEmpty)
+                  _ObjectNavigatorMetaChip(
+                    icon: Icons.source_outlined,
+                    label: item.source,
+                  ),
+                if (item.note.isNotEmpty)
+                  _ObjectNavigatorMetaChip(
+                    icon: Icons.notes_rounded,
+                    label: item.note,
+                  ),
+              ],
+            ),
+            if (issueParts.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Needs ${issueParts.join(', ')}',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: colorScheme.error,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ObjectNavigatorMetaChip extends StatelessWidget {
+  const _ObjectNavigatorMetaChip({
+    required this.icon,
+    required this.label,
+    this.warning = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool warning;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 230),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: warning
+            ? colorScheme.errorContainer.withValues(alpha: 0.46)
+            : colorScheme.surface.withValues(alpha: 0.82),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: warning
+              ? colorScheme.error.withValues(alpha: 0.24)
+              : colorScheme.outlineVariant.withValues(alpha: 0.72),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: warning ? colorScheme.error : colorScheme.onSurfaceVariant),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: warning ? colorScheme.error : colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _PremiumDocumentMapDrawer extends StatefulWidget {
   const _PremiumDocumentMapDrawer({
@@ -3990,11 +5662,7 @@ class _SignalBadge extends StatelessWidget {
       _ => colorScheme.onSurfaceVariant,
     };
 
-    return Tooltip(
-      message: tooltip,
-      excludeFromSemantics: true,
-      waitDuration: const Duration(milliseconds: 700),
-      child: Container(
+    return Container(
         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.10),
@@ -4012,8 +5680,7 @@ class _SignalBadge extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
+      );
   }
 }
 
@@ -4178,7 +5845,11 @@ class _PremiumInspectorPanel extends StatelessWidget {
           _MetricRow(label: 'Required pace', value: workPlan.paceLabel),
           _MetricRow(label: 'Sections', value: '${sectionMetrics.sectionCount}'),
           _MetricRow(label: 'Page breaks', value: '${pageMap.breakMarkers.length}'),
-          _MetricRow(label: 'Real pages surface', value: pageMode == _PremiumWriterPageMode.pagedBlocksExperimental ? 'experimental selectable block layout' : 'off'),
+          _MetricRow(label: 'Page editor', value: pageMode == _PremiumWriterPageMode.pagedBlocksExperimental
+                ? 'TextField fallback'
+                : pageMode == _PremiumWriterPageMode.ownedDocumentPreview
+                    ? 'owned editor default'
+                    : 'off'),
           _MetricRow(label: 'Unified layout tree', value: unifiedLayoutTree.compactLabel),
           _MetricRow(label: 'Layout mode', value: unifiedLayoutTree.measurementMode.label),
           _MetricRow(label: 'Structure', value: documentStructure.compactLabel),
@@ -4209,7 +5880,7 @@ class _PremiumInspectorPanel extends StatelessWidget {
           _LongestSectionList(sectionMetrics: sectionMetrics),
           const SizedBox(height: 14),
           Text(
-            'This panel is diagnostic. Phase 14B keeps pageless, hybrid, and page-chrome modes on the stable fluent editor, while Real pages mode uses the experimental block-level page surface. Complete text blocks are editable there; split page fragments remain preview-only until paragraph-fragment editing lands.',
+            'This panel is diagnostic. Phase 16K promotes the owned real-page editor as the default Premium Writer surface while keeping the TextField-backed Real pages fallback selectable during stabilization.',
             style: theme.textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
           ),
         ],
@@ -4448,6 +6119,13 @@ class _CitationSourceManagerPanel extends StatelessWidget {
     required this.referenceIndex,
     required this.citationSettings,
     required this.onNavigateToBlock,
+    required this.onEditCitationSource,
+    required this.onOpenCitationSource,
+    required this.onShowCitationOccurrences,
+    required this.onOpenLinkedReference,
+    required this.onShowLinkedReferenceOccurrences,
+    required this.onRepairCitations,
+    required this.onDeduplicateSources,
     required this.onClose,
   });
 
@@ -4455,6 +6133,13 @@ class _CitationSourceManagerPanel extends StatelessWidget {
   final TextSystemReferenceIndex referenceIndex;
   final TextSystemCitationSettings citationSettings;
   final ValueChanged<String> onNavigateToBlock;
+  final ValueChanged<TextSystemCitationRegistryItem> onEditCitationSource;
+  final Future<void> Function(TextSystemCitationRegistryItem item) onOpenCitationSource;
+  final ValueChanged<TextSystemCitationRegistryItem> onShowCitationOccurrences;
+  final Future<void> Function(TextSystemStructureReference reference) onOpenLinkedReference;
+  final ValueChanged<TextSystemStructureReference> onShowLinkedReferenceOccurrences;
+  final VoidCallback onRepairCitations;
+  final VoidCallback onDeduplicateSources;
   final VoidCallback onClose;
 
   @override
@@ -4467,6 +6152,7 @@ class _CitationSourceManagerPanel extends StatelessWidget {
         .where((reference) => reference.kind != TextSystemStructureReferenceKind.footnote)
         .toList(growable: false);
     final issues = _issuesFor(citationRegistry.items, linkedReferences);
+    final duplicateCount = _duplicateCitationCount(citationRegistry.items);
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -4501,7 +6187,7 @@ class _CitationSourceManagerPanel extends StatelessWidget {
                   ),
                 ),
                 IconButton(
-                  tooltip: 'Close source manager',
+                  tooltip: null,
                   visualDensity: VisualDensity.compact,
                   onPressed: onClose,
                   icon: const Icon(Icons.close_rounded),
@@ -4519,11 +6205,17 @@ class _CitationSourceManagerPanel extends StatelessWidget {
                   linkedReferenceCount: linkedReferences.length,
                   issueCount: issues.length,
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 12),
+                _SourceManagerActionStrip(
+                  duplicateCount: duplicateCount,
+                  onRepair: onRepairCitations,
+                  onDeduplicate: onDeduplicateSources,
+                ),
+                const SizedBox(height: 16),
                 _SourceManagerSectionHeader(
                   icon: Icons.format_quote_rounded,
                   title: 'Cited sources',
-                  subtitle: 'Sources that currently generate bibliography entries.',
+                  subtitle: 'Edit metadata, open PDF/source targets, and inspect occurrences.',
                 ),
                 const SizedBox(height: 8),
                 if (citationRegistry.items.isEmpty)
@@ -4539,6 +6231,23 @@ class _CitationSourceManagerPanel extends StatelessWidget {
                       subtitle: _citationSourceSubtitle(item.source),
                       trailing: item.source.year?.trim().isNotEmpty == true ? item.source.year!.trim() : 'n.d.',
                       onTap: () => onNavigateToBlock(item.firstBlockId),
+                      actions: [
+                        _SourceManagerRowAction(
+                          icon: Icons.edit_outlined,
+                          label: 'Edit',
+                          onPressed: () => onEditCitationSource(item),
+                        ),
+                        _SourceManagerRowAction(
+                          icon: Icons.open_in_new_rounded,
+                          label: 'Open',
+                          onPressed: () => unawaited(onOpenCitationSource(item)),
+                        ),
+                        _SourceManagerRowAction(
+                          icon: Icons.format_list_bulleted_rounded,
+                          label: 'Occurrences',
+                          onPressed: () => onShowCitationOccurrences(item),
+                        ),
+                      ],
                     ),
                 const SizedBox(height: 16),
                 _SourceManagerSectionHeader(
@@ -4560,6 +6269,18 @@ class _CitationSourceManagerPanel extends StatelessWidget {
                       subtitle: _sourceReferenceSubtitle(reference),
                       trailing: reference.pageLabel,
                       onTap: () => onNavigateToBlock(reference.blockId),
+                      actions: [
+                        _SourceManagerRowAction(
+                          icon: Icons.open_in_new_rounded,
+                          label: 'Open',
+                          onPressed: () => unawaited(onOpenLinkedReference(reference)),
+                        ),
+                        _SourceManagerRowAction(
+                          icon: Icons.format_list_bulleted_rounded,
+                          label: 'Occurrences',
+                          onPressed: () => onShowLinkedReferenceOccurrences(reference),
+                        ),
+                      ],
                     ),
                 if (linkedReferences.length > 18)
                   Padding(
@@ -4573,17 +6294,22 @@ class _CitationSourceManagerPanel extends StatelessWidget {
                 _SourceManagerSectionHeader(
                   icon: Icons.rule_rounded,
                   title: 'Metadata checks',
-                  subtitle: 'Lightweight warnings before the full citation editor arrives.',
+                  subtitle: 'Warnings for incomplete, broken, or duplicated source metadata.',
                 ),
                 const SizedBox(height: 8),
-                if (issues.isEmpty)
+                if (issues.isEmpty && duplicateCount == 0)
                   _SourceManagerEmptyState(
                     icon: Icons.check_circle_outline_rounded,
                     message: 'No obvious citation/source metadata issues detected.',
                   )
-                else
+                else ...[
+                  if (duplicateCount > 0)
+                    _SourceManagerIssueRow(
+                      issue: _SourceManagerIssue('Possible duplicate sources', '$duplicateCount duplicate target${duplicateCount == 1 ? '' : 's'} can be merged.'),
+                    ),
                   for (final issue in issues.take(10))
                     _SourceManagerIssueRow(issue: issue),
+                ],
                 if (issues.length > 10)
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
@@ -4626,6 +6352,30 @@ class _CitationSourceManagerPanel extends StatelessWidget {
     return issues;
   }
 
+  int _duplicateCitationCount(List<TextSystemCitationRegistryItem> citationItems) {
+    final seen = <String, String>{};
+    var duplicateCount = 0;
+    for (final item in citationItems) {
+      final signature = _sourceSignature(item.source);
+      if (signature.isEmpty) continue;
+      final existing = seen[signature];
+      if (existing == null) {
+        seen[signature] = item.mark.targetId;
+      } else if (existing != item.mark.targetId) {
+        duplicateCount += 1;
+      }
+    }
+    return duplicateCount;
+  }
+
+  String _sourceSignature(TextSystemCitationSource source) {
+    final title = source.title.trim().toLowerCase();
+    final year = (source.year ?? '').trim().toLowerCase();
+    final author = source.authorLabel.trim().toLowerCase();
+    final signature = '$author::$year::$title'.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return signature == '::::' ? '' : signature;
+  }
+
   String _citationSourceSubtitle(TextSystemCitationSource source) {
     final parts = <String>[
       if (source.title.trim().isNotEmpty) source.title.trim(),
@@ -4656,6 +6406,7 @@ class _CitationSourceManagerPanel extends StatelessWidget {
       TextSystemStructureReferenceKind.todo => Icons.check_circle_outline_rounded,
       TextSystemStructureReferenceKind.figure => Icons.image_outlined,
       TextSystemStructureReferenceKind.table => Icons.table_chart_outlined,
+      TextSystemStructureReferenceKind.equation => Icons.functions_rounded,
       TextSystemStructureReferenceKind.unknown => Icons.hub_outlined,
     };
   }
@@ -4704,6 +6455,51 @@ class _SourceManagerChip extends StatelessWidget {
   }
 }
 
+class _SourceManagerActionStrip extends StatelessWidget {
+  const _SourceManagerActionStrip({
+    required this.duplicateCount,
+    required this.onRepair,
+    required this.onDeduplicate,
+  });
+
+  final int duplicateCount;
+  final VoidCallback onRepair;
+  final VoidCallback onDeduplicate;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        OutlinedButton.icon(
+          onPressed: onRepair,
+          icon: const Icon(Icons.build_circle_outlined, size: 17),
+          label: const Text('Repair citations'),
+        ),
+        OutlinedButton.icon(
+          onPressed: duplicateCount > 0 ? onDeduplicate : null,
+          icon: const Icon(Icons.merge_type_rounded, size: 17),
+          label: Text(duplicateCount > 0 ? 'Deduplicate ($duplicateCount)' : 'Deduplicate'),
+        ),
+      ],
+    );
+  }
+}
+
+@immutable
+class _SourceManagerRowAction {
+  const _SourceManagerRowAction({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+}
+
 class _SourceManagerSectionHeader extends StatelessWidget {
   const _SourceManagerSectionHeader({
     required this.icon,
@@ -4749,6 +6545,7 @@ class _CitationSourceManagerRow extends StatelessWidget {
     required this.subtitle,
     required this.trailing,
     required this.onTap,
+    this.actions = const <_SourceManagerRowAction>[],
   });
 
   final IconData icon;
@@ -4756,6 +6553,7 @@ class _CitationSourceManagerRow extends StatelessWidget {
   final String subtitle;
   final String trailing;
   final VoidCallback onTap;
+  final List<_SourceManagerRowAction> actions;
 
   @override
   Widget build(BuildContext context) {
@@ -4771,39 +6569,60 @@ class _CitationSourceManagerRow extends StatelessWidget {
           onTap: onTap,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
-            child: Row(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(icon, size: 16, color: colorScheme.primary),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(icon, size: 16, color: colorScheme.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title.trim().isEmpty ? 'Untitled source' : title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            subtitle.trim().isEmpty ? 'No metadata' : subtitle,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.labelSmall?.copyWith(color: colorScheme.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      trailing,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+                if (actions.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
                     children: [
-                      Text(
-                        title.trim().isEmpty ? 'Untitled source' : title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        subtitle.trim().isEmpty ? 'No metadata' : subtitle,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.labelSmall?.copyWith(color: colorScheme.onSurfaceVariant),
-                      ),
+                      for (final action in actions)
+                        ActionChip(
+                          visualDensity: VisualDensity.compact,
+                          avatar: Icon(action.icon, size: 15),
+                          label: Text(action.label),
+                          onPressed: action.onPressed,
+                        ),
                     ],
                   ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  trailing,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
+                ],
               ],
             ),
           ),
@@ -4847,6 +6666,38 @@ class _SourceManagerEmptyState extends StatelessWidget {
       ),
     );
   }
+}
+
+@immutable
+class _SourceOccurrence {
+  const _SourceOccurrence({
+    required this.blockId,
+    required this.blockIndex,
+    required this.offset,
+    required this.snippet,
+  });
+
+  factory _SourceOccurrence.fromBlock(TextSystemBlock block, int blockIndex, int offset) {
+    final text = block.text.trim().replaceAll(RegExp(r'\s+'), ' ');
+    final safeOffset = offset.clamp(0, text.length).toInt();
+    final start = (safeOffset - 50).clamp(0, text.length).toInt();
+    final end = (safeOffset + 90).clamp(start, text.length).toInt();
+    var snippet = text.substring(start, end).trim();
+    if (start > 0) snippet = '…$snippet';
+    if (end < text.length) snippet = '$snippet…';
+    if (snippet.isEmpty) snippet = block.type.name;
+    return _SourceOccurrence(
+      blockId: block.id,
+      blockIndex: blockIndex,
+      offset: offset,
+      snippet: snippet,
+    );
+  }
+
+  final String blockId;
+  final int blockIndex;
+  final int offset;
+  final String snippet;
 }
 
 @immutable
@@ -5083,6 +6934,7 @@ class _ReferenceBridgeCard extends StatelessWidget {
       TextSystemStructureReferenceKind.todo => Icons.check_circle_outline_rounded,
       TextSystemStructureReferenceKind.figure => Icons.image_outlined,
       TextSystemStructureReferenceKind.table => Icons.table_chart_outlined,
+      TextSystemStructureReferenceKind.equation => Icons.functions_rounded,
       TextSystemStructureReferenceKind.unknown => Icons.hub_outlined,
     };
   }

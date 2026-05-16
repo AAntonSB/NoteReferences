@@ -12,6 +12,7 @@ enum TextSystemStructureReferenceKind {
   todo,
   figure,
   table,
+  equation,
   unknown;
 
   String get label {
@@ -24,6 +25,7 @@ enum TextSystemStructureReferenceKind {
       TextSystemStructureReferenceKind.todo => 'Todo',
       TextSystemStructureReferenceKind.figure => 'Figure',
       TextSystemStructureReferenceKind.table => 'Table',
+      TextSystemStructureReferenceKind.equation => 'Equation',
       TextSystemStructureReferenceKind.unknown => 'Reference',
     };
   }
@@ -290,10 +292,12 @@ class TextSystemDocumentStructure {
       }
 
       final blockKind = block.metadata['kind'];
-      if (blockKind == 'figure' || blockKind == 'table' || blockKind == 'caption') {
+      if (blockKind == 'figure' || blockKind == 'table' || blockKind == 'equation' || blockKind == 'caption') {
         final kind = blockKind == 'table'
             ? TextSystemStructureReferenceKind.table
-            : TextSystemStructureReferenceKind.figure;
+            : blockKind == 'equation'
+                ? TextSystemStructureReferenceKind.equation
+                : TextSystemStructureReferenceKind.figure;
         references.add(
           TextSystemStructureReference(
             id: '$blockKind-${references.length + 1}',
@@ -394,6 +398,7 @@ class TextSystemDocumentStructure {
 
     for (final reference in references) {
       if (reference.blockIndex < start || reference.blockIndex >= end) continue;
+      if (reference.role == 'figure' || reference.role == 'table' || reference.role == 'equation' || reference.role == 'caption') continue;
       switch (reference.kind) {
         case TextSystemStructureReferenceKind.footnote:
           footnoteCount += 1;
@@ -405,6 +410,7 @@ class TextSystemDocumentStructure {
           figureCount += 1;
         case TextSystemStructureReferenceKind.table:
           tableCount += 1;
+        case TextSystemStructureReferenceKind.equation:
         case TextSystemStructureReferenceKind.todo:
         case TextSystemStructureReferenceKind.project:
         case TextSystemStructureReferenceKind.link:
@@ -478,6 +484,7 @@ class TextSystemDocumentStructure {
     if (normalized.contains('document') || normalized.contains('link')) return TextSystemStructureReferenceKind.link;
     if (normalized.contains('figure')) return TextSystemStructureReferenceKind.figure;
     if (normalized.contains('table')) return TextSystemStructureReferenceKind.table;
+    if (normalized.contains('equation') || normalized == 'eq') return TextSystemStructureReferenceKind.equation;
     if (attributes['textSystemReferenceKind'] == 'citation') return TextSystemStructureReferenceKind.citation;
     if (attributes['textSystemReferenceKind'] == 'source') return TextSystemStructureReferenceKind.source;
     if (attributes.containsKey('citationId')) return TextSystemStructureReferenceKind.citation;
