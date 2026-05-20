@@ -1,16 +1,23 @@
 import 'package:flutter/material.dart';
 
+import '../../../infrastructure/database/app_database.dart';
 import '../data/study_planning_repository.dart';
-import 'create_study_plan_screen.dart';
+import '../domain/planning_intent.dart';
+import '../domain/study_material_source.dart';
+import 'work_composer_screen.dart';
 
 class CreateProjectScreen extends StatefulWidget {
   final StudyPlanningRepository planningRepository;
   final bool openPlanAfterCreate;
+  final AppDatabase? database;
+  final StudyMaterialSource? initialMaterialSource;
 
   const CreateProjectScreen({
     super.key,
     required this.planningRepository,
     this.openPlanAfterCreate = true,
+    this.database,
+    this.initialMaterialSource,
   });
 
   @override
@@ -160,9 +167,12 @@ class _CreateProjectScreenState extends State<CreateProjectScreen> {
 
     final createdPlan = await Navigator.of(context).push<StudyPlan>(
       MaterialPageRoute(
-        builder: (_) => CreateStudyPlanScreen(
+        builder: (_) => WorkComposerScreen(
           planningRepository: widget.planningRepository,
           project: project,
+          initialIntent: PlanningIntentType.studyMaterial,
+          database: widget.database,
+          initialMaterialSource: widget.initialMaterialSource,
         ),
       ),
     );

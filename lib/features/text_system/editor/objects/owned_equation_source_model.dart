@@ -1,3 +1,5 @@
+import 'owned_equation_structure_model.dart';
+
 /// Lightweight source model and diagnostics for owned display-equation editing.
 ///
 /// This is deliberately not a full TeX parser. It is a pragmatic authoring
@@ -14,6 +16,7 @@ class OwnedEquationSourceModel {
     required this.bodyStartOffset,
     required this.bodyEndOffset,
     required this.diagnostics,
+    required this.structure,
   });
 
   final String rawSource;
@@ -22,6 +25,7 @@ class OwnedEquationSourceModel {
   final int bodyStartOffset;
   final int bodyEndOffset;
   final List<OwnedEquationDiagnostic> diagnostics;
+  final OwnedEquationStructureModel structure;
 
   bool get hasDiagnostics => diagnostics.isNotEmpty;
 
@@ -40,6 +44,7 @@ class OwnedEquationSourceModel {
     final bodyStart = delimiter?.bodyStart ?? 0;
     final bodyEnd = delimiter?.bodyEnd ?? safeRaw.length;
     final body = safeRaw.substring(bodyStart, bodyEnd).trim();
+    final structure = OwnedEquationStructureModel.parse(safeRaw);
     final diagnostics = <OwnedEquationDiagnostic>[];
 
     if (safeRaw.trim().isEmpty) {
@@ -70,6 +75,8 @@ class OwnedEquationSourceModel {
     diagnostics.addAll(_braceDiagnostics(safeRaw, bodyStart, bodyEnd));
     diagnostics.addAll(_environmentDiagnostics(safeRaw, bodyStart, bodyEnd));
     diagnostics.addAll(_commandDiagnostics(safeRaw, bodyStart, bodyEnd));
+    diagnostics.addAll(_scriptDiagnostics(safeRaw, bodyStart, bodyEnd));
+    diagnostics.addAll(_rendererSafetyDiagnostics(safeRaw, bodyStart, bodyEnd));
 
     diagnostics.sort((a, b) {
       final severityOrder = b.severity.index.compareTo(a.severity.index);
@@ -84,6 +91,7 @@ class OwnedEquationSourceModel {
       bodyStartOffset: bodyStart,
       bodyEndOffset: bodyEnd,
       diagnostics: diagnostics,
+      structure: structure,
     );
   }
 
@@ -250,6 +258,90 @@ class OwnedEquationSourceModel {
     return diagnostics;
   }
 
+
+  static List<OwnedEquationDiagnostic> _rendererSafetyDiagnostics(String source, int bodyStart, int bodyEnd) {
+    final diagnostics = <OwnedEquationDiagnostic>[];
+    for (var i = bodyStart; i < bodyEnd; i++) {
+      final char = source[i];
+      if (char != '{' && char != '[' && char != '(' && char != '&') continue;
+      var cursor = i + 1;
+      while (cursor < bodyEnd) {
+        final unit = source.codeUnitAt(cursor);
+        if (unit != 32 && unit != 9 && unit != 10 && unit != 13) break;
+        cursor++;
+      }
+      if (cursor >= bodyEnd) continue;
+      final script = source[cursor];
+      if (script != '^' && script != '_') continue;
+      diagnostics.add(OwnedEquationDiagnostic(
+        message: script == '^'
+            ? 'Superscript needs a visible base expression.'
+            : 'Subscript needs a visible base expression.',
+        start: cursor,
+        end: cursor + 1,
+        severity: OwnedEquationDiagnosticSeverity.error,
+      ));
+    }
+    return diagnostics;
+  }
+
+  static List<OwnedEquationDiagnostic> _scriptDiagnostics(String source, int bodyStart, int bodyEnd) {
+    final diagnostics = <OwnedEquationDiagnostic>[];
+    var i = bodyStart;
+    while (i < bodyEnd) {
+      final char = source[i];
+      if (char != '^' && char != '_') {
+        i++;
+        continue;
+      }
+      final previousBase = _previousMeaningfulCharacter(source, i - 1, bodyStart);
+      if (previousBase == null || _scriptBaseCannotStartAfter(previousBase)) {
+        diagnostics.add(OwnedEquationDiagnostic(
+          message: char == '^' ? 'Superscript needs a base expression.' : 'Subscript needs a base expression.',
+          start: i,
+          end: i + 1,
+          severity: OwnedEquationDiagnosticSeverity.error,
+        ));
+      }
+      final afterMarker = _skipWhitespace(source, i + 1, bodyEnd);
+      if (afterMarker >= bodyEnd) {
+        diagnostics.add(OwnedEquationDiagnostic(
+          message: char == '^' ? 'Superscript needs content.' : 'Subscript needs content.',
+          start: i,
+          end: i + 1,
+          severity: OwnedEquationDiagnosticSeverity.error,
+        ));
+        i++;
+        continue;
+      }
+      if (source[afterMarker] == '{') {
+        final group = _readRequiredGroup(source, afterMarker, bodyEnd);
+        if (group == null) {
+          diagnostics.add(OwnedEquationDiagnostic(
+            message: char == '^' ? 'Superscript group is not closed.' : 'Subscript group is not closed.',
+            start: i,
+            end: afterMarker + 1,
+            severity: OwnedEquationDiagnosticSeverity.error,
+          ));
+          i = afterMarker + 1;
+          continue;
+        }
+        if (source.substring(group.contentStart, group.contentEnd).trim().isEmpty) {
+          diagnostics.add(OwnedEquationDiagnostic(
+            message: char == '^' ? 'Empty superscript argument.' : 'Empty subscript argument.',
+            start: group.openIndex,
+            end: group.closeIndex + 1,
+            severity: OwnedEquationDiagnosticSeverity.error,
+          ));
+        }
+        i = group.closeIndex + 1;
+        continue;
+      }
+      i = afterMarker + 1;
+    }
+    return diagnostics;
+  }
+
   static List<OwnedEquationDiagnostic> _commandDiagnostics(String source, int bodyStart, int bodyEnd) {
     final diagnostics = <OwnedEquationDiagnostic>[];
     var i = bodyStart;
@@ -285,7 +377,7 @@ class OwnedEquationSourceModel {
             message: 'Empty argument for \\$command.',
             start: group.openIndex,
             end: group.closeIndex + 1,
-            severity: OwnedEquationDiagnosticSeverity.warning,
+            severity: OwnedEquationDiagnosticSeverity.error,
           ));
         }
         cursor = group.closeIndex + 1;
@@ -336,6 +428,33 @@ class OwnedEquationSourceModel {
     }
     return null;
   }
+
+
+  static String? _previousMeaningfulCharacter(String source, int start, int lowerBound) {
+    for (var i = start; i >= lowerBound; i--) {
+      final unit = source.codeUnitAt(i);
+      if (unit == 32 || unit == 9 || unit == 10 || unit == 13) continue;
+      return source[i];
+    }
+    return null;
+  }
+
+  static bool _scriptBaseCannotStartAfter(String previous) {
+    return previous == '{' ||
+        previous == '[' ||
+        previous == '(' ||
+        previous == '&' ||
+        previous == '=' ||
+        previous == '+' ||
+        previous == '-' ||
+        previous == '/' ||
+        previous == ',' ||
+        previous == ';' ||
+        previous == ':' ||
+        previous == '^' ||
+        previous == '_';
+  }
+
 
   static int _skipWhitespace(String source, int start, int limit) {
     var i = start;

@@ -130,9 +130,11 @@ class MarginNoteToolbar extends StatelessWidget {
       child: IgnorePointer(
         ignoring: !showActions,
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
             if (showMoveHandle)
-              Expanded(
+              SizedBox(
+                width: 74,
                 child: MouseRegion(
                   cursor: onDragDelta == null
                       ? SystemMouseCursors.basic
@@ -174,12 +176,16 @@ class MarginNoteToolbar extends StatelessWidget {
                                 .withValues(alpha: 0.76),
                           ),
                           const SizedBox(width: 5),
-                          Text(
-                            'Move',
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                              height: 1.0,
-                              fontWeight: FontWeight.w600,
+                          Flexible(
+                            child: Text(
+                              'Move',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                                height: 1.0,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
                         ],
@@ -187,10 +193,8 @@ class MarginNoteToolbar extends StatelessWidget {
                     ),
                   ),
                 ),
-              )
-            else
-              const Spacer(),
-            const SizedBox(width: 4),
+              ),
+            if (showMoveHandle) const SizedBox(width: 4),
             _HoverIconButton(
               tooltip: 'Delete note',
               icon: Icons.delete_outline,

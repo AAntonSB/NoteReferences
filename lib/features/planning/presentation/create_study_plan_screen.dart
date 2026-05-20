@@ -5,11 +5,15 @@ import '../data/study_planning_repository.dart';
 class CreateStudyPlanScreen extends StatefulWidget {
   final StudyPlanningRepository planningRepository;
   final StudyProject project;
+  final String? initialPlanKind;
+  final String? initialUnitType;
 
   const CreateStudyPlanScreen({
     super.key,
     required this.planningRepository,
     required this.project,
+    this.initialPlanKind,
+    this.initialUnitType,
   });
 
   @override
@@ -66,6 +70,10 @@ class _CreateStudyPlanScreenState extends State<CreateStudyPlanScreen> {
   void initState() {
     super.initState();
     final now = DateTime.now();
+    _planKind = StudyPlanKind.normalize(widget.initialPlanKind);
+    if (widget.initialUnitType != null && _unitTypes.containsKey(widget.initialUnitType)) {
+      _unitType = widget.initialUnitType!;
+    }
     _startDate = DateTime(now.year, now.month, now.day);
     _deadline = widget.project.deadline ?? _startDate.add(const Duration(days: 21));
     _taskDate = widget.project.deadline ?? _startDate;
@@ -111,7 +119,7 @@ class _CreateStudyPlanScreenState extends State<CreateStudyPlanScreen> {
     return Scaffold(
       backgroundColor: theme.colorScheme.surfaceContainerLowest,
       appBar: AppBar(
-        title: const Text('Add to project'),
+        title: const Text('Plan work'),
         backgroundColor: theme.colorScheme.surfaceContainerLowest,
         surfaceTintColor: Colors.transparent,
       ),
@@ -138,14 +146,14 @@ class _CreateStudyPlanScreenState extends State<CreateStudyPlanScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'What kind of commitment is this?',
+                          'Shape the work',
                           style: theme.textTheme.titleLarge?.copyWith(
                             fontWeight: FontWeight.w900,
                           ),
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          'Choose the commitment that best matches the real work. The app will turn it into calendar requirements and behind-schedule signals.',
+                          'Fine-tune the details. The app will turn this into Today items, calendar requirements, and behind-schedule signals.',
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurfaceVariant,
                             height: 1.35,
@@ -155,7 +163,7 @@ class _CreateStudyPlanScreenState extends State<CreateStudyPlanScreen> {
                         DropdownButtonFormField<String>(
                           value: _planKind,
                           decoration: const InputDecoration(
-                            labelText: 'Item type',
+                            labelText: 'Planning shape',
                             border: OutlineInputBorder(),
                           ),
                           items: [

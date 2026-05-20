@@ -14,23 +14,67 @@ import '../../planning/presentation/create_workspace_document_screen.dart';
 import '../../planning/presentation/dev_todo_drawer.dart';
 import '../../planning/presentation/project_quick_access_sheet.dart';
 import '../../planning/presentation/document_workspace_screen.dart';
-import '../../pdf_reader/presentation/pdf_reader_screen.dart';
+import '../../reader/presentation/reader_screen.dart';
 import '../../tags/data/tag_repository.dart';
 import '../../tags/presentation/tag_icon_registry.dart';
 import '../../tags/presentation/tag_manager_dialog.dart';
 import '../../settings/presentation/settings_screen.dart';
 import '../../text_system/presentation/text_system_test_env_screen.dart';
 import '../data/document_import_service.dart';
+import '../data/epub_import_service.dart';
+import '../data/epub_library_repository.dart';
+import '../data/epub_metadata_extractor.dart';
 import '../data/pdf_metadata_extractor.dart';
 import '../data/online_metadata_lookup_service.dart';
+import '../domain/epub_library_document.dart';
 
 enum LibrarySortField { name, authors, addedAt, fileLastModifiedAt, subject }
+
+class LibraryTodayWorkSession {
+  const LibraryTodayWorkSession({
+    required this.date,
+    required this.createdAt,
+    required this.items,
+  });
+
+  final DateTime date;
+  final DateTime createdAt;
+  final List<LibraryTodayWorkItem> items;
+
+  int get itemCount => items.length;
+}
+
+class LibraryTodayWorkItem {
+  const LibraryTodayWorkItem({
+    required this.id,
+    required this.title,
+    required this.description,
+    this.sourceLabel,
+    this.sourceIcon,
+    this.onOpenSource,
+    this.onComplete,
+  });
+
+  final String id;
+  final String title;
+  final String description;
+  final String? sourceLabel;
+  final IconData? sourceIcon;
+  final Future<void> Function()? onOpenSource;
+  final Future<void> Function()? onComplete;
+}
 
 class LibraryScreen extends StatefulWidget {
   final AppDatabase database;
   final StudyPlanningRepository? planningRepository;
+  final LibraryTodayWorkSession? todayWorkSession;
 
-  const LibraryScreen({super.key, required this.database, this.planningRepository});
+  const LibraryScreen({
+    super.key,
+    required this.database,
+    this.planningRepository,
+    this.todayWorkSession,
+  });
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
@@ -44,17 +88,23 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   bool _isDragging = false;
   bool _isImporting = false;
+  bool _isImportingEpub = false;
 
   String _searchQuery = '';
   final Set<int> _selectedTagFilterIds = <int>{};
   bool _matchAllSelectedTags = false;
 
   late final DocumentImportService _importService;
+  late final EpubLibraryRepository _epubLibraryRepository;
+  late final EpubImportService _epubImportService;
   late final OnlineMetadataLookupService _onlineMetadataLookupService;
   late final TagRepository _tagRepository;
   late final StudyPlanningRepository _planningRepository;
   late final bool _ownsPlanningRepository;
   bool _planningLoaded = false;
+  bool _epubLibraryLoaded = false;
+  List<EpubLibraryDocument> _epubDocuments = const <EpubLibraryDocument>[];
+  final Set<String> _todayWorkDoneIds = <String>{};
 
   @override
   void initState() {
@@ -64,11 +114,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
       database: widget.database,
       metadataExtractor: PdfMetadataExtractor(),
     );
+    _epubLibraryRepository = EpubLibraryRepository();
+    _epubImportService = EpubImportService(
+      repository: _epubLibraryRepository,
+      metadataExtractor: EpubMetadataExtractor(),
+    );
     _onlineMetadataLookupService = OnlineMetadataLookupService();
     _tagRepository = TagRepository(database: widget.database);
     _ownsPlanningRepository = widget.planningRepository == null;
     _planningRepository = widget.planningRepository ?? StudyPlanningRepository();
     _loadPlanning();
+    unawaited(_loadEpubLibrary());
 
     _searchController.addListener(() {
       setState(() {
@@ -90,6 +146,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
     await _planningRepository.load();
     if (!mounted) return;
     setState(() => _planningLoaded = true);
+  }
+
+  Future<void> _loadEpubLibrary() async {
+    final documents = await _epubLibraryRepository.loadDocuments();
+    if (!mounted) return;
+    setState(() {
+      _epubDocuments = documents;
+      _epubLibraryLoaded = true;
+    });
   }
 
   Future<void> _openTagManager() async {
@@ -152,6 +217,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       context: context,
       planningRepository: _planningRepository,
       sourceLabel: 'PDF library',
+      database: widget.database,
     );
   }
 
@@ -197,7 +263,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => PdfReaderScreen(
+        builder: (_) => ReaderScreen.pdf(
           database: widget.database,
           documentId: document!.documentId,
           filePath: document!.filePath,
@@ -277,6 +343,24 @@ class _LibraryScreenState extends State<LibraryScreen> {
     await _importFiles(files);
   }
 
+  Future<void> _importEpub() async {
+    final result = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['epub'],
+      allowMultiple: true,
+      lockParentWindow: true,
+    );
+
+    if (result == null) return;
+
+    final files = result.files
+        .where((file) => file.path != null)
+        .map((file) => File(file.path!))
+        .toList();
+
+    await _importFiles(files);
+  }
+
   Future<void> _importDroppedItems(List<DropItem> items) async {
     debugPrint('Drop item count: ${items.length}');
 
@@ -289,8 +373,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       debugPrint('Dropped raw path: $rawPath');
       debugPrint('Dropped normalized path: $path');
 
-      if (!path.toLowerCase().endsWith('.pdf')) {
-        debugPrint('Skipped non-PDF: $path');
+      final lowerPath = path.toLowerCase();
+      if (!lowerPath.endsWith('.pdf') && !lowerPath.endsWith('.epub')) {
+        debugPrint('Skipped non-reader file: $path');
         continue;
       }
 
@@ -315,13 +400,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
       files.add(file);
     }
 
-    debugPrint('Valid dropped PDF count: ${files.length}');
+    debugPrint('Valid dropped reader file count: ${files.length}');
 
     if (files.isEmpty) {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Drop one or more PDF files to import.')),
+        const SnackBar(content: Text('Drop one or more PDF or EPUB files to import.')),
       );
       return;
     }
@@ -372,59 +457,74 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final pdfFiles = files
         .where((file) => file.path.toLowerCase().endsWith('.pdf'))
         .toList();
+    final epubFiles = files
+        .where((file) => file.path.toLowerCase().endsWith('.epub'))
+        .toList();
 
     debugPrint('PDF files after filtering: ${pdfFiles.length}');
+    debugPrint('EPUB files after filtering: ${epubFiles.length}');
 
-    if (pdfFiles.isEmpty) {
+    if (pdfFiles.isEmpty && epubFiles.isEmpty) {
       if (!mounted) return;
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('No PDF files found.')));
-
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No PDF or EPUB files found.')),
+      );
       return;
     }
 
     setState(() {
-      _isImporting = true;
+      _isImporting = pdfFiles.isNotEmpty;
+      _isImportingEpub = epubFiles.isNotEmpty;
     });
 
     final importedDocuments = <PdfDocument>[];
+    final importedEpubDocuments = <EpubLibraryDocument>[];
 
     try {
       for (final file in pdfFiles) {
         debugPrint('Importing PDF: ${file.path}');
-
         final document = await _importService.importPdf(file);
         importedDocuments.add(document);
+        debugPrint('Imported PDF: ${document.documentId} | ${document.name}');
+      }
 
-        debugPrint(
-          'Imported document: ${document.documentId} | ${document.name}',
-        );
+      for (final file in epubFiles) {
+        debugPrint('Importing EPUB: ${file.path}');
+        final document = await _epubImportService.importEpub(file);
+        importedEpubDocuments.add(document);
+        debugPrint('Imported EPUB: ${document.documentId} | ${document.displayTitle}');
+      }
 
-        final allDocuments = await widget.database.getAllDocuments();
-        debugPrint(
-          'Documents in database after import: ${allDocuments.length}',
-        );
+      if (importedEpubDocuments.isNotEmpty) {
+        await _loadEpubLibrary();
       }
 
       if (!mounted) return;
 
-      final importedCount = importedDocuments.length;
-      final singleImportedDocument = importedDocuments.length == 1
+      final pieces = <String>[];
+      if (importedDocuments.isNotEmpty) {
+        pieces.add(importedDocuments.length == 1
+            ? 'Imported 1 PDF'
+            : 'Imported ${importedDocuments.length} PDFs');
+      }
+      if (importedEpubDocuments.isNotEmpty) {
+        pieces.add(importedEpubDocuments.length == 1
+            ? 'Imported 1 EPUB'
+            : 'Imported ${importedEpubDocuments.length} EPUBs');
+      }
+
+      final singleImportedDocument = importedDocuments.length == 1 && importedEpubDocuments.isEmpty
           ? importedDocuments.single
+          : null;
+      final singleImportedEpub = importedEpubDocuments.length == 1 && importedDocuments.isEmpty
+          ? importedEpubDocuments.single
           : null;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            importedCount == 1
-                ? 'Imported 1 PDF.'
-                : 'Imported $importedCount PDFs.',
-          ),
-          action: singleImportedDocument == null
-              ? null
-              : SnackBarAction(
+          content: Text('${pieces.join(' and ')}.'),
+          action: singleImportedDocument != null
+              ? SnackBarAction(
                   label: 'Review metadata',
                   onPressed: () {
                     unawaited(
@@ -434,7 +534,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       ),
                     );
                   },
-                ),
+                )
+              : singleImportedEpub == null
+                  ? null
+                  : SnackBarAction(
+                      label: 'Open',
+                      onPressed: () => _openEpubDocument(singleImportedEpub),
+                    ),
         ),
       );
     } catch (error, stackTrace) {
@@ -442,16 +548,76 @@ class _LibraryScreenState extends State<LibraryScreen> {
       debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) return;
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import failed: $error')),
+      );
     } finally {
       if (mounted) {
         setState(() {
           _isImporting = false;
+          _isImportingEpub = false;
         });
       }
+    }
+  }
+
+  Future<void> _openEpubDocument(EpubLibraryDocument document) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => ReaderScreen.epub(
+          database: widget.database,
+          documentId: document.documentId,
+          filePath: document.filePath,
+          title: document.displayTitle,
+          sourceLabel: 'Library EPUB',
+          planningRepository: _planningRepository,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmDeleteEpubDocument(EpubLibraryDocument document) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete EPUB?'),
+        content: Text('Remove “${document.displayTitle}” from the EPUB library and delete the cached file?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.tonalIcon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _deleteEpubDocument(document);
+  }
+
+  Future<void> _deleteEpubDocument(EpubLibraryDocument document) async {
+    try {
+      await _epubLibraryRepository.deleteDocument(document.documentId);
+      final cachedFile = File(document.filePath);
+      if (await cachedFile.exists()) {
+        await cachedFile.delete();
+      }
+      await _loadEpubLibrary();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Deleted “${document.displayTitle}”.')),
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Delete EPUB failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Delete failed: $error')),
+      );
     }
   }
 
@@ -630,7 +796,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   void _openDocument(PdfDocument document) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => PdfReaderScreen(
+        builder: (_) => ReaderScreen.pdf(
           database: widget.database,
           documentId: document.documentId,
           filePath: document.filePath,
@@ -887,6 +1053,38 @@ class _LibraryScreenState extends State<LibraryScreen> {
     return trimmed.isEmpty ? null : trimmed;
   }
 
+  Future<void> _toggleTodayWorkItem(LibraryTodayWorkItem item, bool done) async {
+    setState(() {
+      if (done) {
+        _todayWorkDoneIds.add(item.id);
+      } else {
+        _todayWorkDoneIds.remove(item.id);
+      }
+    });
+
+    if (!done || item.onComplete == null) return;
+    try {
+      await item.onComplete!();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _todayWorkDoneIds.remove(item.id));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not complete “${item.title}”: $error')),
+      );
+    }
+  }
+
+  Future<void> _openTodayWorkSource(LibraryTodayWorkItem item) async {
+    final opener = item.onOpenSource;
+    if (opener == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This item does not have a linked source yet.')),
+      );
+      return;
+    }
+    await opener();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -920,6 +1118,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
             tooltip: 'Import PDF',
             onPressed: _isImporting ? null : _importPdf,
             icon: const Icon(Icons.upload_file),
+          ),
+          IconButton(
+            tooltip: 'Import EPUB',
+            onPressed: _isImportingEpub ? null : _importEpub,
+            icon: const Icon(Icons.menu_book_outlined),
           ),
         ],
       ),
@@ -996,11 +1199,24 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                 onCreateDocument: _planningLoaded ? _createWorkspaceDocument : null,
                                 onOpenDevTodos: _planningLoaded ? _openDevTodos : null,
                               ),
+                              if (widget.todayWorkSession != null)
+                                _LibraryTodayWorkStrip(
+                                  session: widget.todayWorkSession!,
+                                  doneIds: _todayWorkDoneIds,
+                                  onToggleDone: _toggleTodayWorkItem,
+                                  onOpenSource: _openTodayWorkSource,
+                                ),
                               if (_planningLoaded)
                                 _WorkspaceDocumentsStrip(
                                   documents: _planningRepository.documents,
                                   onOpenDocument: _openWorkspaceDocument,
                                   onCreateDocument: _createWorkspaceDocument,
+                                ),
+                              if (_epubLibraryLoaded && _epubDocuments.isNotEmpty)
+                                _EpubDocumentsStrip(
+                                  documents: _epubDocuments,
+                                  onOpenDocument: _openEpubDocument,
+                                  onDeleteDocument: _confirmDeleteEpubDocument,
                                 ),
                               const Divider(height: 1),
                               Expanded(
@@ -1108,10 +1324,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.picture_as_pdf, size: 64),
+                              Icon(Icons.library_books_outlined, size: 64),
                               SizedBox(height: 16),
                               Text(
-                                'Drop PDFs to import',
+                                'Drop PDFs or EPUBs to import',
                                 style: TextStyle(fontSize: 22),
                               ),
                             ],
@@ -1184,7 +1400,7 @@ class _WorkspaceDocumentsStrip extends StatelessWidget {
                 borderRadius: BorderRadius.circular(18),
                 onTap: onCreateDocument,
                 child: Padding(
-                  padding: const EdgeInsets.all(14),
+                  padding: const EdgeInsets.all(12),
                   child: Row(
                     children: [
                       Icon(Icons.note_add_outlined, color: theme.colorScheme.primary),
@@ -1284,6 +1500,211 @@ IconData _iconForWorkspaceDocument(WorkspaceDocument document) {
     default:
       return Icons.edit_document;
   }
+}
+
+
+class _LibraryTodayWorkStrip extends StatelessWidget {
+  const _LibraryTodayWorkStrip({
+    required this.session,
+    required this.doneIds,
+    required this.onToggleDone,
+    required this.onOpenSource,
+  });
+
+  final LibraryTodayWorkSession session;
+  final Set<String> doneIds;
+  final Future<void> Function(LibraryTodayWorkItem item, bool done) onToggleDone;
+  final Future<void> Function(LibraryTodayWorkItem item) onOpenSource;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final doneCount = session.items.where((item) => doneIds.contains(item.id)).length;
+    final remaining = session.items.length - doneCount;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(24, 8, 24, 14),
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
+      decoration: BoxDecoration(
+        color: Color.alphaBlend(colorScheme.primary.withValues(alpha: .045), colorScheme.surface),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: .82)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: colorScheme.primary.withValues(alpha: .10),
+                ),
+                child: Icon(Icons.playlist_add_check_rounded, size: 19, color: colorScheme.primary),
+              ),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Today',
+                      style: TextStyle(
+                        fontSize: 15,
+                        height: 1.05,
+                        fontWeight: FontWeight.w900,
+                        color: colorScheme.onSurface,
+                        letterSpacing: -.2,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      remaining == 0
+                          ? 'All selected work is checked off.'
+                          : '$remaining item${remaining == 1 ? '' : 's'} left from setup',
+                      style: TextStyle(
+                        fontSize: 12.1,
+                        height: 1.2,
+                        fontWeight: FontWeight.w700,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                _formatLibraryTodayWorkDate(session.date),
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1,
+                  fontWeight: FontWeight.w900,
+                  color: colorScheme.primary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 260),
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: session.items.length,
+              separatorBuilder: (_, __) => Divider(height: 1, color: colorScheme.outlineVariant.withValues(alpha: .75)),
+              itemBuilder: (context, index) {
+                final item = session.items[index];
+                return _LibraryTodayWorkRow(
+                  item: item,
+                  done: doneIds.contains(item.id),
+                  onChanged: (done) => onToggleDone(item, done),
+                  onOpenSource: item.onOpenSource == null ? null : () => onOpenSource(item),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LibraryTodayWorkRow extends StatelessWidget {
+  const _LibraryTodayWorkRow({
+    required this.item,
+    required this.done,
+    required this.onChanged,
+    this.onOpenSource,
+  });
+
+  final LibraryTodayWorkItem item;
+  final bool done;
+  final ValueChanged<bool> onChanged;
+  final Future<void> Function()? onOpenSource;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Checkbox(
+            value: done,
+            activeColor: colorScheme.primary,
+            onChanged: (value) => onChanged(value ?? false),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  item.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    height: 1.18,
+                    fontWeight: FontWeight.w900,
+                    color: done ? colorScheme.onSurfaceVariant : colorScheme.onSurface,
+                    decoration: done ? TextDecoration.lineThrough : TextDecoration.none,
+                  ),
+                ),
+                if (item.description.trim().isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    item.description,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11.9,
+                      height: 1.25,
+                      fontWeight: FontWeight.w700,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (onOpenSource != null) ...[
+            const SizedBox(width: 10),
+            TextButton.icon(
+              onPressed: () => unawaited(onOpenSource!()),
+              icon: Icon(item.sourceIcon ?? Icons.description_outlined, size: 15),
+              label: const Text('Open'),
+              style: TextButton.styleFrom(
+                foregroundColor: colorScheme.primary,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+String _formatLibraryTodayWorkDate(DateTime date) {
+  const months = <String>[
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  final month = months[date.month - 1];
+  return '${date.day} $month';
 }
 
 class _LibraryHeader extends StatelessWidget {
@@ -1528,6 +1949,204 @@ class _LibraryHeader extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+
+class _EpubDocumentsStrip extends StatelessWidget {
+  final List<EpubLibraryDocument> documents;
+  final ValueChanged<EpubLibraryDocument> onOpenDocument;
+  final ValueChanged<EpubLibraryDocument> onDeleteDocument;
+
+  const _EpubDocumentsStrip({
+    required this.documents,
+    required this.onOpenDocument,
+    required this.onDeleteDocument,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 16),
+      decoration: BoxDecoration(
+        color: colorScheme.secondaryContainer.withValues(alpha: 0.16),
+        border: Border(
+          bottom: BorderSide(color: colorScheme.outlineVariant),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.menu_book_rounded, color: colorScheme.secondary),
+              const SizedBox(width: 8),
+              Text(
+                'EPUB library',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '${documents.length} imported',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 156,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: documents.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (context, index) {
+                final document = documents[index];
+                return _EpubDocumentCard(
+                  document: document,
+                  onOpen: () => onOpenDocument(document),
+                  onDelete: () => onDeleteDocument(document),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EpubDocumentCard extends StatelessWidget {
+  final EpubLibraryDocument document;
+  final VoidCallback onOpen;
+  final VoidCallback onDelete;
+
+  const _EpubDocumentCard({
+    required this.document,
+    required this.onOpen,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return SizedBox(
+      width: 340,
+      child: Card(
+        elevation: 0,
+        color: colorScheme.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: BorderSide(color: colorScheme.outlineVariant),
+        ),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: onOpen,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        color: colorScheme.secondaryContainer,
+                      ),
+                      child: Icon(
+                        Icons.menu_book_rounded,
+                        color: colorScheme.onSecondaryContainer,
+                        size: 19,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        document.displayTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Delete EPUB',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onDelete,
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  document.metadataSummary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  document.structureSummary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline_rounded,
+                      size: 15,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        'Reader surface coming next',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        minimumSize: const Size(0, 30),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                      ),
+                      onPressed: onOpen,
+                      child: const Text('Open'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

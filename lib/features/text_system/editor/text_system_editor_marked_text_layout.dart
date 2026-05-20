@@ -108,19 +108,20 @@ class TextSystemEditorMarkedTextLayout {
     final displayFontSize = displayStyle.fontSize ?? theme.textTheme.bodyLarge?.fontSize ?? 18.0;
     return displayStyle.copyWith(
       color: colorScheme.onSurface,
-      fontFamily: 'monospace',
-      fontFamilyFallback: const <String>['Consolas', 'Menlo', 'monospace'],
-      fontSize: displayFontSize * 0.84,
-      fontWeight: FontWeight.w600,
-      height: 1.45,
-      letterSpacing: -0.1,
+      fontFamily: 'Consolas',
+      fontFamilyFallback: const <String>['Cascadia Mono', 'Menlo', 'monospace'],
+      fontSize: displayFontSize * 0.80,
+      fontWeight: FontWeight.w400,
+      height: 1.48,
+      letterSpacing: 0,
     );
   }
 
-  static const double displayEquationSourceTopInset = 148.0;
-  // The focused equation authoring surface positions the RichText inside a
-  // source lane with an 18 px left gutter plus a 2 px leading rule. Caret,
-  // hit-testing, and selection must use the text origin, not the lane origin.
+  static const double displayEquationSourceTopInset = 178.0;
+  // The focused equation authoring surface owns a taller Equation Studio chrome.
+  // Keep this inset synchronized with OwnedEquationAuthoringSurface.sourceTopInset
+  // so source caret rendering, hit-testing, and selection geometry use the same
+  // text origin as the visible source lane.
   static const double displayEquationSourceLeftInset = 20.0;
   static const double displayEquationSourceRightInset = 18.0;
 
@@ -165,24 +166,24 @@ class TextSystemEditorMarkedTextLayout {
     final colorScheme = theme.colorScheme;
     final commandStyle = baseStyle.copyWith(
       color: colorScheme.primary,
-      fontWeight: FontWeight.w800,
+      fontWeight: FontWeight.w600,
     );
     final delimiterStyle = baseStyle.copyWith(
       color: colorScheme.onSurfaceVariant.withValues(alpha: 0.72),
-      fontWeight: FontWeight.w800,
+      fontWeight: FontWeight.w500,
     );
     final operatorStyle = baseStyle.copyWith(
       color: colorScheme.tertiary,
-      fontWeight: FontWeight.w800,
+      fontWeight: FontWeight.w500,
     );
     final numberStyle = baseStyle.copyWith(
       color: colorScheme.secondary,
-      fontWeight: FontWeight.w700,
+      fontWeight: FontWeight.w500,
     );
     final textModeStyle = baseStyle.copyWith(
       color: colorScheme.onSurface,
       fontStyle: FontStyle.italic,
-      fontWeight: FontWeight.w600,
+      fontWeight: FontWeight.w400,
     );
     final matchingDelimiterIndices = _matchingDelimiterIndices(source, activeSourceOffset);
     final activeCommandRange = _activeCommandRange(source, activeSourceOffset);
@@ -201,11 +202,11 @@ class TextSystemEditorMarkedTextLayout {
           OwnedEquationDiagnosticSeverity.error => style.copyWith(
               color: colorScheme.error,
               backgroundColor: colorScheme.errorContainer.withValues(alpha: 0.52),
-              fontWeight: FontWeight.w900,
+              fontWeight: FontWeight.w700,
             ),
           OwnedEquationDiagnosticSeverity.warning => style.copyWith(
               backgroundColor: colorScheme.tertiaryContainer.withValues(alpha: 0.44),
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
             ),
           OwnedEquationDiagnosticSeverity.info => style.copyWith(
               backgroundColor: colorScheme.primaryContainer.withValues(alpha: 0.30),

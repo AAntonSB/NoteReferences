@@ -40,6 +40,7 @@ import 'text_system_editor_selection_state.dart';
 import 'text_system_editor_text_input_client.dart';
 import 'objects/owned_content_object_geometry.dart';
 import 'objects/owned_equation_authoring_surface.dart';
+import 'objects/owned_equation_structure_model.dart';
 
 const String _ownedMarginAnnotationsMetadataKey = 'textSystemMarginAnnotations';
 
@@ -329,6 +330,7 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
                                     onEquationJumpNextSlot: () => _jumpEquationSlot(forward: true),
                                     onEquationJumpPreviousSlot: () => _jumpEquationSlot(forward: false),
                                     onEquationPreviewSourceOffset: (position) => _moveEquationPreviewCaret(position),
+                                    onEquationPreviewSourceRange: (range) => _selectEquationPreviewRange(range),
                                     onEquationStructureCellSelected: (rowIndex, columnIndex) =>
                                         _jumpToEquationStructureCell(rowIndex, columnIndex),
                                     onEquationToggleNumbering: () => _toggleActiveEquationNumbering(),
@@ -1820,7 +1822,7 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
 
   KeyEventResult _insertEquationMatrix() {
     const replacement = r'\begin{bmatrix}  &  \\  &  \end{bmatrix}';
-    return _replaceActiveEquationRangeWith(
+    return _insertEquationTopLevelStructureTemplate(
       replacement,
       caretOffsetInReplacement: r'\begin{bmatrix} '.length,
       label: 'Insert matrix',
@@ -1829,7 +1831,7 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
 
   KeyEventResult _insertEquationAligned() {
     const replacement = r'\begin{aligned}  &=  \\  &=  \end{aligned}';
-    return _replaceActiveEquationRangeWith(
+    return _insertEquationTopLevelStructureTemplate(
       replacement,
       caretOffsetInReplacement: r'\begin{aligned} '.length,
       label: 'Insert aligned equation',
@@ -1838,11 +1840,89 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
 
   KeyEventResult _insertEquationCases() {
     const replacement = r'\begin{cases}  & \text{} \\  & \text{} \end{cases}';
-    return _replaceActiveEquationRangeWith(
+    return _insertEquationTopLevelStructureTemplate(
       replacement,
       caretOffsetInReplacement: r'\begin{cases} '.length,
       label: 'Insert cases equation',
     );
+  }
+
+  KeyEventResult _insertEquationTopLevelStructureTemplate(
+    String replacement, {
+    required int caretOffsetInReplacement,
+    required String label,
+  }) {
+    final range = _activeCommandRange;
+    final block = _activeDisplayEquationBlockForRange(range);
+    if (range == null || block == null) return KeyEventResult.ignored;
+
+    final normalized = range.normalized();
+    if (!normalized.isCollapsed) {
+      return _replaceActiveEquationRangeWith(
+        replacement,
+        caretOffsetInReplacement: caretOffsetInReplacement,
+        label: label,
+      );
+    }
+
+    final caret = normalized.start.offset.clamp(0, block.text.length).toInt();
+    final model = OwnedEquationStructureModel.parse(block.text);
+    final containingEnvironment = model.environmentForOffset(
+      const <String>{
+        'matrix',
+        'pmatrix',
+        'bmatrix',
+        'vmatrix',
+        'Vmatrix',
+        'smallmatrix',
+        'aligned',
+        'alignedat',
+        'split',
+        'gathered',
+        'cases',
+      },
+      caret,
+    );
+
+    // Main structure buttons are beginner-facing authoring actions. If the
+    // caret currently happens to sit inside an existing matrix/aligned/cases
+    // environment, inserting another environment into that cell is almost never
+    // the intended action and produces broken-looking nested structures. Treat
+    // the containing environment as an atomic structure and insert the new
+    // structure after it. Structure-specific buttons (+ row, + col, + line,
+    // &=, + case) remain context-aware for documents with multiple arrays.
+    if (containingEnvironment != null &&
+        caret > containingEnvironment.beginStart &&
+        caret < containingEnvironment.endEnd) {
+      final insertionOffset = containingEnvironment.endEnd.clamp(0, block.text.length).toInt();
+      final prefix = _needsSpaceBeforeEquationInsertion(block.text, insertionOffset) ? ' ' : '';
+      final suffix = _needsSpaceAfterEquationInsertion(block.text, insertionOffset) ? ' ' : '';
+      final insertion = '$prefix$replacement$suffix';
+      return _insertInActiveEquationBlock(
+        insertionOffset,
+        insertion,
+        caretOffsetInInsertion: prefix.length + caretOffsetInReplacement,
+        label: label,
+      );
+    }
+
+    return _replaceActiveEquationRangeWith(
+      replacement,
+      caretOffsetInReplacement: caretOffsetInReplacement,
+      label: label,
+    );
+  }
+
+  bool _needsSpaceBeforeEquationInsertion(String source, int insertionOffset) {
+    if (insertionOffset <= 0 || insertionOffset > source.length) return false;
+    final previous = source[insertionOffset - 1];
+    return previous.trim().isNotEmpty && previous != '{' && previous != '[';
+  }
+
+  bool _needsSpaceAfterEquationInsertion(String source, int insertionOffset) {
+    if (insertionOffset < 0 || insertionOffset >= source.length) return false;
+    final next = source[insertionOffset];
+    return next.trim().isNotEmpty && next != '}' && next != ']';
   }
 
   KeyEventResult _insertEquationMatrixRow() {
@@ -2073,20 +2153,27 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
     if (block == null || !TextSystemEditorMarkedTextLayout.isDisplayEquationBlock(block)) return null;
     final source = block.text;
     final offset = position.offset.clamp(0, source.length).toInt();
-    final spans = _ownedEquationEnvironmentSpans(source)
-        .where((span) => supportedEnvironments.contains(span.environment))
-        .toList(growable: false);
-    if (spans.isEmpty) return null;
-    final containing = spans.where((span) => offset >= span.beginStart && offset <= span.endEnd).toList();
-    if (containing.isNotEmpty) {
-      containing.sort((a, b) => (a.endEnd - a.beginStart).compareTo(b.endEnd - b.beginStart));
-      return containing.first;
-    }
-    spans.sort((a, b) => a.beginStart.compareTo(b.beginStart));
-    return spans.first;
+    final model = OwnedEquationStructureModel.parse(source);
+    final environment = model.environmentForOffset(supportedEnvironments, offset);
+    if (environment == null) return null;
+    return _OwnedEquationEnvironmentSpan(
+      source: source,
+      environment: environment.environment,
+      beginStart: environment.beginStart,
+      contentStart: environment.contentStart,
+      contentEnd: environment.contentEnd,
+      endEnd: environment.endEnd,
+    );
   }
 
   List<List<String>> _equationEnvironmentCellTexts(_OwnedEquationEnvironmentSpan span) {
+    final structure = _equationEnvironmentStructureForSpan(span);
+    if (structure != null) {
+      return structure.rows
+          .map((row) => row.cells.map((cell) => cell.text.trim()).toList(growable: true))
+          .where((row) => row.isNotEmpty)
+          .toList(growable: true);
+    }
     final rows = _equationEnvironmentRows(span);
     if (rows.isEmpty) return <List<String>>[];
     return rows
@@ -2154,6 +2241,8 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
   }
 
   int _equationEnvironmentColumnCount(_OwnedEquationEnvironmentSpan span) {
+    final structure = _equationEnvironmentStructureForSpan(span);
+    if (structure != null) return structure.columnCount;
     final rows = _equationEnvironmentRows(span);
     if (rows.isEmpty) return 1;
     return rows.map((row) => _equationRowColumnCount(span.source, row)).fold<int>(1, (previous, value) => math.max(previous, value).toInt());
@@ -2169,11 +2258,17 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
   }
 
   List<_OwnedEquationRowSpan> _equationEnvironmentRows(_OwnedEquationEnvironmentSpan span) {
+    final structure = _equationEnvironmentStructureForSpan(span);
+    if (structure != null) {
+      return <_OwnedEquationRowSpan>[
+        for (final row in structure.rows) _OwnedEquationRowSpan(start: row.start, end: row.end),
+      ];
+    }
     final rows = <_OwnedEquationRowSpan>[];
     var rowStart = span.contentStart;
     var i = span.contentStart;
     while (i < span.contentEnd) {
-      if (i + 1 < span.contentEnd && span.source[i] == r'\'[0] && span.source[i + 1] == r'\'[0]) {
+      if (i + 1 < span.contentEnd && span.source.codeUnitAt(i) == 92 && span.source.codeUnitAt(i + 1) == 92) {
         rows.add(_OwnedEquationRowSpan(start: rowStart, end: i));
         i += 2;
         rowStart = i;
@@ -2183,6 +2278,20 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
     }
     rows.add(_OwnedEquationRowSpan(start: rowStart, end: span.contentEnd));
     return rows;
+  }
+
+  OwnedEquationEnvironmentStructure? _equationEnvironmentStructureForSpan(_OwnedEquationEnvironmentSpan span) {
+    final model = OwnedEquationStructureModel.parse(span.source);
+    for (final environment in model.environments) {
+      if (environment.environment == span.environment &&
+          environment.beginStart == span.beginStart &&
+          environment.contentStart == span.contentStart &&
+          environment.contentEnd == span.contentEnd &&
+          environment.endEnd == span.endEnd) {
+        return environment;
+      }
+    }
+    return null;
   }
 
   List<_OwnedEquationEnvironmentSpan> _ownedEquationEnvironmentSpans(String source) {
@@ -2264,11 +2373,8 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
     if (block == null || !TextSystemEditorMarkedTextLayout.isDisplayEquationBlock(block)) {
       return KeyEventResult.ignored;
     }
-    final slots = <int>[];
     final text = block.text;
-    for (var i = 0; i + 1 < text.length; i++) {
-      if (text[i] == '{' && text[i + 1] == '}') slots.add(i + 1);
-    }
+    final slots = OwnedEquationStructureModel.parse(text).slotOffsets();
     if (slots.isEmpty) return KeyEventResult.ignored;
     final current = position.offset.clamp(0, text.length).toInt();
     int target;
@@ -3162,6 +3268,24 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
       _focusNode.requestFocus();
       _inlineMathController.deactivate();
       _setKeyboardCaret(position);
+      widget.commandController?.scheduleStateRefresh();
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _selectEquationPreviewRange(TextSystemDocumentRange range) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final start = _clampedTextPosition(range.start);
+      final end = _clampedTextPosition(range.end);
+      if (start == null || end == null) return;
+      _focusNode.requestFocus();
+      _inlineMathController.deactivate();
+      _lastHit = null;
+      _selectionController.selectDocumentRange(
+        TextSystemDocumentRange(start: start, end: end),
+        source: TextSystemEditorSelectionSource.pointer,
+      );
       widget.commandController?.scheduleStateRefresh();
       if (mounted) setState(() {});
     });
@@ -4176,6 +4300,7 @@ class _OwnedDocumentPageView extends StatelessWidget {
     required this.onEquationJumpNextSlot,
     required this.onEquationJumpPreviousSlot,
     required this.onEquationPreviewSourceOffset,
+    required this.onEquationPreviewSourceRange,
     required this.onEquationStructureCellSelected,
     required this.onEquationToggleNumbering,
     required this.onEquationEditLabel,
@@ -4225,6 +4350,7 @@ class _OwnedDocumentPageView extends StatelessWidget {
   final VoidCallback onEquationJumpNextSlot;
   final VoidCallback onEquationJumpPreviousSlot;
   final ValueChanged<TextSystemDocumentPosition> onEquationPreviewSourceOffset;
+  final ValueChanged<TextSystemDocumentRange> onEquationPreviewSourceRange;
   final void Function(int rowIndex, int columnIndex) onEquationStructureCellSelected;
   final VoidCallback onEquationToggleNumbering;
   final VoidCallback onEquationEditLabel;
@@ -4352,6 +4478,7 @@ class _OwnedDocumentPageView extends StatelessWidget {
                             onEquationJumpNextSlot: onEquationJumpNextSlot,
                             onEquationJumpPreviousSlot: onEquationJumpPreviousSlot,
                             onEquationPreviewSourceOffset: onEquationPreviewSourceOffset,
+                            onEquationPreviewSourceRange: onEquationPreviewSourceRange,
                             onEquationStructureCellSelected: onEquationStructureCellSelected,
                             onEquationToggleNumbering: onEquationToggleNumbering,
                             onEquationEditLabel: onEquationEditLabel,
@@ -4557,6 +4684,7 @@ class _OwnedDocumentBlockFragmentView extends StatelessWidget {
     required this.onEquationJumpNextSlot,
     required this.onEquationJumpPreviousSlot,
     required this.onEquationPreviewSourceOffset,
+    required this.onEquationPreviewSourceRange,
     required this.onEquationStructureCellSelected,
     required this.onEquationToggleNumbering,
     required this.onEquationEditLabel,
@@ -4591,6 +4719,7 @@ class _OwnedDocumentBlockFragmentView extends StatelessWidget {
   final VoidCallback onEquationJumpNextSlot;
   final VoidCallback onEquationJumpPreviousSlot;
   final ValueChanged<TextSystemDocumentPosition> onEquationPreviewSourceOffset;
+  final ValueChanged<TextSystemDocumentRange> onEquationPreviewSourceRange;
   final void Function(int rowIndex, int columnIndex) onEquationStructureCellSelected;
   final VoidCallback onEquationToggleNumbering;
   final VoidCallback onEquationEditLabel;
@@ -4656,6 +4785,7 @@ class _OwnedDocumentBlockFragmentView extends StatelessWidget {
         onJumpNextSlot: onEquationJumpNextSlot,
         onJumpPreviousSlot: onEquationJumpPreviousSlot,
         onPreviewSourceOffset: onEquationPreviewSourceOffset,
+        onPreviewSourceRange: onEquationPreviewSourceRange,
         onStructureCellSelected: onEquationStructureCellSelected,
         onToggleNumbering: onEquationToggleNumbering,
         onEditLabel: onEquationEditLabel,
@@ -4702,6 +4832,7 @@ class _OwnedDisplayEquationFragment extends StatelessWidget {
     required this.onJumpNextSlot,
     required this.onJumpPreviousSlot,
     required this.onPreviewSourceOffset,
+    required this.onPreviewSourceRange,
     required this.onStructureCellSelected,
     required this.onToggleNumbering,
     required this.onEditLabel,
@@ -4734,6 +4865,7 @@ class _OwnedDisplayEquationFragment extends StatelessWidget {
   final VoidCallback onJumpNextSlot;
   final VoidCallback onJumpPreviousSlot;
   final ValueChanged<TextSystemDocumentPosition> onPreviewSourceOffset;
+  final ValueChanged<TextSystemDocumentRange> onPreviewSourceRange;
   final void Function(int rowIndex, int columnIndex) onStructureCellSelected;
   final VoidCallback onToggleNumbering;
   final VoidCallback onEditLabel;
@@ -4766,6 +4898,23 @@ class _OwnedDisplayEquationFragment extends StatelessWidget {
     final activeOffset = selectionState.selection?.focus.blockId == block.id && selectionState.selection?.focus.isTextOffset == true
         ? (selectionState.selection!.focus.offset - visible.layoutSourceStart).clamp(0, visible.visibleText.length).toInt()
         : null;
+    final activeRange = selectionState.range?.normalized();
+    final activeSourceRangeStart = activeRange != null &&
+            !activeRange.isCollapsed &&
+            activeRange.start.blockId == block.id &&
+            activeRange.end.blockId == block.id &&
+            activeRange.start.isTextOffset &&
+            activeRange.end.isTextOffset
+        ? (activeRange.start.offset - visible.layoutSourceStart).clamp(0, visible.visibleText.length).toInt()
+        : null;
+    final activeSourceRangeEnd = activeRange != null &&
+            !activeRange.isCollapsed &&
+            activeRange.start.blockId == block.id &&
+            activeRange.end.blockId == block.id &&
+            activeRange.start.isTextOffset &&
+            activeRange.end.isTextOffset
+        ? (activeRange.end.offset - visible.layoutSourceStart).clamp(0, visible.visibleText.length).toInt()
+        : null;
     final sourceEditor = OwnedEquationAuthoringSurface(
       sourceText: visible.visibleText,
       sourceSpan: TextSystemEditorMarkedTextLayout.textSpanForVisibleFragment(
@@ -4777,12 +4926,15 @@ class _OwnedDisplayEquationFragment extends StatelessWidget {
       sourceTextStyle: sourceStyle,
       previewTextStyle: style.copyWith(
         color: colorScheme.onSurface,
-        fontSize: (style.fontSize ?? 16) * 1.02,
-        fontWeight: FontWeight.w700,
-        height: 1.25,
+        fontSize: (style.fontSize ?? 16) * 1.00,
+        fontWeight: FontWeight.w400,
+        height: 1.20,
+        letterSpacing: 0,
       ),
       textScaler: MediaQuery.textScalerOf(context),
       activeSourceOffset: activeOffset,
+      activeSourceRangeStart: activeSourceRangeStart,
+      activeSourceRangeEnd: activeSourceRangeEnd,
       numbered: numbered,
       numberLabel: numberLabel,
       equationLabel: equationLabel,
@@ -4816,6 +4968,21 @@ class _OwnedDisplayEquationFragment extends StatelessWidget {
           blockIndex: fragment.blockIndex,
           offset: visible.layoutSourceStart + safeOffset,
         ));
+      },
+      onPreviewSourceRange: (localStart, localEnd) {
+        final safeStart = localStart.clamp(0, visible.visibleText.length).toInt();
+        final safeEnd = localEnd.clamp(safeStart, visible.visibleText.length).toInt();
+        final start = TextSystemDocumentPosition.text(
+          blockId: block.id,
+          blockIndex: fragment.blockIndex,
+          offset: visible.layoutSourceStart + safeStart,
+        );
+        final end = TextSystemDocumentPosition.text(
+          blockId: block.id,
+          blockIndex: fragment.blockIndex,
+          offset: visible.layoutSourceStart + safeEnd,
+        );
+        onPreviewSourceRange(TextSystemDocumentRange(start: start, end: end));
       },
       onStructureCellSelected: (_, rowIndex, columnIndex) =>
           onStructureCellSelected(rowIndex, columnIndex),
@@ -4905,29 +5072,37 @@ class _OwnedRenderedDisplayEquation extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     final mathTextStyle = style.copyWith(
       color: muted ? colorScheme.onSurfaceVariant.withValues(alpha: 0.72) : colorScheme.onSurface,
-      fontSize: (style.fontSize ?? 16) * 1.02,
-      fontWeight: FontWeight.w700,
-      height: 1.25,
+      fontSize: (style.fontSize ?? 16) * 1.00,
+      fontWeight: FontWeight.w400,
+      height: 1.20,
+      letterSpacing: 0,
     );
     return SizedBox.expand(
       child: Stack(
         alignment: Alignment.center,
         children: [
-          Center(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 2),
-              child: Math.tex(
-                _ownedDisplayEquationSourceFromRaw(source),
-                mathStyle: MathStyle.display,
-                textStyle: mathTextStyle,
-                onErrorFallback: (error) => Text(
-                  source,
-                  textAlign: TextAlign.center,
-                  style: mathTextStyle.copyWith(
-                    fontFamily: 'monospace',
-                    fontFamilyFallback: null,
-                    color: colorScheme.error,
+          Positioned.fill(
+            child: ClipRect(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.vertical,
+                child: Center(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 2),
+                    child: Math.tex(
+                      _ownedDisplayEquationSourceFromRaw(source),
+                      mathStyle: MathStyle.display,
+                      textStyle: mathTextStyle,
+                      onErrorFallback: (error) => Text(
+                        source,
+                        textAlign: TextAlign.center,
+                        style: mathTextStyle.copyWith(
+                          fontFamily: 'monospace',
+                          fontFamilyFallback: null,
+                          color: colorScheme.error,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),

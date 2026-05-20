@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import '../../../infrastructure/database/app_database.dart';
 import '../../notes/data/note_repository.dart';
 import '../../home/presentation/study_home_screen.dart';
 import '../../planning/data/study_planning_repository.dart';
+import '../../planning/domain/study_material_source.dart';
 import '../../planning/presentation/dev_todo_drawer.dart';
 import '../../planning/presentation/document_workspace_screen.dart';
 import '../../planning/presentation/project_quick_access_sheet.dart';
@@ -17,6 +19,10 @@ import '../../planning/presentation/session_handoff_dialog.dart';
 import '../../planning/presentation/workspace_document_editor_screen.dart';
 import '../../settings/data/app_settings_controller.dart';
 import '../../settings/presentation/settings_screen.dart';
+import '../../reader/domain/source_reader_workspace_layout.dart';
+import '../../reader/presentation/source_reader_split_layout.dart';
+import '../../reader/presentation/source_reader_workspace_selector.dart';
+import '../../library/data/pdf_metadata_extractor.dart';
 import '../data/pdf_reader_session_state_store.dart';
 import '../domain/pdf_viewport_state.dart';
 import 'pdf_hover_highlight_overlay.dart';
@@ -29,8 +35,6 @@ import 'pdf_sidecar_notes_canvas.dart';
 import 'sidecar/note_creation_type.dart';
 import 'sidecar/sidecar_external_create_request.dart';
 import 'sidecar/sidecar_reveal_note_request.dart';
-
-enum PdfReaderWorkspaceLayout { reader, sidecar, document, workspaceDocument, synthesis }
 
 class PdfReaderScreen extends StatefulWidget {
   final AppDatabase database;
@@ -115,7 +119,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   double _pdfPaneFraction = 0.5;
 
-  PdfReaderWorkspaceLayout _workspaceLayout = PdfReaderWorkspaceLayout.sidecar;
+  SourceReaderWorkspaceLayout _workspaceLayout = SourceReaderWorkspaceLayout.sidecar;
   String? _activeWorkspaceDocumentId;
   PdfReaderTool _activeTool = PdfReaderTool.cursor;
   int _activeHighlightColorValue = kDefaultPdfHighlightColorValue;
@@ -337,8 +341,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
     final sidecarNoteId = widget.initialSidecarNoteId?.trim();
     if (sidecarNoteId != null && sidecarNoteId.isNotEmpty) {
-      if (_workspaceLayout != PdfReaderWorkspaceLayout.sidecar) {
-        setState(() => _workspaceLayout = PdfReaderWorkspaceLayout.sidecar);
+      if (_workspaceLayout != SourceReaderWorkspaceLayout.sidecar) {
+        setState(() => _workspaceLayout = SourceReaderWorkspaceLayout.sidecar);
       }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -497,10 +501,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   void _openNotesOutlineSearch() {
-    if (_workspaceLayout != PdfReaderWorkspaceLayout.sidecar &&
-        _workspaceLayout != PdfReaderWorkspaceLayout.synthesis) {
+    if (_workspaceLayout != SourceReaderWorkspaceLayout.sidecar &&
+        _workspaceLayout != SourceReaderWorkspaceLayout.synthesis) {
       setState(() {
-        _workspaceLayout = PdfReaderWorkspaceLayout.sidecar;
+        _workspaceLayout = SourceReaderWorkspaceLayout.sidecar;
       });
     }
 
@@ -896,9 +900,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       return;
     }
 
-    if (_workspaceLayout != PdfReaderWorkspaceLayout.synthesis) {
+    if (_workspaceLayout != SourceReaderWorkspaceLayout.synthesis) {
       setState(() {
-        _workspaceLayout = PdfReaderWorkspaceLayout.document;
+        _workspaceLayout = SourceReaderWorkspaceLayout.document;
       });
     }
 
@@ -1337,6 +1341,31 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       context: context,
       planningRepository: _planningRepository,
       sourceLabel: widget.title,
+      database: widget.database,
+      initialMaterialSource: await _currentPdfMaterialSource(),
+    );
+  }
+
+  Future<StudyMaterialSource> _currentPdfMaterialSource() async {
+    int? pageCount;
+    try {
+      final file = File(widget.filePath);
+      if (await file.exists()) {
+        pageCount = (await PdfMetadataExtractor().extract(file)).pageCount;
+      }
+    } catch (_) {
+      pageCount = null;
+    }
+
+    return StudyMaterialSource(
+      type: StudyMaterialSourceType.currentFile,
+      title: widget.title,
+      libraryDocumentId: widget.documentId,
+      filePath: widget.filePath,
+      pageCount: pageCount,
+      startPage: pageCount == null ? null : 1,
+      endPage: pageCount,
+      notes: pageCount == null ? null : '$pageCount PDF pages detected',
     );
   }
 
@@ -1605,70 +1634,25 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   Widget _buildWorkspaceSelector() {
-    final theme = Theme.of(context);
+    return SourceReaderWorkspaceSelector(
+      selected: _workspaceLayout,
+      readerIcon: Icons.picture_as_pdf_outlined,
+      onChanged: (layout) {
+        setState(() {
+          _workspaceLayout = layout;
+        });
 
-    return Material(
-      color: theme.colorScheme.surface,
-      elevation: 1,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-        child: Row(
-          children: [
-            Expanded(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: SegmentedButton<PdfReaderWorkspaceLayout>(
-                  segments: const [
-                    ButtonSegment<PdfReaderWorkspaceLayout>(
-                      value: PdfReaderWorkspaceLayout.reader,
-                      icon: Icon(Icons.picture_as_pdf_outlined),
-                      label: Text('Reader'),
-                    ),
-                    ButtonSegment<PdfReaderWorkspaceLayout>(
-                      value: PdfReaderWorkspaceLayout.sidecar,
-                      icon: Icon(Icons.view_sidebar_outlined),
-                      label: Text('Sidecar'),
-                    ),
-                    ButtonSegment<PdfReaderWorkspaceLayout>(
-                      value: PdfReaderWorkspaceLayout.document,
-                      icon: Icon(Icons.article_outlined),
-                      label: Text('Document'),
-                    ),
-                    ButtonSegment<PdfReaderWorkspaceLayout>(
-                      value: PdfReaderWorkspaceLayout.workspaceDocument,
-                      icon: Icon(Icons.edit_document),
-                      label: Text('Writing'),
-                    ),
-                    ButtonSegment<PdfReaderWorkspaceLayout>(
-                      value: PdfReaderWorkspaceLayout.synthesis,
-                      icon: Icon(Icons.view_column_outlined),
-                      label: Text('Synthesis'),
-                    ),
-                  ],
-                  selected: {_workspaceLayout},
-                  onSelectionChanged: (selection) {
-                    setState(() {
-                      _workspaceLayout = selection.first;
-                    });
+        _scheduleReaderSessionSave();
 
-                    _scheduleReaderSessionSave();
-
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (!mounted) return;
-                      _publishViewportState();
-                    });
-                  },
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            FilledButton.tonalIcon(
-              onPressed: () => _openProjectsPanel(context),
-              icon: const Icon(Icons.dashboard_customize_outlined),
-              label: const Text('Projects'),
-            ),
-          ],
-        ),
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _publishViewportState();
+        });
+      },
+      trailing: FilledButton.tonalIcon(
+        onPressed: () => _openProjectsPanel(context),
+        icon: const Icon(Icons.dashboard_customize_outlined),
+        label: const Text('Projects'),
       ),
     );
   }
@@ -1785,7 +1769,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     if (!mounted) return;
     setState(() {
       _activeWorkspaceDocumentId = document.id;
-      _workspaceLayout = PdfReaderWorkspaceLayout.workspaceDocument;
+      _workspaceLayout = SourceReaderWorkspaceLayout.workspaceDocument;
     });
   }
 
@@ -1850,87 +1834,53 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   Widget _buildWorkspaceBody() {
     return switch (_workspaceLayout) {
-      PdfReaderWorkspaceLayout.reader => _buildPdfPane(),
-      PdfReaderWorkspaceLayout.sidecar => _buildTwoPaneBody(
+      SourceReaderWorkspaceLayout.reader => _buildPdfPane(),
+      SourceReaderWorkspaceLayout.sidecar => _buildTwoPaneBody(
         notesPaneBuilder: _buildSidecarPane,
       ),
-      PdfReaderWorkspaceLayout.document => _buildTwoPaneBody(
+      SourceReaderWorkspaceLayout.document => _buildTwoPaneBody(
         notesPaneBuilder: _buildDocumentPane,
       ),
-      PdfReaderWorkspaceLayout.workspaceDocument => _buildTwoPaneBody(
+      SourceReaderWorkspaceLayout.workspaceDocument => _buildTwoPaneBody(
         notesPaneBuilder: _buildWorkspaceDocumentPane,
       ),
-      PdfReaderWorkspaceLayout.synthesis => _buildSynthesisBody(),
+      SourceReaderWorkspaceLayout.synthesis => _buildSynthesisBody(),
     };
   }
 
   Widget _buildTwoPaneBody({required Widget Function() notesPaneBuilder}) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final totalWidth = constraints.maxWidth;
-
-        if (totalWidth < (_minPaneWidth * 2 + _dividerWidth)) {
-          return _buildPdfPane();
-        }
-
-        final availableWidth = totalWidth - _dividerWidth;
-
-        final minFraction = _minPaneWidth / availableWidth;
-        final maxFraction = 1.0 - (_minPaneWidth / availableWidth);
-
-        final safePdfPaneFraction = _pdfPaneFraction
-            .clamp(minFraction, maxFraction)
-            .toDouble();
-
-        final pdfPaneWidth = availableWidth * safePdfPaneFraction;
-        final notesPaneWidth = availableWidth - pdfPaneWidth;
-
-        return Row(
-          children: [
-            SizedBox(width: pdfPaneWidth, child: _buildPdfPane()),
-            _buildVerticalDivider(
-              onDragUpdate: (details) {
-                setState(() {
-                  final newPdfWidth = pdfPaneWidth + details.delta.dx;
-
-                  _pdfPaneFraction = (newPdfWidth / availableWidth)
-                      .clamp(minFraction, maxFraction)
-                      .toDouble();
-                });
-
-                _scheduleReaderSessionSave();
-
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  _publishViewportState();
-                });
-              },
-            ),
-            SizedBox(width: notesPaneWidth, child: notesPaneBuilder()),
-          ],
-        );
+    return SourceReaderTwoPaneLayout(
+      readerBuilder: _buildPdfPane,
+      paneBuilder: notesPaneBuilder,
+      paneFraction: _pdfPaneFraction,
+      minPaneWidth: _minPaneWidth,
+      dividerWidth: _dividerWidth,
+      onPaneFractionChanged: (fraction) {
+        setState(() => _pdfPaneFraction = fraction);
+        _scheduleReaderSessionSave();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _publishViewportState();
+        });
+      },
+      onPaneFractionChangeCommitted: () {
+        _scheduleReaderSessionSave();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _publishViewportState();
+        });
       },
     );
   }
 
   Widget _buildSynthesisBody() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final totalWidth = constraints.maxWidth;
-
-        if (totalWidth < (_minPaneWidth * 3 + _dividerWidth * 2)) {
-          return _buildTwoPaneBody(notesPaneBuilder: _buildDocumentPane);
-        }
-
-        return Row(
-          children: [
-            Expanded(flex: 5, child: _buildPdfPane()),
-            _buildVerticalDivider(),
-            Expanded(flex: 3, child: _buildSidecarPane()),
-            _buildVerticalDivider(),
-            Expanded(flex: 4, child: _buildDocumentPane()),
-          ],
-        );
-      },
+    return SourceReaderSynthesisLayout(
+      readerBuilder: _buildPdfPane,
+      sidecarBuilder: _buildSidecarPane,
+      synthesisBuilder: _buildDocumentPane,
+      fallbackBuilder: () => _buildTwoPaneBody(notesPaneBuilder: _buildDocumentPane),
+      minPaneWidth: _minPaneWidth,
+      dividerWidth: _dividerWidth,
     );
   }
 

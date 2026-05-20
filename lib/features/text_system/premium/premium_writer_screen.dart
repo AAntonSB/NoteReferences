@@ -7,7 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../../infrastructure/database/app_database.dart';
 import '../../notes/data/note_repository.dart';
-import '../../pdf_reader/presentation/pdf_reader_screen.dart';
+import '../../reader/presentation/reader_screen.dart';
 import '../../planning/data/study_planning_repository.dart';
 import '../fluent/fluent_document_command_controller.dart';
 import '../commands/text_system_writer_command_registry.dart';
@@ -444,7 +444,7 @@ class _PremiumWriterScreenState extends State<PremiumWriterScreen> {
 
       await Navigator.of(context).push<void>(
         MaterialPageRoute(
-          builder: (_) => PdfReaderScreen(
+          builder: (_) => ReaderScreen.pdf(
             database: database,
             documentId: document!.documentId,
             filePath: document!.filePath,

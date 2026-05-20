@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../../infrastructure/database/app_database.dart';
 import '../data/study_planning_repository.dart';
-import 'create_study_plan_screen.dart';
+import 'planning_create_hub_screen.dart';
 import 'dev_todo_drawer.dart';
 import 'create_workspace_document_screen.dart';
 import 'session_handoff_dialog.dart';
@@ -12,11 +13,13 @@ enum _HandoffAction { convertToTodo, delete }
 class ProjectPlanningScreen extends StatefulWidget {
   final StudyPlanningRepository planningRepository;
   final String projectId;
+  final AppDatabase? database;
 
   const ProjectPlanningScreen({
     super.key,
     required this.planningRepository,
     required this.projectId,
+    this.database,
   });
 
   @override
@@ -69,7 +72,7 @@ class _ProjectPlanningScreenState extends State<ProjectPlanningScreen> {
                 child: FilledButton.tonalIcon(
                   onPressed: () => _addPlan(project),
                   icon: const Icon(Icons.add_rounded),
-                  label: const Text('Add plan'),
+                  label: const Text('Plan work'),
                 ),
               ),
             ],
@@ -94,7 +97,7 @@ class _ProjectPlanningScreenState extends State<ProjectPlanningScreen> {
               ),
               const SizedBox(height: 16),
               Text(
-                'Plans and tasks',
+                'Planned work',
                 style: theme.textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.w900,
                 ),
@@ -188,11 +191,12 @@ class _ProjectPlanningScreenState extends State<ProjectPlanningScreen> {
   }
 
   Future<void> _addPlan(StudyProject project) async {
-    await Navigator.of(context).push<StudyPlan>(
+    await Navigator.of(context).push<Object?>(
       MaterialPageRoute(
-        builder: (_) => CreateStudyPlanScreen(
+        builder: (_) => PlanningCreateHubScreen(
           planningRepository: widget.planningRepository,
-          project: project,
+          initialProject: project,
+          database: widget.database,
         ),
       ),
     );
@@ -861,7 +865,7 @@ class _EmptyPlansCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            'Add a plan, repeating daily work, a single task, a deadline, or a checklist. The calendar will then show the exact requirements.',
+            'Choose what you want to do: finish work by a date, add a task, mark a deadline, build a routine, or plan a checklist.',
             textAlign: TextAlign.center,
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
@@ -872,7 +876,7 @@ class _EmptyPlansCard extends StatelessWidget {
           FilledButton.icon(
             onPressed: onAddPlan,
             icon: const Icon(Icons.add_rounded),
-            label: const Text('Add plan'),
+            label: const Text('Plan work'),
           ),
         ],
       ),

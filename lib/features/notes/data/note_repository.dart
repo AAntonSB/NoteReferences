@@ -411,6 +411,16 @@ const String kTodoSourcePdfTextSelection = 'pdfTextSelection';
 const String kTodoSourcePdfFreeform = 'pdfFreeform';
 const String kTodoSourceSidecarNote = 'sidecarNote';
 const String kTodoSourceDocumentNote = 'documentNote';
+const String kReaderAnchorTypeDocument = 'readerDocument';
+const String kReaderAnchorTypeEpubSection = 'readerEpubSection';
+const String kReaderAnchorTypeEpubParagraph = 'readerEpubParagraph';
+const String kReaderTodoSource = 'readerAnchor';
+const List<String> kReaderAnchorTypes = <String>[
+  kReaderAnchorTypeDocument,
+  kReaderAnchorTypeEpubSection,
+  kReaderAnchorTypeEpubParagraph,
+];
+
 const String kTodoPriorityLow = 'low';
 const String kTodoPriorityMedium = 'medium';
 const String kTodoPriorityHigh = 'high';
@@ -901,6 +911,130 @@ class NoteRepository {
     });
   }
 
+  Stream<List<NoteWithAnchor>> watchReaderAnchoredNotesForDocument({
+    required String documentId,
+  }) {
+    final query = database.select(database.noteAnchors).join([
+      innerJoin(
+        database.notes,
+        database.notes.id.equalsExp(database.noteAnchors.noteId),
+      ),
+      leftOuterJoin(
+        database.noteBlocks,
+        database.noteBlocks.noteId.equalsExp(database.notes.id),
+      ),
+    ]);
+
+    query.where(
+      database.noteAnchors.documentId.equals(documentId) &
+          database.noteAnchors.anchorType.isIn(kReaderAnchorTypes) &
+          database.notes.isArchived.equals(false),
+    );
+
+    query.orderBy([
+      OrderingTerm.asc(database.noteAnchors.createdAt),
+      OrderingTerm.asc(database.noteBlocks.sortOrder),
+    ]);
+
+    return query.watch().map((rows) {
+      final itemsByNoteId = <String, NoteWithAnchor>{};
+
+      for (final row in rows) {
+        final anchor = row.readTable(database.noteAnchors);
+        final note = row.readTable(database.notes);
+        final block = row.readTableOrNull(database.noteBlocks);
+
+        itemsByNoteId.putIfAbsent(
+          note.id,
+          () => NoteWithAnchor(
+            anchor: anchor,
+            note: note,
+            firstBlock: block,
+          ),
+        );
+      }
+
+      return itemsByNoteId.values.toList();
+    });
+  }
+
+  Future<NoteWithAnchor> createReaderAnchoredTextNote({
+    required String documentId,
+    required String anchorType,
+    required String geometryJson,
+    String? title,
+    String? body,
+    String? selectedText,
+    String noteType = 'note',
+  }) async {
+    final normalizedAnchorType = kReaderAnchorTypes.contains(anchorType)
+        ? anchorType
+        : kReaderAnchorTypeDocument;
+    final normalizedNoteType = _normalizeNoteType(noteType);
+    final now = DateTime.now();
+    final noteId = _uuid.v4();
+    final blockId = _uuid.v4();
+    final anchorId = _uuid.v4();
+    final cleanBody = body?.trim() ?? '';
+    final sourceTitle = _cleanOptionalText(selectedText) ?? _cleanOptionalText(cleanBody);
+    final cleanTitle = _cleanOptionalText(title) ??
+        (sourceTitle == null ? 'Reader note' : _shortenTodoTitle(sourceTitle));
+
+    await database.transaction(() async {
+      await database
+          .into(database.notes)
+          .insert(
+            NotesCompanion.insert(
+              id: noteId,
+              documentId: Value(documentId),
+              title: Value(cleanTitle),
+              noteType: Value(normalizedNoteType),
+              createdAt: now,
+              updatedAt: now,
+            ),
+          );
+
+      await database
+          .into(database.noteBlocks)
+          .insert(
+            NoteBlocksCompanion.insert(
+              id: blockId,
+              noteId: noteId,
+              blockType: Value(normalizedNoteType == kTodoNoteType ? kTodoBlockType : 'text'),
+              contentText: Value(cleanBody),
+              contentJson: normalizedNoteType == kTodoNoteType
+                  ? Value(
+                      jsonEncode({
+                        'sourceType': kReaderTodoSource,
+                        'priority': kTodoPriorityMedium,
+                        'isCompleted': false,
+                      }),
+                    )
+                  : const Value.absent(),
+              sortOrder: const Value(0),
+              createdAt: now,
+              updatedAt: now,
+            ),
+          );
+
+      await database
+          .into(database.noteAnchors)
+          .insert(
+            NoteAnchorsCompanion.insert(
+              id: anchorId,
+              noteId: noteId,
+              documentId: Value(documentId),
+              anchorType: normalizedAnchorType,
+              selectedText: Value(_cleanOptionalText(selectedText)),
+              geometryJson: Value(geometryJson),
+              createdAt: now,
+            ),
+          );
+    });
+
+    return _getReaderAnchoredNote(noteId);
+  }
+
   Stream<List<PdfLinkedHighlightRegion>>
   watchPersistentHighlightRegionsForDocument({required String documentId}) {
     final query = database.select(database.noteAnchors).join([
@@ -1362,6 +1496,61 @@ class NoteRepository {
     );
   }
 
+  Future<void> moveReaderSidecarNote({
+    required String anchorId,
+    required int spineIndex,
+    String? href,
+    String? sectionTitle,
+    int? paragraphIndex,
+    required double x,
+    required double y,
+    required double width,
+  }) async {
+    final existingAnchor = await (database.select(
+      database.noteAnchors,
+    )..where((table) => table.id.equals(anchorId))).getSingleOrNull();
+
+    if (existingAnchor == null) {
+      return;
+    }
+
+    final geometry = _decodeGeometry(existingAnchor.geometryJson);
+
+    geometry['placementType'] = 'epubSidecar';
+    geometry['spineIndex'] = spineIndex < 0 ? 0 : spineIndex;
+    if (href != null && href.trim().isNotEmpty) {
+      geometry['href'] = href.trim();
+    }
+    if (sectionTitle != null && sectionTitle.trim().isNotEmpty) {
+      geometry['sectionTitle'] = sectionTitle.trim();
+    }
+    if (paragraphIndex != null && paragraphIndex >= 0) {
+      geometry['paragraphIndex'] = paragraphIndex;
+    }
+    geometry['x'] = x.clamp(0.0, 1.0).toDouble();
+    geometry['y'] = y.clamp(0.0, 1.0).toDouble();
+    geometry['width'] = width.clamp(0.18, 1.0).toDouble();
+
+    final rawAnchor = geometry['readerAnchor'];
+    if (rawAnchor is Map) {
+      rawAnchor['epubSpineIndex'] = geometry['spineIndex'];
+      rawAnchor['epubHref'] = geometry['href'];
+      rawAnchor['sectionTitle'] = geometry['sectionTitle'];
+      rawAnchor['paragraphIndex'] = geometry['paragraphIndex'];
+      geometry['readerAnchor'] = rawAnchor;
+    }
+
+    await (database.update(
+      database.noteAnchors,
+    )..where((table) => table.id.equals(anchorId))).write(
+      NoteAnchorsCompanion(geometryJson: Value(jsonEncode(geometry))),
+    );
+
+    await (database.update(database.notes)
+          ..where((table) => table.id.equals(existingAnchor.noteId)))
+        .write(NotesCompanion(updatedAt: Value(DateTime.now())));
+  }
+
   Future<void> archiveNote(String noteId) async {
     await (database.update(
       database.notes,
@@ -1425,6 +1614,33 @@ class NoteRepository {
           .where((note) => note.sidecarPlacement.pageNumber == pageNumber)
           .toList();
     });
+  }
+
+  Future<NoteWithAnchor> _getReaderAnchoredNote(String noteId) async {
+    final query = database.select(database.noteAnchors).join([
+      innerJoin(
+        database.notes,
+        database.notes.id.equalsExp(database.noteAnchors.noteId),
+      ),
+      leftOuterJoin(
+        database.noteBlocks,
+        database.noteBlocks.noteId.equalsExp(database.notes.id),
+      ),
+    ]);
+
+    query.where(
+      database.noteAnchors.noteId.equals(noteId) &
+          database.noteAnchors.anchorType.isIn(kReaderAnchorTypes) &
+          database.notes.isArchived.equals(false),
+    );
+
+    final row = await query.getSingle();
+
+    return NoteWithAnchor(
+      anchor: row.readTable(database.noteAnchors),
+      note: row.readTable(database.notes),
+      firstBlock: row.readTableOrNull(database.noteBlocks),
+    );
   }
 
   Future<NoteWithAnchor> _getSidecarNote(String noteId) async {

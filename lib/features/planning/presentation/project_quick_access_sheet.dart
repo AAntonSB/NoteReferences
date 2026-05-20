@@ -1,14 +1,20 @@
 import 'package:flutter/material.dart';
 
+import '../../../infrastructure/database/app_database.dart';
 import '../data/study_planning_repository.dart';
+import '../domain/planning_intent.dart';
+import '../domain/study_material_source.dart';
 import 'create_project_screen.dart';
 import 'project_planning_screen.dart';
 import 'session_handoff_dialog.dart';
+import 'work_composer_screen.dart';
 
 Future<void> showProjectQuickAccessSheet({
   required BuildContext context,
   required StudyPlanningRepository planningRepository,
   String? sourceLabel,
+  AppDatabase? database,
+  StudyMaterialSource? initialMaterialSource,
 }) async {
   await showModalBottomSheet<void>(
     context: context,
@@ -18,6 +24,8 @@ Future<void> showProjectQuickAccessSheet({
     builder: (sheetContext) => _ProjectQuickAccessSheet(
       planningRepository: planningRepository,
       sourceLabel: sourceLabel,
+      database: database,
+      initialMaterialSource: initialMaterialSource,
     ),
   );
 }
@@ -25,10 +33,14 @@ Future<void> showProjectQuickAccessSheet({
 class _ProjectQuickAccessSheet extends StatefulWidget {
   final StudyPlanningRepository planningRepository;
   final String? sourceLabel;
+  final AppDatabase? database;
+  final StudyMaterialSource? initialMaterialSource;
 
   const _ProjectQuickAccessSheet({
     required this.planningRepository,
     required this.sourceLabel,
+    required this.database,
+    required this.initialMaterialSource,
   });
 
   @override
@@ -106,6 +118,9 @@ class _ProjectQuickAccessSheetState extends State<_ProjectQuickAccessSheet> {
                                           .length,
                                       onOpen: () => _openProject(project),
                                       onEndSession: () => _captureSession(project),
+                                      onPlanSource: widget.initialMaterialSource == null
+                                          ? null
+                                          : () => _planCurrentSource(project),
                                     ),
                                     const SizedBox(height: 10),
                                   ],
@@ -157,6 +172,8 @@ class _ProjectQuickAccessSheetState extends State<_ProjectQuickAccessSheet> {
         builder: (_) => CreateProjectScreen(
           planningRepository: widget.planningRepository,
           openPlanAfterCreate: true,
+          database: widget.database,
+          initialMaterialSource: widget.initialMaterialSource,
         ),
       ),
     );
@@ -170,6 +187,25 @@ class _ProjectQuickAccessSheetState extends State<_ProjectQuickAccessSheet> {
         builder: (_) => ProjectPlanningScreen(
           planningRepository: widget.planningRepository,
           projectId: project.id,
+          database: widget.database,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _planCurrentSource(StudyProject project) async {
+    final source = widget.initialMaterialSource;
+    if (source == null) return;
+    final navigator = Navigator.of(context);
+    navigator.pop();
+    await navigator.push<StudyPlan>(
+      MaterialPageRoute(
+        builder: (_) => WorkComposerScreen(
+          planningRepository: widget.planningRepository,
+          project: project,
+          initialIntent: PlanningIntentType.studyMaterial,
+          database: widget.database,
+          initialMaterialSource: source,
         ),
       ),
     );
@@ -326,6 +362,7 @@ class _ProjectAccessCard extends StatelessWidget {
   final int nextSessionCount;
   final VoidCallback onOpen;
   final VoidCallback onEndSession;
+  final VoidCallback? onPlanSource;
 
   const _ProjectAccessCard({
     required this.project,
@@ -333,6 +370,7 @@ class _ProjectAccessCard extends StatelessWidget {
     required this.nextSessionCount,
     required this.onOpen,
     required this.onEndSession,
+    this.onPlanSource,
   });
 
   @override
@@ -392,6 +430,14 @@ class _ProjectAccessCard extends StatelessWidget {
               onPressed: onEndSession,
               icon: const Icon(Icons.next_plan_rounded),
             ),
+            if (onPlanSource != null) ...[
+              const SizedBox(width: 8),
+              FilledButton.tonalIcon(
+                onPressed: onPlanSource,
+                icon: const Icon(Icons.picture_as_pdf_rounded),
+                label: const Text('Plan PDF'),
+              ),
+            ],
             FilledButton.tonal(
               onPressed: onOpen,
               child: const Text('Open'),

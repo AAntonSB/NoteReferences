@@ -103,6 +103,165 @@ class OwnedEquationStructureModel {
     return sorted;
   }
 
+
+  List<OwnedEquationSubexpressionTarget> visualTargets({
+    int? activeOffset,
+    int limit = 10,
+  }) {
+    final targets = <OwnedEquationSubexpressionTarget>[];
+
+    void addTarget({
+      required String label,
+      required String tooltip,
+      required OwnedEquationStructureNode node,
+      required int depth,
+      int? targetOffset,
+      int? contentStart,
+      int? contentEnd,
+    }) {
+      final safeSourceStart = node.sourceStart.clamp(0, rawSource.length).toInt();
+      final safeSourceEnd = node.sourceEnd.clamp(safeSourceStart, rawSource.length).toInt();
+      final safeContentStart = (contentStart ?? node.contentStart ?? safeSourceStart)
+          .clamp(0, rawSource.length)
+          .toInt();
+      final safeContentEnd = (contentEnd ?? node.contentEnd ?? safeSourceEnd)
+          .clamp(safeContentStart, rawSource.length)
+          .toInt();
+      final safeTargetOffset = (targetOffset ?? safeContentStart).clamp(0, rawSource.length).toInt();
+      targets.add(OwnedEquationSubexpressionTarget(
+        label: label,
+        tooltip: tooltip,
+        sourceStart: safeSourceStart,
+        sourceEnd: safeSourceEnd,
+        contentStart: safeContentStart,
+        contentEnd: safeContentEnd,
+        targetOffset: safeTargetOffset,
+        depth: depth,
+        kind: node.kind,
+      ));
+    }
+
+    String snippet(int start, int end, {int maxLength = 9}) {
+      final safeStart = start.clamp(0, rawSource.length).toInt();
+      final safeEnd = end.clamp(safeStart, rawSource.length).toInt();
+      final compact = rawSource
+          .substring(safeStart, safeEnd)
+          .trim()
+          .replaceAll(RegExp(r'\s+'), ' ');
+      if (compact.isEmpty) return '□';
+      if (compact.length <= maxLength) return compact;
+      return '${compact.substring(0, math.max(1, maxLength - 1))}…';
+    }
+
+    void visit(OwnedEquationStructureNode node, int depth) {
+      switch (node.kind) {
+        case OwnedEquationStructureKind.fraction:
+          addTarget(
+            label: r'\frac',
+            tooltip: 'Jump to fraction',
+            node: node,
+            depth: depth,
+            targetOffset: node.contentStart,
+          );
+          if (node.children.isNotEmpty) {
+            final numerator = node.children.first;
+            addTarget(
+              label: 'num ${snippet(numerator.contentStart ?? numerator.sourceStart, numerator.contentEnd ?? numerator.sourceEnd)}',
+              tooltip: 'Jump to numerator',
+              node: numerator,
+              depth: depth + 1,
+              targetOffset: numerator.contentStart,
+            );
+          }
+          if (node.children.length > 1) {
+            final denominator = node.children[1];
+            addTarget(
+              label: 'den ${snippet(denominator.contentStart ?? denominator.sourceStart, denominator.contentEnd ?? denominator.sourceEnd)}',
+              tooltip: 'Jump to denominator',
+              node: denominator,
+              depth: depth + 1,
+              targetOffset: denominator.contentStart,
+            );
+          }
+          break;
+        case OwnedEquationStructureKind.squareRoot:
+          addTarget(
+            label: r'√',
+            tooltip: 'Jump to square-root radicand',
+            node: node,
+            depth: depth,
+            targetOffset: node.contentStart,
+          );
+          break;
+        case OwnedEquationStructureKind.superscript:
+          addTarget(
+            label: '^${snippet(node.contentStart ?? node.sourceStart, node.contentEnd ?? node.sourceEnd, maxLength: 7)}',
+            tooltip: 'Jump to superscript',
+            node: node,
+            depth: depth,
+            targetOffset: node.contentStart,
+          );
+          break;
+        case OwnedEquationStructureKind.subscript:
+          addTarget(
+            label: '_${snippet(node.contentStart ?? node.sourceStart, node.contentEnd ?? node.sourceEnd, maxLength: 7)}',
+            tooltip: 'Jump to subscript',
+            node: node,
+            depth: depth,
+            targetOffset: node.contentStart,
+          );
+          break;
+        case OwnedEquationStructureKind.textCommand:
+          addTarget(
+            label: node.command == null ? 'text' : '\\${node.command}',
+            tooltip: 'Jump to text/math style group',
+            node: node,
+            depth: depth,
+            targetOffset: node.contentStart,
+          );
+          break;
+        case OwnedEquationStructureKind.environment:
+          addTarget(
+            label: node.environment ?? 'env',
+            tooltip: 'Jump to ${node.environment ?? 'environment'}',
+            node: node,
+            depth: depth,
+            targetOffset: node.contentStart,
+          );
+          break;
+        case OwnedEquationStructureKind.root:
+        case OwnedEquationStructureKind.group:
+        case OwnedEquationStructureKind.command:
+        case OwnedEquationStructureKind.textRun:
+        case OwnedEquationStructureKind.operatorToken:
+        case OwnedEquationStructureKind.symbol:
+          break;
+      }
+
+      for (final child in node.children) {
+        visit(child, depth + 1);
+      }
+    }
+
+    visit(root, 0);
+    if (targets.isEmpty) return const <OwnedEquationSubexpressionTarget>[];
+
+    final offset = activeOffset?.clamp(0, rawSource.length).toInt();
+    targets.sort((a, b) {
+      if (offset != null) {
+        final aContains = a.containsOffset(offset);
+        final bContains = b.containsOffset(offset);
+        if (aContains != bContains) return aContains ? -1 : 1;
+      }
+      final startComparison = a.sourceStart.compareTo(b.sourceStart);
+      if (startComparison != 0) return startComparison;
+      return b.depth.compareTo(a.depth);
+    });
+    return List<OwnedEquationSubexpressionTarget>.unmodifiable(
+      targets.take(math.max(0, limit)).toList(growable: false),
+    );
+  }
+
   static _EquationDisplayDelimiter? _displayDelimiterFor(String raw) {
     final value = raw.trim();
     if (value.isEmpty) return null;
@@ -165,6 +324,36 @@ class OwnedEquationStructureNode {
       if (nested != null) return nested;
     }
     return this;
+  }
+}
+
+
+class OwnedEquationSubexpressionTarget {
+  const OwnedEquationSubexpressionTarget({
+    required this.label,
+    required this.tooltip,
+    required this.sourceStart,
+    required this.sourceEnd,
+    required this.contentStart,
+    required this.contentEnd,
+    required this.targetOffset,
+    required this.depth,
+    required this.kind,
+  });
+
+  final String label;
+  final String tooltip;
+  final int sourceStart;
+  final int sourceEnd;
+  final int contentStart;
+  final int contentEnd;
+  final int targetOffset;
+  final int depth;
+  final OwnedEquationStructureKind kind;
+
+  bool containsOffset(int? offset) {
+    if (offset == null) return false;
+    return offset >= sourceStart && offset <= sourceEnd;
   }
 }
 

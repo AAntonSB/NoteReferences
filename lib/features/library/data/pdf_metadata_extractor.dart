@@ -9,6 +9,7 @@ class ExtractedPdfMetadata {
   final String? keywords;
   final DateTime? creationDate;
   final DateTime? modificationDate;
+  final int? pageCount;
 
   const ExtractedPdfMetadata({
     required this.title,
@@ -17,6 +18,7 @@ class ExtractedPdfMetadata {
     required this.keywords,
     required this.creationDate,
     required this.modificationDate,
+    this.pageCount,
   });
 }
 
@@ -35,6 +37,7 @@ class PdfMetadataExtractor {
         keywords: _emptyToNull(info.keywords),
         creationDate: info.creationDate,
         modificationDate: info.modificationDate,
+        pageCount: document.pages.count,
       );
     } finally {
       document.dispose();

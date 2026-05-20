@@ -6,6 +6,8 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
+import '../domain/study_material_source.dart';
+
 class StudyPlanningRepository extends ChangeNotifier {
   StudyPlanningRepository({Uuid? uuid}) : _uuid = uuid ?? const Uuid();
 
@@ -165,6 +167,7 @@ class StudyPlanningRepository extends ChangeNotifier {
     String? customUnitPlural,
     String? customUnitLabel,
     List<String>? checklistItems,
+    StudyMaterialSource? materialSource,
   }) async {
     final now = DateTime.now();
     final normalizedKind = StudyPlanKind.normalize(planKind);
@@ -209,6 +212,7 @@ class StudyPlanningRepository extends ChangeNotifier {
       customUnitSingular: _cleanOptional(customUnitSingular),
       customUnitPlural: _cleanOptional(customUnitPlural),
       customUnitLabel: _cleanOptional(customUnitLabel),
+      materialSource: materialSource?.hasSource == true ? materialSource : null,
       startUnit: normalizedStart,
       endUnit: normalizedEnd,
       completedThroughUnit: normalizedKind == StudyPlanKind.progress ? normalizedStart - 1 : 0,
@@ -418,11 +422,20 @@ class StudyPlanningRepository extends ChangeNotifier {
           ? requirement.endUnit
           : existing.completedThroughUnit;
 
+      // Progress plans are dynamically redistributed from the first available
+      // day. Without also recording that this planned occurrence was completed
+      // for its date, finishing today's reading can immediately pull tomorrow's
+      // allocation into today. The date key prevents that same calendar day from
+      // being re-used until the next rollover/recalculation.
       _plans[index] = existing.copyWith(
         completedThroughUnit: nextCompleted.clamp(
           existing.startUnit - 1,
           existing.endUnit,
         ).toInt(),
+        completedDateKeys: <String>{
+          ...existing.completedDateKeys,
+          _dateKey(requirement.date),
+        },
         updatedAt: DateTime.now(),
       );
     }
@@ -916,9 +929,19 @@ class StudyPlanningRepository extends ChangeNotifier {
     if (remaining <= 0) return const <StudyPlanRequirement>[];
 
     final deadline = plan.deadline ?? today;
-    final firstDate = today.isAfter(plan.startDate) ? today : plan.startDate;
-    final days = _eligibleDays(plan, firstDate, deadline);
+    final baseFirstDate = today.isAfter(plan.startDate) ? today : plan.startDate;
+    var firstDate = baseFirstDate;
+    while (!firstDate.isAfter(deadline) && plan.completedDateKeys.contains(_dateKey(firstDate))) {
+      firstDate = firstDate.add(const Duration(days: 1));
+    }
+
+    final days = _eligibleDays(plan, firstDate, deadline)
+        .where((date) => !plan.completedDateKeys.contains(_dateKey(date)))
+        .toList(growable: false);
     if (days.isEmpty) {
+      if (plan.completedDateKeys.contains(_dateKey(today))) {
+        return const <StudyPlanRequirement>[];
+      }
       return <StudyPlanRequirement>[
         StudyPlanRequirement(
           project: null,
@@ -1195,16 +1218,16 @@ class StudyPlanKind {
   static String label(String value) {
     switch (value) {
       case recurring:
-        return 'Repeat daily';
+        return 'Build a routine';
       case singleTask:
-        return 'Single task';
+        return 'Add one task';
       case deadline:
-        return 'Deadline';
+        return 'Mark a deadline';
       case checklist:
         return 'Checklist / topics';
       case progress:
       default:
-        return 'Finish a total';
+        return 'Finish work by a date';
     }
   }
 }
@@ -1282,6 +1305,7 @@ class StudyPlan {
   final String? customUnitSingular;
   final String? customUnitPlural;
   final String? customUnitLabel;
+  final StudyMaterialSource? materialSource;
   final int startUnit;
   final int endUnit;
   final int completedThroughUnit;
@@ -1306,6 +1330,7 @@ class StudyPlan {
     this.customUnitSingular,
     this.customUnitPlural,
     this.customUnitLabel,
+    this.materialSource,
     required this.startUnit,
     required this.endUnit,
     required this.completedThroughUnit,
@@ -1425,6 +1450,7 @@ class StudyPlan {
     final completedDates = json['completedDateKeys'];
     final rawChecklist = json['checklistItems'];
     final rawCompletedIndexes = json['completedChecklistIndexes'];
+    final rawMaterialSource = json['materialSource'];
     return StudyPlan(
       id: _readString(json['id']) ?? '',
       projectId: _readString(json['projectId']) ?? '',
@@ -1434,6 +1460,9 @@ class StudyPlan {
       customUnitSingular: _readString(json['customUnitSingular']),
       customUnitPlural: _readString(json['customUnitPlural']),
       customUnitLabel: _readString(json['customUnitLabel']),
+      materialSource: rawMaterialSource is Map
+          ? StudyMaterialSource.fromJson(_stringMap(rawMaterialSource))
+          : null,
       startUnit: startUnit,
       endUnit: kind == StudyPlanKind.progress ? endUnit : 0,
       completedThroughUnit: _readInt(json['completedThroughUnit']) ?? startUnit - 1,
@@ -1467,6 +1496,7 @@ class StudyPlan {
       'customUnitSingular': customUnitSingular,
       'customUnitPlural': customUnitPlural,
       'customUnitLabel': customUnitLabel,
+      'materialSource': materialSource?.toJson(),
       'startUnit': startUnit,
       'endUnit': endUnit,
       'completedThroughUnit': completedThroughUnit,
@@ -1503,6 +1533,7 @@ class StudyPlan {
       customUnitSingular: customUnitSingular,
       customUnitPlural: customUnitPlural,
       customUnitLabel: customUnitLabel,
+      materialSource: materialSource,
       startUnit: startUnit,
       endUnit: endUnit,
       completedThroughUnit: completedThroughUnit ?? this.completedThroughUnit,
