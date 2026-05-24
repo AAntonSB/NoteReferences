@@ -18,6 +18,8 @@ class StudyPlanningRepository extends ChangeNotifier {
   final List<WorkspaceDocument> _documents = <WorkspaceDocument>[];
   final List<DevTodo> _devTodos = <DevTodo>[];
   final Map<String, String> _pdfProjectIds = <String, String>{};
+  final List<LibraryFolder> _libraryFolders = <LibraryFolder>[];
+  final Map<String, String> _pdfFolderIds = <String, String>{};
 
   File? _storageFile;
   bool _loaded = false;
@@ -46,6 +48,12 @@ class StudyPlanningRepository extends ChangeNotifier {
 
   Map<String, String> get pdfProjectIds => Map.unmodifiable(_pdfProjectIds);
 
+  List<LibraryFolder> get libraryFolders => List.unmodifiable(
+        _libraryFolders.where((folder) => !folder.isArchived),
+      );
+
+  Map<String, String> get pdfFolderIds => Map.unmodifiable(_pdfFolderIds);
+
   Future<void> load() async {
     if (_loaded) return;
 
@@ -65,6 +73,8 @@ class StudyPlanningRepository extends ChangeNotifier {
           final rawDocuments = map['workspaceDocuments'] ?? map['documents'];
           final rawDevTodos = map['devTodos'];
           final rawPdfProjects = map['pdfProjectIds'];
+          final rawLibraryFolders = map['libraryFolders'];
+          final rawPdfFolders = map['pdfFolderIds'];
 
           _projects
             ..clear()
@@ -116,6 +126,24 @@ class StudyPlanningRepository extends ChangeNotifier {
             ..addAll(
               rawPdfProjects is Map
                   ? rawPdfProjects.map(
+                      (key, value) => MapEntry(key.toString(), value.toString()),
+                    )
+                  : const <String, String>{},
+            );
+          _libraryFolders
+            ..clear()
+            ..addAll(
+              rawLibraryFolders is List
+                  ? rawLibraryFolders
+                      .whereType<Map>()
+                      .map((item) => LibraryFolder.fromJson(_stringMap(item)))
+                  : const <LibraryFolder>[],
+            );
+          _pdfFolderIds
+            ..clear()
+            ..addAll(
+              rawPdfFolders is Map
+                  ? rawPdfFolders.map(
                       (key, value) => MapEntry(key.toString(), value.toString()),
                     )
                   : const <String, String>{},
@@ -520,6 +548,116 @@ class StudyPlanningRepository extends ChangeNotifier {
     notifyListeners();
   }
 
+
+
+  Future<LibraryFolder> createLibraryFolder({
+    required String title,
+    String? projectId,
+    String? parentId,
+  }) async {
+    final cleanTitle = title.trim();
+    if (cleanTitle.isEmpty) {
+      throw ArgumentError.value(title, 'title', 'Folder title cannot be empty.');
+    }
+
+    final cleanProjectId = projectId?.trim();
+    final cleanParentId = parentId?.trim();
+    final now = DateTime.now();
+    final parent = cleanParentId == null || cleanParentId.isEmpty
+        ? null
+        : libraryFolderById(cleanParentId);
+    final resolvedProjectId = parent?.projectId ??
+        (cleanProjectId == null || cleanProjectId.isEmpty ? null : cleanProjectId);
+
+    final folder = LibraryFolder(
+      id: _uuid.v4(),
+      title: cleanTitle,
+      projectId: resolvedProjectId,
+      parentId: parent?.id,
+      createdAt: now,
+      updatedAt: now,
+    );
+    _libraryFolders.add(folder);
+    await _save();
+    notifyListeners();
+    return folder;
+  }
+
+  LibraryFolder? libraryFolderById(String id) {
+    for (final folder in libraryFolders) {
+      if (folder.id == id) return folder;
+    }
+    return null;
+  }
+
+  List<LibraryFolder> libraryFoldersForScope({String? projectId, String? parentId}) {
+    final cleanProjectId = projectId?.trim();
+    final cleanParentId = parentId?.trim();
+    final result = libraryFolders.where((folder) {
+      final projectMatches = cleanProjectId == null || cleanProjectId.isEmpty
+          ? folder.projectId == null || folder.projectId!.isEmpty
+          : folder.projectId == cleanProjectId;
+      final parentMatches = cleanParentId == null || cleanParentId.isEmpty
+          ? folder.parentId == null || folder.parentId!.isEmpty
+          : folder.parentId == cleanParentId;
+      return projectMatches && parentMatches;
+    }).toList();
+    result.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    return result;
+  }
+
+  List<LibraryFolder> libraryFolderDescendants(String folderId) {
+    final result = <LibraryFolder>[];
+    void collect(String parentId) {
+      for (final folder in libraryFolders.where((item) => item.parentId == parentId)) {
+        result.add(folder);
+        collect(folder.id);
+      }
+    }
+    collect(folderId.trim());
+    return result;
+  }
+
+  String? folderIdForPdf(String documentId) => _pdfFolderIds[documentId.trim()];
+
+  LibraryFolder? folderForPdf(String documentId) {
+    final folderId = folderIdForPdf(documentId);
+    return folderId == null ? null : libraryFolderById(folderId);
+  }
+
+  Future<void> assignPdfToFolder({
+    required String documentId,
+    required String folderId,
+  }) async {
+    final cleanDocumentId = documentId.trim();
+    final folder = libraryFolderById(folderId.trim());
+    if (cleanDocumentId.isEmpty || folder == null) return;
+
+    _pdfFolderIds[cleanDocumentId] = folder.id;
+    if (folder.projectId != null && folder.projectId!.isNotEmpty) {
+      _pdfProjectIds[cleanDocumentId] = folder.projectId!;
+    }
+    await _save();
+    notifyListeners();
+  }
+
+  Future<void> clearPdfFolder(String documentId) async {
+    if (_pdfFolderIds.remove(documentId.trim()) == null) return;
+    await _save();
+    notifyListeners();
+  }
+
+  List<String> documentIdsForLibraryFolder(String folderId, {bool includeDescendants = true}) {
+    final folderIds = <String>{folderId.trim()};
+    if (includeDescendants) {
+      folderIds.addAll(libraryFolderDescendants(folderId).map((folder) => folder.id));
+    }
+    return _pdfFolderIds.entries
+        .where((entry) => folderIds.contains(entry.value))
+        .map((entry) => entry.key)
+        .toList(growable: false);
+  }
+
   Future<void> assignPdfToProject({
     required String documentId,
     required String projectId,
@@ -534,7 +672,10 @@ class StudyPlanningRepository extends ChangeNotifier {
   }
 
   Future<void> clearPdfProject(String documentId) async {
-    if (_pdfProjectIds.remove(documentId.trim()) == null) return;
+    final cleanDocumentId = documentId.trim();
+    final removedFolder = _pdfFolderIds.remove(cleanDocumentId) != null;
+    final removedProject = _pdfProjectIds.remove(cleanDocumentId) != null;
+    if (!removedFolder && !removedProject) return;
     await _save();
     notifyListeners();
   }
@@ -920,6 +1061,8 @@ class StudyPlanningRepository extends ChangeNotifier {
       'workspaceDocuments': _documents.map((document) => document.toJson()).toList(),
       'devTodos': _devTodos.map((todo) => todo.toJson()).toList(),
       'pdfProjectIds': _pdfProjectIds,
+      'libraryFolders': _libraryFolders.map((folder) => folder.toJson()).toList(),
+      'pdfFolderIds': _pdfFolderIds,
     });
     await file.writeAsString(data);
   }
@@ -1229,6 +1372,69 @@ class StudyPlanKind {
       default:
         return 'Finish work by a date';
     }
+  }
+}
+
+
+class LibraryFolder {
+  final String id;
+  final String title;
+  final String? projectId;
+  final String? parentId;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final bool isArchived;
+
+  const LibraryFolder({
+    required this.id,
+    required this.title,
+    required this.projectId,
+    required this.parentId,
+    required this.createdAt,
+    required this.updatedAt,
+    this.isArchived = false,
+  });
+
+  factory LibraryFolder.fromJson(Map<String, dynamic> json) {
+    return LibraryFolder(
+      id: _readString(json['id']) ?? '',
+      title: _readString(json['title']) ?? 'Untitled folder',
+      projectId: _readString(json['projectId']),
+      parentId: _readString(json['parentId']),
+      createdAt: _readDate(json['createdAt']) ?? DateTime.now(),
+      updatedAt: _readDate(json['updatedAt']) ?? DateTime.now(),
+      isArchived: _readBool(json['isArchived']) ?? false,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'projectId': projectId,
+      'parentId': parentId,
+      'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt.toIso8601String(),
+      'isArchived': isArchived,
+    };
+  }
+
+  LibraryFolder copyWith({
+    String? title,
+    String? projectId,
+    String? parentId,
+    DateTime? updatedAt,
+    bool? isArchived,
+  }) {
+    return LibraryFolder(
+      id: id,
+      title: title ?? this.title,
+      projectId: projectId ?? this.projectId,
+      parentId: parentId ?? this.parentId,
+      createdAt: createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      isArchived: isArchived ?? this.isArchived,
+    );
   }
 }
 

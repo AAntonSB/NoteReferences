@@ -398,6 +398,7 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
   List<SidecarPageMetrics> _buildSidecarPageMetrics({
     required PdfViewportState viewport,
     required double canvasWidth,
+    required double viewportHeight,
   }) {
     final pageCount = viewport.safePageCount;
     final safeCanvasWidth = math.max(1.0, canvasWidth);
@@ -418,38 +419,43 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
       );
     }
 
+    final visibleHeight = viewport.visibleRect.height;
+    final viewportScale = visibleHeight <= 0 || viewportHeight <= 0
+        ? 1.0
+        : (viewportHeight / visibleHeight);
+    final scale = viewportScale.isFinite && viewportScale > 0
+        ? viewportScale
+        : 1.0;
+
+    // pdfrx exposes page layouts and the visible rect in document coordinates.
+    // Those coordinates are intentionally stable, so using `pdfRect.height`
+    // directly makes the sidecar ignore zoom. Convert document coordinates to
+    // the current screen rhythm by scaling with viewportHeight / visibleHeight.
+    // Also preserve the real inter-page gaps from the PDF layout. Without those
+    // gaps, page labels drift from the PDF after a few pages and the debug view
+    // no longer lines up with the rendered document.
+    final documentOriginTop = usableRects.first.top;
+
     final metrics = <SidecarPageMetrics>[];
-    var sidecarTop = 0.0;
 
-    for (var index = 0; index < pageCount; index++) {
+    for (var index = 0; index < usableRects.length; index++) {
       final pdfRect = usableRects[index];
-      final pdfWidth = math.max(1.0, pdfRect.width);
-      final pdfHeight = math.max(1.0, pdfRect.height);
-
-      // The sidecar is not a PDF preview. It should keep the PDF's vertical
-      // reading rhythm, but it should use the whole note column horizontally.
-      // This removes the large left/right dead zones caused by mirroring the
-      // rendered PDF page width.
-      final sidecarWidth = safeCanvasWidth;
-      final sidecarHeight = math.max(
-        1.0,
-        pdfHeight * (sidecarWidth / pdfWidth),
+      final sidecarTop = math.max(
+        0.0,
+        (pdfRect.top - documentOriginTop) * scale,
       );
+      final sidecarHeight = math.max(1.0, pdfRect.height * scale);
 
       metrics.add(
         SidecarPageMetrics(
           pageNumber: index + 1,
           left: 0,
           top: sidecarTop,
-          width: sidecarWidth,
+          width: safeCanvasWidth,
           height: sidecarHeight,
           pdfPageRect: pdfRect,
         ),
       );
-
-      // Pages sit directly after each other in the sidecar. The page boundary
-      // label is enough separation, and this avoids a fake PDF-shaped gap.
-      sidecarTop += sidecarHeight;
     }
 
     return metrics;
@@ -881,6 +887,7 @@ class _PdfSidecarNotesCanvasState extends State<PdfSidecarNotesCanvas> {
                           final metrics = _buildSidecarPageMetrics(
                             viewport: viewport,
                             canvasWidth: constraints.maxWidth,
+                            viewportHeight: constraints.maxHeight,
                           );
 
                           _latestPageMetrics = metrics;

@@ -64,6 +64,161 @@ class LibraryTodayWorkItem {
   final Future<void> Function()? onComplete;
 }
 
+
+final ValueNotifier<LibraryTodayWorkSession?> libraryTodayWorkSessionStore =
+    ValueNotifier<LibraryTodayWorkSession?>(null);
+
+class _LibraryChroma {
+  const _LibraryChroma({
+    required this.accent,
+    required this.soft,
+    required this.canvas,
+    required this.surface,
+    required this.navSurface,
+    required this.border,
+    required this.borderStrong,
+  });
+
+  final Color accent;
+  final Color soft;
+  final Color canvas;
+  final Color surface;
+  final Color navSurface;
+  final Color border;
+  final Color borderStrong;
+
+  static _LibraryChroma current() => _LibraryColorSystem.monthChroma(DateTime.now().month);
+}
+
+class _LibraryColorSystem {
+  const _LibraryColorSystem._();
+
+  static _LibraryChroma monthChroma(int month) {
+    final accent = monthAccent(month);
+    final base = monthWeekDayTint(month, alternateTone: false, saturated: false);
+    final baseAlt = monthWeekDayTint(month, alternateTone: true, saturated: false);
+    return _LibraryChroma(
+      accent: accent,
+      soft: _tint(accent, .90),
+      surface: _blend(_tint(base, .42), Colors.white, .52),
+      canvas: _blend(_tint(base, .72), const Color(0xFFFCFBF7), .72),
+      navSurface: _blend(_tint(baseAlt, .76), Colors.white, .78),
+      border: _blend(accent, const Color(0xFFE8E1D6), .84),
+      borderStrong: _blend(accent, const Color(0xFFDCD3C8), .72),
+    );
+  }
+
+  static Color _tint(Color color, double amount) => Color.lerp(color, Colors.white, amount)!;
+
+  static Color _blend(Color a, Color b, double amount) => Color.lerp(a, b, amount)!;
+
+  static Color monthAccent(int month) {
+    switch (month) {
+      case 1:
+        return const Color(0xFF4F6C8C); // January: winter blue slate
+      case 2:
+        return const Color(0xFF7A5F8B); // February: winter plum
+      case 3:
+        return const Color(0xFF5E8A68); // March: early spring green
+      case 4:
+        return const Color(0xFF7B8E48); // April: leaf olive
+      case 5:
+        return const Color(0xFF4F8B78); // May: fresh sage teal
+      case 6:
+        return const Color(0xFFA98339); // June: warm ochre
+      case 7:
+        return const Color(0xFFB46F46); // July: sun clay
+      case 8:
+        return const Color(0xFF8B7B43); // August: dry grass
+      case 9:
+        return const Color(0xFF9A6E3D); // September: amber
+      case 10:
+        return const Color(0xFF9A5B43); // October: rust
+      case 11:
+        return const Color(0xFF7A5A63); // November: muted berry
+      case 12:
+      default:
+        return const Color(0xFF55726B); // December: evergreen slate
+    }
+  }
+
+  static Color monthWeekDayTint(
+    int month, {
+    required bool alternateTone,
+    required bool saturated,
+  }) {
+    final set = _seasonSet(month);
+    final tone = alternateTone ? 1 : 0;
+    switch (_seasonForMonth(month)) {
+      case _LibrarySeason.winter:
+        if (set == 0) {
+          return saturated
+              ? (tone == 0 ? const Color(0xFFF2F5F6) : const Color(0xFFE9EEF1))
+              : (tone == 0 ? const Color(0xFFF7F9FA) : const Color(0xFFF1F4F6));
+        }
+        return saturated
+            ? (tone == 0 ? const Color(0xFFF3F1F6) : const Color(0xFFEBE7F0))
+            : (tone == 0 ? const Color(0xFFF8F7FA) : const Color(0xFFF2F0F6));
+      case _LibrarySeason.spring:
+        if (set == 0) {
+          return saturated
+              ? (tone == 0 ? const Color(0xFFF1F6EF) : const Color(0xFFE8F1E5))
+              : (tone == 0 ? const Color(0xFFF7FAF5) : const Color(0xFFF1F6EE));
+        }
+        return saturated
+            ? (tone == 0 ? const Color(0xFFF4F4EA) : const Color(0xFFECECD9))
+            : (tone == 0 ? const Color(0xFFFAFAF5) : const Color(0xFFF4F4EA));
+      case _LibrarySeason.summer:
+        if (set == 0) {
+          return saturated
+              ? (tone == 0 ? const Color(0xFFFAF4E7) : const Color(0xFFF3E8D2))
+              : (tone == 0 ? const Color(0xFFFCF9F1) : const Color(0xFFF8F1E5));
+        }
+        return saturated
+            ? (tone == 0 ? const Color(0xFFF9EFE7) : const Color(0xFFF0DFD2))
+            : (tone == 0 ? const Color(0xFFFCF7F3) : const Color(0xFFF8EEE7));
+      case _LibrarySeason.autumn:
+        if (set == 0) {
+          return saturated
+              ? (tone == 0 ? const Color(0xFFFAF1E9) : const Color(0xFFF0E2D5))
+              : (tone == 0 ? const Color(0xFFFCF8F4) : const Color(0xFFF6EEE7));
+        }
+        return saturated
+            ? (tone == 0 ? const Color(0xFFF8EEEE) : const Color(0xFFEEDDDD))
+            : (tone == 0 ? const Color(0xFFFCF7F7) : const Color(0xFFF5EDED));
+    }
+  }
+
+  static _LibrarySeason _seasonForMonth(int month) {
+    if (month == 12 || month == 1 || month == 2) return _LibrarySeason.winter;
+    if (month >= 3 && month <= 5) return _LibrarySeason.spring;
+    if (month >= 6 && month <= 8) return _LibrarySeason.summer;
+    return _LibrarySeason.autumn;
+  }
+
+  static int _seasonSet(int month) {
+    switch (month) {
+      case 1:
+      case 3:
+      case 5:
+      case 6:
+      case 8:
+      case 9:
+      case 11:
+        return 0;
+      case 2:
+      case 4:
+      case 7:
+      case 10:
+      case 12:
+      default:
+        return 1;
+    }
+  }
+}
+
+enum _LibrarySeason { winter, spring, summer, autumn }
+
 class LibraryScreen extends StatefulWidget {
   final AppDatabase database;
   final StudyPlanningRepository? planningRepository;
@@ -93,6 +248,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   String _searchQuery = '';
   final Set<int> _selectedTagFilterIds = <int>{};
   bool _matchAllSelectedTags = false;
+  _LibraryCollectionSelection _librarySelection = const _LibraryCollectionSelection.all();
 
   late final DocumentImportService _importService;
   late final EpubLibraryRepository _epubLibraryRepository;
@@ -109,6 +265,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   void initState() {
     super.initState();
+    libraryTodayWorkSessionStore.addListener(_onTodayWorkSessionChanged);
 
     _importService = DocumentImportService(
       database: widget.database,
@@ -135,11 +292,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   @override
   void dispose() {
+    libraryTodayWorkSessionStore.removeListener(_onTodayWorkSessionChanged);
     _searchController.dispose();
     if (_ownsPlanningRepository) {
       _planningRepository.dispose();
     }
     super.dispose();
+  }
+
+  void _onTodayWorkSessionChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _loadPlanning() async {
@@ -219,6 +381,107 @@ class _LibraryScreenState extends State<LibraryScreen> {
       sourceLabel: 'PDF library',
       database: widget.database,
     );
+  }
+
+
+  Future<void> _createLibraryFolder({String? projectId, String? parentId}) async {
+    await _planningRepository.load();
+    if (!mounted) return;
+
+    final title = await showDialog<String>(
+      context: context,
+      builder: (_) => _CreateLibraryFolderDialog(
+        scopeLabel: _folderScopeLabel(projectId: projectId, parentId: parentId),
+      ),
+    );
+
+    if (title == null || title.trim().isEmpty) return;
+    final folder = await _planningRepository.createLibraryFolder(
+      title: title,
+      projectId: projectId,
+      parentId: parentId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _librarySelection = _LibraryCollectionSelection.folder(folder.id);
+    });
+  }
+
+  String _folderScopeLabel({String? projectId, String? parentId}) {
+    if (parentId != null && parentId.trim().isNotEmpty) {
+      final folder = _planningRepository.libraryFolderById(parentId.trim());
+      if (folder != null) return folder.title;
+    }
+    if (projectId != null && projectId.trim().isNotEmpty) {
+      final project = _planningRepository.projectById(projectId.trim());
+      if (project != null) return project.title;
+    }
+    return 'Uncategorized';
+  }
+
+  Future<void> _openDocumentFolderPicker(PdfDocument document) async {
+    await _planningRepository.load();
+    if (!mounted) return;
+
+    final selectedFolderId = await showDialog<String?>(
+      context: context,
+      builder: (_) => _PdfFolderAssignmentDialog(
+        documentTitle: document.name,
+        projects: _planningRepository.projects,
+        folders: _planningRepository.libraryFolders,
+        currentFolderId: _planningRepository.folderIdForPdf(document.documentId),
+      ),
+    );
+
+    if (selectedFolderId == null) return;
+    if (selectedFolderId.isEmpty) {
+      await _planningRepository.clearPdfFolder(document.documentId);
+    } else {
+      await _planningRepository.assignPdfToFolder(
+        documentId: document.documentId,
+        folderId: selectedFolderId,
+      );
+    }
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  List<PdfDocument> _applyLibrarySelection(List<PdfDocument> documents) {
+    return documents.where((document) => _documentMatchesLibrarySelection(document, _librarySelection)).toList(growable: false);
+  }
+
+  bool _documentMatchesLibrarySelection(PdfDocument document, _LibraryCollectionSelection selection) {
+    final documentId = document.documentId;
+    final projectId = _planningRepository.pdfProjectIds[documentId];
+    final folderId = _planningRepository.folderIdForPdf(documentId);
+
+    switch (selection.kind) {
+      case _LibraryCollectionKind.all:
+        return true;
+      case _LibraryCollectionKind.uncategorized:
+        return projectId == null || projectId.isEmpty;
+      case _LibraryCollectionKind.uncategorizedUnfiled:
+        return (projectId == null || projectId.isEmpty) && (folderId == null || folderId.isEmpty);
+      case _LibraryCollectionKind.project:
+        return projectId == selection.projectId;
+      case _LibraryCollectionKind.projectUnfiled:
+        return projectId == selection.projectId && (folderId == null || folderId.isEmpty);
+      case _LibraryCollectionKind.folder:
+        final selectedFolderId = selection.folderId;
+        if (selectedFolderId == null || selectedFolderId.isEmpty || folderId == null || folderId.isEmpty) {
+          return false;
+        }
+        if (folderId == selectedFolderId) return true;
+        return _planningRepository.libraryFolderDescendants(selectedFolderId).any((folder) => folder.id == folderId);
+    }
+  }
+
+  int _countDocumentsForSelection(List<PdfDocument> documents, _LibraryCollectionSelection selection) {
+    var count = 0;
+    for (final document in documents) {
+      if (_documentMatchesLibrarySelection(document, selection)) count += 1;
+    }
+    return count;
   }
 
   Future<void> _openCalendarOverview() async {
@@ -1088,8 +1351,39 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final chroma = _LibraryChroma.current();
+    final baseScheme = theme.colorScheme;
+    final libraryTheme = theme.copyWith(
+      scaffoldBackgroundColor: chroma.canvas,
+      colorScheme: baseScheme.copyWith(
+        primary: chroma.accent,
+        primaryContainer: chroma.soft,
+        secondary: chroma.accent,
+        secondaryContainer: chroma.soft,
+        surface: chroma.surface,
+        surfaceContainerLowest: chroma.canvas,
+        surfaceContainerLow: chroma.surface,
+        surfaceContainer: chroma.surface,
+        outlineVariant: chroma.border,
+        outline: chroma.borderStrong,
+      ),
+      iconButtonTheme: IconButtonThemeData(
+        style: IconButton.styleFrom(foregroundColor: chroma.accent),
+      ),
+      appBarTheme: theme.appBarTheme.copyWith(
+        backgroundColor: chroma.navSurface,
+        foregroundColor: const Color(0xFF25211C),
+        iconTheme: IconThemeData(color: chroma.accent),
+        actionsIconTheme: IconThemeData(color: chroma.accent),
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+      ),
+    );
 
-    return Scaffold(
+    return Theme(
+      data: libraryTheme,
+      child: Scaffold(
+        backgroundColor: chroma.canvas,
       appBar: AppBar(
         title: const Text('Library'),
         actions: [
@@ -1166,10 +1460,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
                               documentTagSnapshot.data ??
                               const <String, List<AppTag>>{};
                           final rawDocuments = documentSnapshot.data ?? [];
-                          final documents = _filterAndSortDocuments(
+                          final matchingDocuments = _filterAndSortDocuments(
                             rawDocuments,
                             documentTags,
                           );
+                          final documents = _applyLibrarySelection(matchingDocuments);
+
+                          final todayWorkSession = widget.todayWorkSession ?? libraryTodayWorkSessionStore.value;
 
                           return Column(
                             children: [
@@ -1198,112 +1495,99 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                 onOpenProjects: _planningLoaded ? _openProjectQuickAccess : null,
                                 onCreateDocument: _planningLoaded ? _createWorkspaceDocument : null,
                                 onOpenDevTodos: _planningLoaded ? _openDevTodos : null,
+                                librarySelection: _librarySelection,
+                                onLibrarySelectionChanged: (selection) {
+                                  setState(() => _librarySelection = selection);
+                                },
+                                todayWorkSession: todayWorkSession,
+                                todayWorkDoneIds: _todayWorkDoneIds,
+                                onToggleTodayWorkItem: _toggleTodayWorkItem,
+                                onOpenTodayWorkSource: _openTodayWorkSource,
                               ),
-                              if (widget.todayWorkSession != null)
-                                _LibraryTodayWorkStrip(
-                                  session: widget.todayWorkSession!,
-                                  doneIds: _todayWorkDoneIds,
-                                  onToggleDone: _toggleTodayWorkItem,
-                                  onOpenSource: _openTodayWorkSource,
-                                ),
-                              if (_planningLoaded)
-                                _WorkspaceDocumentsStrip(
-                                  documents: _planningRepository.documents,
-                                  onOpenDocument: _openWorkspaceDocument,
-                                  onCreateDocument: _createWorkspaceDocument,
-                                ),
-                              if (_epubLibraryLoaded && _epubDocuments.isNotEmpty)
-                                _EpubDocumentsStrip(
-                                  documents: _epubDocuments,
-                                  onOpenDocument: _openEpubDocument,
-                                  onDeleteDocument: _confirmDeleteEpubDocument,
-                                ),
-                              const Divider(height: 1),
                               Expanded(
-                                child:
-                                    documentSnapshot.connectionState ==
-                                        ConnectionState.waiting
-                                    ? const Center(
-                                        child: CircularProgressIndicator(),
-                                      )
-                                    : documents.isEmpty
-                                    ? _EmptyLibraryState(
-                                        isSearching:
-                                            _searchQuery.isNotEmpty ||
-                                            _selectedTagFilterIds.isNotEmpty,
-                                        onImportPdf: _isImporting
-                                            ? null
-                                            : _importPdf,
-                                      )
-                                    : Column(
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                                  children: [
+                                    if (_planningLoaded)
+                                      SizedBox(
+                                        width: 292,
+                                        child: _LibraryOrganizationRail(
+                                          projects: _planningRepository.projects,
+                                          folders: _planningRepository.libraryFolders,
+                                          documents: rawDocuments,
+                                          selected: _librarySelection,
+                                          countForSelection: (selection) => _countDocumentsForSelection(rawDocuments, selection),
+                                          onSelected: (selection) => setState(() => _librarySelection = selection),
+                                          onCreateFolder: _createLibraryFolder,
+                                        ),
+                                      ),
+                                    if (_planningLoaded) const VerticalDivider(width: 1),
+                                    Expanded(
+                                      child: Column(
                                         children: [
-                                          const _LibraryTableHeader(),
-                                          Expanded(
-                                            child: ListView.builder(
-                                              padding: const EdgeInsets.only(
-                                                bottom: 24,
-                                              ),
-                                              itemCount: documents.length,
-                                              itemBuilder: (context, index) {
-                                                final document =
-                                                    documents[index];
-                                                final tags =
-                                                    documentTags[document
-                                                        .documentId] ??
-                                                    const <AppTag>[];
-
-                                                return _PdfDocumentCard(
-                                                  document: document,
-                                                  tags: tags,
-                                                  formatDateTime:
-                                                      _formatDateTime,
-                                                  formatShortDate:
-                                                      _formatShortDate,
-                                                  metadataQualityLabel:
-                                                      _metadataQualityLabel,
-                                                  metadataQualityColor:
-                                                      (document) =>
-                                                          _metadataQualityColor(
-                                                            context,
-                                                            document,
-                                                          ),
-                                                  loadImpact: _loadDeleteImpact,
-                                                  assignedProject: _planningRepository.projectForPdf(document.documentId),
-                                                  onOpen: () =>
-                                                      _openDocument(document),
-                                                  onEditMetadata: () =>
-                                                      _openMetadataEditor(
-                                                        document,
-                                                      ),
-                                                  onEditTags: () =>
-                                                      _openDocumentTagPicker(
-                                                        document,
-                                                        tags,
-                                                      ),
-                                                  onAssignProject: () =>
-                                                      _openDocumentProjectPicker(
-                                                        document,
-                                                      ),
-                                                  onRefreshLocalMetadata: () =>
-                                                      _refreshLocalMetadata(
-                                                        document,
-                                                      ),
-                                                  onOnlineMetadataLookup: () =>
-                                                      _showOnlineMetadataInfo(
-                                                        document,
-                                                      ),
-                                                  onRevealFile: () =>
-                                                      _revealFile(document),
-                                                  onDelete: () =>
-                                                      _confirmDeleteDocument(
-                                                        document,
-                                                      ),
-                                                );
-                                              },
+                                          if (_planningLoaded)
+                                            _WorkspaceDocumentsStrip(
+                                              documents: _planningRepository.documents,
+                                              onOpenDocument: _openWorkspaceDocument,
+                                              onCreateDocument: _createWorkspaceDocument,
                                             ),
+                                          if (_epubLibraryLoaded && _epubDocuments.isNotEmpty)
+                                            _EpubDocumentsStrip(
+                                              documents: _epubDocuments,
+                                              onOpenDocument: _openEpubDocument,
+                                              onDeleteDocument: _confirmDeleteEpubDocument,
+                                            ),
+                                          const Divider(height: 1),
+                                          Expanded(
+                                            child: documentSnapshot.connectionState == ConnectionState.waiting
+                                                ? const Center(child: CircularProgressIndicator())
+                                                : documents.isEmpty
+                                                    ? _EmptyLibraryState(
+                                                        isSearching: _searchQuery.isNotEmpty || _selectedTagFilterIds.isNotEmpty,
+                                                        onImportPdf: _isImporting ? null : _importPdf,
+                                                      )
+                                                    : Column(
+                                                        children: [
+                                                          const _LibraryTableHeader(),
+                                                          Expanded(
+                                                            child: ListView.builder(
+                                                              padding: const EdgeInsets.only(bottom: 24),
+                                                              itemCount: documents.length,
+                                                              itemBuilder: (context, index) {
+                                                                final document = documents[index];
+                                                                final tags = documentTags[document.documentId] ?? const <AppTag>[];
+
+                                                                return _PdfDocumentCard(
+                                                                  document: document,
+                                                                  tags: tags,
+                                                                  formatDateTime: _formatDateTime,
+                                                                  formatShortDate: _formatShortDate,
+                                                                  metadataQualityLabel: _metadataQualityLabel,
+                                                                  metadataQualityColor: (document) => _metadataQualityColor(context, document),
+                                                                  loadImpact: _loadDeleteImpact,
+                                                                  assignedProject: _planningRepository.projectForPdf(document.documentId),
+                                                                  assignedFolder: _planningRepository.folderForPdf(document.documentId),
+                                                                  onOpen: () => _openDocument(document),
+                                                                  onEditMetadata: () => _openMetadataEditor(document),
+                                                                  onEditTags: () => _openDocumentTagPicker(document, tags),
+                                                                  onAssignProject: () => _openDocumentProjectPicker(document),
+                                                                  onMoveFolder: () => _openDocumentFolderPicker(document),
+                                                                  onRefreshLocalMetadata: () => _refreshLocalMetadata(document),
+                                                                  onOnlineMetadataLookup: () => _showOnlineMetadataInfo(document),
+                                                                  onRevealFile: () => _revealFile(document),
+                                                                  onDelete: () => _confirmDeleteDocument(document),
+                                                                );
+                                                              },
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
                                           ),
                                         ],
                                       ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ],
                           );
@@ -1348,7 +1632,453 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ),
         ),
       ),
+    ));
+  }
+}
+
+
+enum _LibraryCollectionKind {
+  all,
+  uncategorized,
+  uncategorizedUnfiled,
+  project,
+  projectUnfiled,
+  folder,
+}
+
+class _LibraryCollectionSelection {
+  final _LibraryCollectionKind kind;
+  final String? projectId;
+  final String? folderId;
+
+  const _LibraryCollectionSelection._(this.kind, {this.projectId, this.folderId});
+
+  const _LibraryCollectionSelection.all() : this._(_LibraryCollectionKind.all);
+  const _LibraryCollectionSelection.uncategorized() : this._(_LibraryCollectionKind.uncategorized);
+  const _LibraryCollectionSelection.uncategorizedUnfiled()
+      : this._(_LibraryCollectionKind.uncategorizedUnfiled);
+  const _LibraryCollectionSelection.project(String projectId)
+      : this._(_LibraryCollectionKind.project, projectId: projectId);
+  const _LibraryCollectionSelection.projectUnfiled(String projectId)
+      : this._(_LibraryCollectionKind.projectUnfiled, projectId: projectId);
+  const _LibraryCollectionSelection.folder(String folderId)
+      : this._(_LibraryCollectionKind.folder, folderId: folderId);
+
+  @override
+  bool operator ==(Object other) {
+    return other is _LibraryCollectionSelection &&
+        other.kind == kind &&
+        other.projectId == projectId &&
+        other.folderId == folderId;
+  }
+
+  @override
+  int get hashCode => Object.hash(kind, projectId, folderId);
+}
+
+class _LibraryOrganizationRail extends StatelessWidget {
+  final List<StudyProject> projects;
+  final List<LibraryFolder> folders;
+  final List<PdfDocument> documents;
+  final _LibraryCollectionSelection selected;
+  final int Function(_LibraryCollectionSelection selection) countForSelection;
+  final ValueChanged<_LibraryCollectionSelection> onSelected;
+  final Future<void> Function({String? projectId, String? parentId}) onCreateFolder;
+
+  const _LibraryOrganizationRail({
+    required this.projects,
+    required this.folders,
+    required this.documents,
+    required this.selected,
+    required this.countForSelection,
+    required this.onSelected,
+    required this.onCreateFolder,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final topLevelUncategorizedFolders = _foldersFor(projectId: null, parentId: null);
+
+    return Container(
+      color: colorScheme.surfaceContainerLowest.withValues(alpha: 0.55),
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(12, 14, 12, 28),
+        children: [
+          Row(
+            children: [
+              Icon(Icons.account_tree_outlined, size: 18, color: colorScheme.primary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Organization',
+                  style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
+                ),
+              ),
+              IconButton.filledTonal(
+                tooltip: 'New uncategorized folder',
+                iconSize: 16,
+                visualDensity: VisualDensity.compact,
+                onPressed: () => onCreateFolder(),
+                icon: const Icon(Icons.create_new_folder_outlined),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _LibraryRailTile(
+            icon: Icons.library_books_outlined,
+            title: 'All documents',
+            count: countForSelection(const _LibraryCollectionSelection.all()),
+            selected: selected == const _LibraryCollectionSelection.all(),
+            onTap: () => onSelected(const _LibraryCollectionSelection.all()),
+          ),
+          const SizedBox(height: 12),
+          _LibraryRailSectionHeader(
+            title: 'Uncategorized',
+            count: countForSelection(const _LibraryCollectionSelection.uncategorized()),
+            onAdd: () => onCreateFolder(),
+          ),
+          _LibraryRailTile(
+            icon: Icons.inbox_outlined,
+            title: 'Unfiled',
+            count: countForSelection(const _LibraryCollectionSelection.uncategorizedUnfiled()),
+            selected: selected == const _LibraryCollectionSelection.uncategorizedUnfiled(),
+            onTap: () => onSelected(const _LibraryCollectionSelection.uncategorizedUnfiled()),
+            indent: 8,
+          ),
+          for (final folder in topLevelUncategorizedFolders)
+            _LibraryFolderTreeTile(
+              folder: folder,
+              folders: folders,
+              countForSelection: countForSelection,
+              selected: selected,
+              onSelected: onSelected,
+              onCreateFolder: onCreateFolder,
+              depth: 1,
+            ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Projects',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    fontWeight: FontWeight.w900,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (projects.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+              child: Text(
+                'Assign PDFs to projects to group source material by work stream.',
+                style: theme.textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+              ),
+            ),
+          for (final project in projects) _ProjectLibraryGroup(
+            project: project,
+            folders: _foldersFor(projectId: project.id, parentId: null),
+            allFolders: folders,
+            selected: selected,
+            countForSelection: countForSelection,
+            onSelected: onSelected,
+            onCreateFolder: onCreateFolder,
+          ),
+        ],
+      ),
     );
+  }
+
+  List<LibraryFolder> _foldersFor({String? projectId, String? parentId}) {
+    final result = folders.where((folder) {
+      final projectMatches = projectId == null
+          ? folder.projectId == null || folder.projectId!.isEmpty
+          : folder.projectId == projectId;
+      final parentMatches = parentId == null
+          ? folder.parentId == null || folder.parentId!.isEmpty
+          : folder.parentId == parentId;
+      return projectMatches && parentMatches;
+    }).toList();
+    result.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    return result;
+  }
+}
+
+class _ProjectLibraryGroup extends StatelessWidget {
+  final StudyProject project;
+  final List<LibraryFolder> folders;
+  final List<LibraryFolder> allFolders;
+  final _LibraryCollectionSelection selected;
+  final int Function(_LibraryCollectionSelection selection) countForSelection;
+  final ValueChanged<_LibraryCollectionSelection> onSelected;
+  final Future<void> Function({String? projectId, String? parentId}) onCreateFolder;
+
+  const _ProjectLibraryGroup({
+    required this.project,
+    required this.folders,
+    required this.allFolders,
+    required this.selected,
+    required this.countForSelection,
+    required this.onSelected,
+    required this.onCreateFolder,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _LibraryRailSectionHeader(
+            title: project.title,
+            count: countForSelection(_LibraryCollectionSelection.project(project.id)),
+            onAdd: () => onCreateFolder(projectId: project.id),
+          ),
+          _LibraryRailTile(
+            icon: Icons.inbox_outlined,
+            title: 'Unfiled',
+            count: countForSelection(_LibraryCollectionSelection.projectUnfiled(project.id)),
+            selected: selected == _LibraryCollectionSelection.projectUnfiled(project.id),
+            onTap: () => onSelected(_LibraryCollectionSelection.projectUnfiled(project.id)),
+            indent: 8,
+          ),
+          for (final folder in folders)
+            _LibraryFolderTreeTile(
+              folder: folder,
+              folders: allFolders,
+              countForSelection: countForSelection,
+              selected: selected,
+              onSelected: onSelected,
+              onCreateFolder: onCreateFolder,
+              depth: 1,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LibraryFolderTreeTile extends StatelessWidget {
+  final LibraryFolder folder;
+  final List<LibraryFolder> folders;
+  final int Function(_LibraryCollectionSelection selection) countForSelection;
+  final _LibraryCollectionSelection selected;
+  final ValueChanged<_LibraryCollectionSelection> onSelected;
+  final Future<void> Function({String? projectId, String? parentId}) onCreateFolder;
+  final int depth;
+
+  const _LibraryFolderTreeTile({
+    required this.folder,
+    required this.folders,
+    required this.countForSelection,
+    required this.selected,
+    required this.onSelected,
+    required this.onCreateFolder,
+    required this.depth,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final children = folders.where((candidate) => candidate.parentId == folder.id).toList()
+      ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    final selection = _LibraryCollectionSelection.folder(folder.id);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _LibraryRailTile(
+          icon: Icons.folder_outlined,
+          title: folder.title,
+          count: countForSelection(selection),
+          selected: selected == selection,
+          onTap: () => onSelected(selection),
+          onAdd: () => onCreateFolder(projectId: folder.projectId, parentId: folder.id),
+          indent: 8.0 + (depth * 12),
+        ),
+        for (final child in children)
+          _LibraryFolderTreeTile(
+            folder: child,
+            folders: folders,
+            countForSelection: countForSelection,
+            selected: selected,
+            onSelected: onSelected,
+            onCreateFolder: onCreateFolder,
+            depth: depth + 1,
+          ),
+      ],
+    );
+  }
+}
+
+class _LibraryRailSectionHeader extends StatelessWidget {
+  final String title;
+  final int count;
+  final VoidCallback? onAdd;
+
+  const _LibraryRailSectionHeader({required this.title, required this.count, this.onAdd});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(6, 6, 2, 3),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelLarge?.copyWith(
+                fontWeight: FontWeight.w900,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          Text(
+            '$count',
+            style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+          if (onAdd != null)
+            IconButton(
+              tooltip: 'New folder',
+              visualDensity: VisualDensity.compact,
+              iconSize: 16,
+              onPressed: onAdd,
+              icon: const Icon(Icons.add),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LibraryRailTile extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final int count;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback? onAdd;
+  final double indent;
+
+  const _LibraryRailTile({
+    required this.icon,
+    required this.title,
+    required this.count,
+    required this.selected,
+    required this.onTap,
+    this.onAdd,
+    this.indent = 0,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Padding(
+      padding: EdgeInsets.only(left: indent, top: 3, bottom: 3),
+      child: Material(
+        color: selected ? colorScheme.primaryContainer.withValues(alpha: .42) : Colors.transparent,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
+            child: Row(
+              children: [
+                Icon(icon, size: 17, color: selected ? colorScheme.primary : colorScheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Text(
+                  '$count',
+                  style: theme.textTheme.labelSmall?.copyWith(color: colorScheme.onSurfaceVariant),
+                ),
+                if (onAdd != null) ...[
+                  const SizedBox(width: 2),
+                  InkResponse(
+                    radius: 16,
+                    onTap: onAdd,
+                    child: Icon(Icons.add, size: 15, color: colorScheme.primary),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CreateLibraryFolderDialog extends StatefulWidget {
+  final String scopeLabel;
+
+  const _CreateLibraryFolderDialog({required this.scopeLabel});
+
+  @override
+  State<_CreateLibraryFolderDialog> createState() => _CreateLibraryFolderDialogState();
+}
+
+class _CreateLibraryFolderDialogState extends State<_CreateLibraryFolderDialog> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Create folder'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Inside ${widget.scopeLabel}', style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Folder name',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        FilledButton(onPressed: _submit, child: const Text('Create folder')),
+      ],
+    );
+  }
+
+  void _submit() {
+    final value = _controller.text.trim();
+    if (value.isEmpty) return;
+    Navigator.of(context).pop(value);
   }
 }
 
@@ -1509,12 +2239,14 @@ class _LibraryTodayWorkStrip extends StatelessWidget {
     required this.doneIds,
     required this.onToggleDone,
     required this.onOpenSource,
+    this.compact = false,
   });
 
   final LibraryTodayWorkSession session;
   final Set<String> doneIds;
   final Future<void> Function(LibraryTodayWorkItem item, bool done) onToggleDone;
   final Future<void> Function(LibraryTodayWorkItem item) onOpenSource;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -1523,8 +2255,8 @@ class _LibraryTodayWorkStrip extends StatelessWidget {
     final remaining = session.items.length - doneCount;
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(24, 8, 24, 14),
-      padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
+      margin: compact ? EdgeInsets.zero : const EdgeInsets.fromLTRB(24, 8, 24, 14),
+      padding: compact ? const EdgeInsets.fromLTRB(12, 10, 12, 12) : const EdgeInsets.fromLTRB(18, 14, 18, 16),
       decoration: BoxDecoration(
         color: Color.alphaBlend(colorScheme.primary.withValues(alpha: .045), colorScheme.surface),
         borderRadius: BorderRadius.circular(22),
@@ -1688,6 +2420,87 @@ class _LibraryTodayWorkRow extends StatelessWidget {
   }
 }
 
+
+class _LibraryTodayWorkHeaderButton extends StatelessWidget {
+  const _LibraryTodayWorkHeaderButton({
+    required this.session,
+    required this.doneIds,
+    required this.onToggleDone,
+    required this.onOpenSource,
+  });
+
+  final LibraryTodayWorkSession session;
+  final Set<String> doneIds;
+  final Future<void> Function(LibraryTodayWorkItem item, bool done)? onToggleDone;
+  final Future<void> Function(LibraryTodayWorkItem item)? onOpenSource;
+
+  int get _remaining => session.items.where((item) => !doneIds.contains(item.id)).length;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final remaining = _remaining;
+    return FilledButton.tonalIcon(
+      onPressed: () => _openTodayWorkSheet(context),
+      icon: Icon(
+        remaining == 0 ? Icons.task_alt_rounded : Icons.playlist_add_check_rounded,
+        size: 18,
+      ),
+      label: Text(remaining == 0 ? 'Today done' : '$remaining left today'),
+      style: FilledButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        backgroundColor: remaining == 0
+            ? colorScheme.secondaryContainer.withValues(alpha: .62)
+            : colorScheme.primaryContainer.withValues(alpha: .72),
+        foregroundColor: remaining == 0
+            ? colorScheme.onSecondaryContainer
+            : colorScheme.onPrimaryContainer,
+        textStyle: const TextStyle(fontSize: 12.2, fontWeight: FontWeight.w900),
+      ),
+    );
+  }
+
+  void _openTodayWorkSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 16,
+                bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760, maxHeight: 620),
+                child: _LibraryTodayWorkStrip(
+                  session: session,
+                  doneIds: doneIds,
+                  compact: false,
+                  onToggleDone: (item, done) async {
+                    await onToggleDone?.call(item, done);
+                    setSheetState(() {});
+                  },
+                  onOpenSource: (item) async {
+                    final opener = onOpenSource;
+                    if (opener != null) {
+                      await opener(item);
+                    }
+                  },
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
 String _formatLibraryTodayWorkDate(DateTime date) {
   const months = <String>[
     'Jan',
@@ -1728,6 +2541,12 @@ class _LibraryHeader extends StatelessWidget {
   final VoidCallback? onOpenProjects;
   final VoidCallback? onCreateDocument;
   final VoidCallback? onOpenDevTodos;
+  final _LibraryCollectionSelection librarySelection;
+  final ValueChanged<_LibraryCollectionSelection> onLibrarySelectionChanged;
+  final LibraryTodayWorkSession? todayWorkSession;
+  final Set<String> todayWorkDoneIds;
+  final Future<void> Function(LibraryTodayWorkItem item, bool done)? onToggleTodayWorkItem;
+  final Future<void> Function(LibraryTodayWorkItem item)? onOpenTodayWorkSource;
 
   const _LibraryHeader({
     required this.searchController,
@@ -1750,6 +2569,12 @@ class _LibraryHeader extends StatelessWidget {
     required this.onOpenProjects,
     required this.onCreateDocument,
     required this.onOpenDevTodos,
+    required this.librarySelection,
+    required this.onLibrarySelectionChanged,
+    required this.todayWorkSession,
+    required this.todayWorkDoneIds,
+    required this.onToggleTodayWorkItem,
+    required this.onOpenTodayWorkSource,
   });
 
   @override
@@ -1777,7 +2602,7 @@ class _LibraryHeader extends StatelessWidget {
                     Text(
                       documentCount == totalDocumentCount
                           ? '$documentCount PDF${documentCount == 1 ? '' : 's'} in library'
-                          : '$documentCount of $totalDocumentCount documents shown',
+                          : '$documentCount of $totalDocumentCount documents shown in this collection',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -1785,6 +2610,15 @@ class _LibraryHeader extends StatelessWidget {
                   ],
                 ),
               ),
+              if (todayWorkSession != null) ...[
+                _LibraryTodayWorkHeaderButton(
+                  session: todayWorkSession!,
+                  doneIds: todayWorkDoneIds,
+                  onToggleDone: onToggleTodayWorkItem,
+                  onOpenSource: onOpenTodayWorkSource,
+                ),
+                const SizedBox(width: 8),
+              ],
               OutlinedButton.icon(
                 onPressed: onOpenToday,
                 icon: const Icon(Icons.today_rounded),
@@ -2208,10 +3042,12 @@ class _PdfDocumentCard extends StatelessWidget {
   final Color Function(PdfDocument document) metadataQualityColor;
   final Future<_DocumentDeleteImpact> Function(String documentId) loadImpact;
   final StudyProject? assignedProject;
+  final LibraryFolder? assignedFolder;
   final VoidCallback onOpen;
   final VoidCallback onEditMetadata;
   final VoidCallback onEditTags;
   final VoidCallback onAssignProject;
+  final VoidCallback onMoveFolder;
   final VoidCallback onRefreshLocalMetadata;
   final VoidCallback onOnlineMetadataLookup;
   final VoidCallback onRevealFile;
@@ -2226,10 +3062,12 @@ class _PdfDocumentCard extends StatelessWidget {
     required this.metadataQualityColor,
     required this.loadImpact,
     required this.assignedProject,
+    required this.assignedFolder,
     required this.onOpen,
     required this.onEditMetadata,
     required this.onEditTags,
     required this.onAssignProject,
+    required this.onMoveFolder,
     required this.onRefreshLocalMetadata,
     required this.onOnlineMetadataLookup,
     required this.onRevealFile,
@@ -2317,6 +3155,7 @@ class _PdfDocumentCard extends StatelessWidget {
                       onEditMetadata: onEditMetadata,
                       onEditTags: onEditTags,
                       onAssignProject: onAssignProject,
+                      onMoveFolder: onMoveFolder,
                       onRefreshLocalMetadata: onRefreshLocalMetadata,
                       onOnlineMetadataLookup: onOnlineMetadataLookup,
                       onRevealFile: onRevealFile,
@@ -2369,9 +3208,16 @@ class _PdfDocumentCard extends StatelessWidget {
                 const SizedBox(height: 5),
                 _DocumentTagSummary(tags: tags),
               ],
-              if (assignedProject != null) ...[
+              if (assignedProject != null || assignedFolder != null) ...[
                 const SizedBox(height: 5),
-                _AssignedProjectChip(project: assignedProject!),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    if (assignedProject != null) _AssignedProjectChip(project: assignedProject!),
+                    if (assignedFolder != null) _AssignedFolderChip(folder: assignedFolder!),
+                  ],
+                ),
               ],
             ],
           ),
@@ -2465,6 +3311,7 @@ class _DocumentActionsMenu extends StatelessWidget {
   final VoidCallback onEditMetadata;
   final VoidCallback onEditTags;
   final VoidCallback onAssignProject;
+  final VoidCallback onMoveFolder;
   final VoidCallback onRefreshLocalMetadata;
   final VoidCallback onOnlineMetadataLookup;
   final VoidCallback onRevealFile;
@@ -2474,6 +3321,7 @@ class _DocumentActionsMenu extends StatelessWidget {
     required this.onEditMetadata,
     required this.onEditTags,
     required this.onAssignProject,
+    required this.onMoveFolder,
     required this.onRefreshLocalMetadata,
     required this.onOnlineMetadataLookup,
     required this.onRevealFile,
@@ -2494,6 +3342,9 @@ class _DocumentActionsMenu extends StatelessWidget {
             return;
           case _DocumentAction.assignProject:
             onAssignProject();
+            return;
+          case _DocumentAction.moveFolder:
+            onMoveFolder();
             return;
           case _DocumentAction.refreshLocalMetadata:
             onRefreshLocalMetadata();
@@ -2529,6 +3380,13 @@ class _DocumentActionsMenu extends StatelessWidget {
           child: ListTile(
             leading: Icon(Icons.dashboard_customize_outlined),
             title: Text('Assign project'),
+          ),
+        ),
+        PopupMenuItem(
+          value: _DocumentAction.moveFolder,
+          child: ListTile(
+            leading: Icon(Icons.drive_file_move_outlined),
+            title: Text('Move to folder'),
           ),
         ),
         PopupMenuItem(
@@ -2570,6 +3428,7 @@ enum _DocumentAction {
   editMetadata,
   editTags,
   assignProject,
+  moveFolder,
   refreshLocalMetadata,
   onlineMetadataLookup,
   revealFile,
@@ -2614,6 +3473,29 @@ class _AssignedProjectChip extends StatelessWidget {
         side: BorderSide(color: theme.colorScheme.primary.withValues(alpha: 0.32)),
         backgroundColor: theme.colorScheme.primaryContainer.withValues(alpha: 0.38),
       ),
+    );
+  }
+}
+
+
+class _AssignedFolderChip extends StatelessWidget {
+  final LibraryFolder folder;
+
+  const _AssignedFolderChip({required this.folder});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Chip(
+      visualDensity: VisualDensity.compact,
+      avatar: const Icon(Icons.folder_rounded, size: 15),
+      label: Text(
+        folder.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      side: BorderSide(color: theme.colorScheme.tertiary.withValues(alpha: 0.28)),
+      backgroundColor: theme.colorScheme.tertiaryContainer.withValues(alpha: 0.34),
     );
   }
 }
@@ -2705,6 +3587,105 @@ class _PdfProjectAssignmentDialogState extends State<_PdfProjectAssignmentDialog
         ),
       ],
     );
+  }
+}
+
+
+class _PdfFolderAssignmentDialog extends StatefulWidget {
+  final String documentTitle;
+  final List<StudyProject> projects;
+  final List<LibraryFolder> folders;
+  final String? currentFolderId;
+
+  const _PdfFolderAssignmentDialog({
+    required this.documentTitle,
+    required this.projects,
+    required this.folders,
+    required this.currentFolderId,
+  });
+
+  @override
+  State<_PdfFolderAssignmentDialog> createState() => _PdfFolderAssignmentDialogState();
+}
+
+class _PdfFolderAssignmentDialogState extends State<_PdfFolderAssignmentDialog> {
+  String? _selectedFolderId;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedFolderId = widget.currentFolderId;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final sortedFolders = [...widget.folders]
+      ..sort((a, b) => _folderSortLabel(a).compareTo(_folderSortLabel(b)));
+
+    return AlertDialog(
+      title: const Text('Move PDF to folder'),
+      content: SizedBox(
+        width: 560,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.documentTitle,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              value: _selectedFolderId != null && sortedFolders.any((folder) => folder.id == _selectedFolderId)
+                  ? _selectedFolderId
+                  : '',
+              decoration: const InputDecoration(
+                labelText: 'Folder',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                const DropdownMenuItem<String>(value: '', child: Text('No folder')),
+                for (final folder in sortedFolders)
+                  DropdownMenuItem<String>(
+                    value: folder.id,
+                    child: Text(_folderLabel(folder)),
+                  ),
+              ],
+              onChanged: (value) => setState(() => _selectedFolderId = value),
+            ),
+            if (sortedFolders.isEmpty) ...[
+              const SizedBox(height: 12),
+              Text(
+                'Create folders from the organization panel first. Then you can move PDFs into them.',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.of(context).pop(_selectedFolderId ?? ''), child: const Text('Save folder')),
+      ],
+    );
+  }
+
+  String _folderLabel(LibraryFolder folder) {
+    final scope = _folderScope(folder);
+    return scope == null ? folder.title : '$scope / ${folder.title}';
+  }
+
+  String _folderSortLabel(LibraryFolder folder) => _folderLabel(folder).toLowerCase();
+
+  String? _folderScope(LibraryFolder folder) {
+    if (folder.projectId == null || folder.projectId!.isEmpty) return 'Uncategorized';
+    for (final project in widget.projects) {
+      if (project.id == folder.projectId) return project.title;
+    }
+    return 'Project';
   }
 }
 

@@ -8,6 +8,7 @@ class SourceReaderWorkspaceSelector extends StatelessWidget {
   final Widget? trailing;
   final IconData readerIcon;
   final String readerLabel;
+  final bool showWorkspaceDocument;
 
   const SourceReaderWorkspaceSelector({
     super.key,
@@ -16,6 +17,7 @@ class SourceReaderWorkspaceSelector extends StatelessWidget {
     this.trailing,
     this.readerIcon = Icons.menu_book_outlined,
     this.readerLabel = 'Reader',
+    this.showWorkspaceDocument = true,
   });
 
   @override
@@ -49,11 +51,12 @@ class SourceReaderWorkspaceSelector extends StatelessWidget {
                       icon: Icon(Icons.article_outlined),
                       label: Text('Document'),
                     ),
-                    const ButtonSegment<SourceReaderWorkspaceLayout>(
-                      value: SourceReaderWorkspaceLayout.workspaceDocument,
-                      icon: Icon(Icons.edit_document),
-                      label: Text('Writing'),
-                    ),
+                    if (showWorkspaceDocument)
+                      const ButtonSegment<SourceReaderWorkspaceLayout>(
+                        value: SourceReaderWorkspaceLayout.workspaceDocument,
+                        icon: Icon(Icons.edit_document),
+                        label: Text('Writing'),
+                      ),
                     const ButtonSegment<SourceReaderWorkspaceLayout>(
                       value: SourceReaderWorkspaceLayout.synthesis,
                       icon: Icon(Icons.view_column_outlined),

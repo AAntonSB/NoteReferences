@@ -53,20 +53,32 @@ Future<void> showStudyCalendarModal({
   if (!context.mounted) return;
   return showDialog<void>(
     context: context,
-    builder: (context) => Dialog(
-      insetPadding: const EdgeInsets.all(28),
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-      child: SizedBox(
-        width: 1180,
-        height: 760,
-        child: _StudyCalendarModal(
-          planningRepository: planningRepository,
-          noteRepository: noteRepository,
-          onOpenTodo: onOpenTodo,
+    builder: (context) {
+      final media = MediaQuery.of(context);
+      final availableWidth = media.size.width - 48;
+      final availableHeight = media.size.height - 48;
+      final dialogWidth = availableWidth < 1180.0
+          ? availableWidth
+          : (availableWidth > 1480.0 ? 1480.0 : availableWidth);
+      final dialogHeight = availableHeight < 760.0
+          ? availableHeight
+          : (availableHeight > 920.0 ? 920.0 : availableHeight);
+
+      return Dialog(
+        insetPadding: const EdgeInsets.all(24),
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+        child: SizedBox(
+          width: dialogWidth,
+          height: dialogHeight,
+          child: _StudyCalendarModal(
+            planningRepository: planningRepository,
+            noteRepository: noteRepository,
+            onOpenTodo: onOpenTodo,
+          ),
         ),
-      ),
-    ),
+      );
+    },
   );
 }
 
@@ -99,6 +111,7 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
   bool _planningLoaded = false;
   Object? _loadError;
   _DailySetupSnapshot? _dailySetup;
+  final Set<String> _todayWorkDoneIds = <String>{};
 
   @override
   void initState() {
@@ -177,7 +190,9 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
       planningLoaded: _planningLoaded,
       loadError: _loadError,
       dailySetup: activeDailySetup,
+      todayWorkDoneIds: _todayWorkDoneIds,
       onOpenTodaySetup: () => _openTodaySetup(data),
+      onCompleteTodayItem: _completeTodayItem,
       onCompleteRequirement: _completeRequirement,
       onResolveDebt: _resolveDebt,
       onCompleteTodo: _completeTodo,
@@ -220,6 +235,20 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _completeTodayItem(String itemId, Future<void> Function()? action) async {
+    if (_todayWorkDoneIds.contains(itemId)) return;
+    setState(() => _todayWorkDoneIds.add(itemId));
+    try {
+      if (action != null) {
+        await action();
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _todayWorkDoneIds.remove(itemId));
+      _showSnackBar('Could not complete item: $error');
+    }
   }
 
   Future<void> _completeRequirement(StudyPlanRequirement requirement) async {
@@ -343,11 +372,22 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
       _showSnackBar('Library needs the app database.');
       return;
     }
+    final today = _DateText.dateOnly(_now);
+    final activeSetup = _dailySetup != null && _DateText.sameDate(_dailySetup!.date, today)
+        ? _dailySetup
+        : null;
+    final activeSession = activeSetup == null
+        ? libraryTodayWorkSessionStore.value
+        : _libraryTodayWorkSessionFromSetup(activeSetup);
+    if (activeSession != null) {
+      libraryTodayWorkSessionStore.value = activeSession;
+    }
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => LibraryScreen(
           database: database,
           planningRepository: _planningRepository,
+          todayWorkSession: activeSession,
         ),
       ),
     );
@@ -427,7 +467,11 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
       ),
     );
     if (snapshot == null || !mounted) return;
-    setState(() => _dailySetup = snapshot);
+    final persistedSnapshot = await _persistManualSetupTodos(snapshot);
+    if (!mounted) return;
+    setState(() => _dailySetup = persistedSnapshot);
+    final session = _libraryTodayWorkSessionFromSetup(persistedSnapshot);
+    libraryTodayWorkSessionStore.value = session;
     final database = widget.database;
     if (database == null) {
       await Navigator.of(context).push<void>(
@@ -435,7 +479,7 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
           builder: (_) => _TodayChromaticScope(
             chroma: _TodayColors.monthChroma(_now.month),
             child: _TodayWorkSessionScreen(
-              setup: snapshot,
+              setup: persistedSnapshot,
               onOpenCalendar: _openCalendar,
               onCreatePlan: _createPlan,
             ),
@@ -450,9 +494,52 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
         builder: (_) => LibraryScreen(
           database: database,
           planningRepository: _planningRepository,
-          todayWorkSession: _libraryTodayWorkSessionFromSetup(snapshot),
+          todayWorkSession: session,
         ),
       ),
+    );
+  }
+
+  Future<_DailySetupSnapshot> _persistManualSetupTodos(_DailySetupSnapshot snapshot) async {
+    final noteRepository = _noteRepository;
+    if (noteRepository == null) return snapshot;
+
+    final items = <_DailySetupItemVm>[];
+    for (final item in snapshot.items) {
+      if (!item.manual || !item.id.startsWith('manual-')) {
+        items.add(item);
+        continue;
+      }
+
+      final todoId = await noteRepository.createStandaloneTodo(
+        title: item.title,
+        body: item.detail,
+        sourceType: kTodoSourceTodaySetup,
+      );
+      items.add(
+        _DailySetupItemVm(
+          id: 'todo-$todoId',
+          kind: item.kind,
+          title: item.title,
+          detail: item.detail,
+          reason: 'Added for today',
+          included: item.included,
+          priority: item.priority,
+          sourceLabel: item.sourceLabel,
+          sourceIcon: item.sourceIcon,
+          onOpenSource: item.onOpenSource,
+          onComplete: () => noteRepository.updateTodoCompleted(todoId: todoId, isCompleted: true),
+          completeLabel: 'Done',
+          manual: true,
+        ),
+      );
+    }
+
+    return _DailySetupSnapshot(
+      date: snapshot.date,
+      createdAt: snapshot.createdAt,
+      updatedAt: snapshot.updatedAt,
+      items: items,
     );
   }
 
@@ -562,12 +649,12 @@ class _TodayDashboard extends StatelessWidget {
 
         return Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1880),
+            constraints: const BoxConstraints(maxWidth: 1720),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 topRow,
-                const SizedBox(height: 24),
+                const SizedBox(height: 22),
                 if (!data.planningLoaded)
                   const Padding(
                     padding: EdgeInsets.only(bottom: 12),
@@ -584,6 +671,14 @@ class _TodayDashboard extends StatelessWidget {
                       text: 'Could not load planning data: ${data.loadError}',
                     ),
                   ),
+                _TodayLaunchPanel(
+                  data: data,
+                  onOpenLibrary: onOpenLibrary,
+                  onOpenCalendar: onOpenCalendar,
+                  onCreatePlan: onCreatePlan,
+                  onCreateProject: onCreateProject,
+                ),
+                const SizedBox(height: 18),
                 mainContent,
               ],
             ),
@@ -659,14 +754,6 @@ class _TodayTopNavigation extends StatelessWidget {
             label: 'Library',
             filled: false,
             onTap: onOpenLibrary,
-          ),
-          const SizedBox(width: 12),
-          Container(
-            width: 30,
-            height: 30,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(color: chroma.soft, shape: BoxShape.circle),
-            child: Text('J', style: TextStyle(fontWeight: FontWeight.w800, color: chroma.accent)),
           ),
         ],
       ),
@@ -746,6 +833,425 @@ class _NavPillButton extends StatelessWidget {
   }
 }
 
+class _TodayLaunchPanel extends StatelessWidget {
+  const _TodayLaunchPanel({
+    required this.data,
+    required this.onOpenLibrary,
+    required this.onOpenCalendar,
+    required this.onCreatePlan,
+    required this.onCreateProject,
+  });
+
+  final _TodayDashboardData data;
+  final Future<void> Function() onOpenLibrary;
+  final Future<void> Function() onOpenCalendar;
+  final Future<void> Function() onCreatePlan;
+  final Future<void> Function() onCreateProject;
+
+  @override
+  Widget build(BuildContext context) {
+    final chroma = _TodayChromaticScope.of(context);
+    final setup = data.dailySetup;
+    final plannedItems = _todayActionableWorkItems(data);
+    final openCount = _todayOpenWorkCount(data);
+    final suggestedCount = plannedItems.length;
+    final hasSetup = setup != null;
+    final hasWork = openCount > 0;
+    final title = hasSetup
+        ? 'Today is set up'
+        : hasWork
+            ? 'Start with today’s plan'
+            : 'Start your day';
+    final body = hasSetup
+        ? '${setup.includedItems.length} item${setup.includedItems.length == 1 ? '' : 's'} selected. Review the list, add reminders, or keep working from the commitments below.'
+        : hasWork
+            ? '$openCount item${openCount == 1 ? '' : 's'} need attention today. Run setup once, confirm what matters, then begin.'
+            : 'No planned work is assigned yet. Use setup to add reminders manually, or create a plan when you are ready.';
+    final status = hasSetup
+        ? '${setup.mustCount} must · ${setup.shouldCount} should · ${setup.extraCount} extra'
+        : hasWork
+            ? '$openCount open today · $suggestedCount suggested'
+            : 'Clean slate · manual setup available';
+
+    return _SurfaceCard(
+      padding: const EdgeInsets.fromLTRB(22, 20, 22, 20),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 900;
+          final actionBlock = _TodayLaunchActionBlock(
+            primaryLabel: hasSetup ? 'Review today' : 'Set up today',
+            primaryIcon: hasSetup ? Icons.checklist_rtl_rounded : Icons.wb_twilight_rounded,
+            onPrimary: data.onOpenTodaySetup,
+            onOpenCalendar: onOpenCalendar,
+            onCreatePlan: onCreatePlan,
+          );
+          final intro = Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  color: chroma.soft,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: Color.lerp(chroma.border, chroma.accent, .16)!),
+                ),
+                child: Icon(
+                  hasSetup
+                      ? Icons.task_alt_rounded
+                      : hasWork
+                          ? Icons.route_rounded
+                          : Icons.wb_sunny_outlined,
+                  color: chroma.accent,
+                  size: 26,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 24,
+                        height: 1.02,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -.55,
+                        color: _TodayColors.ink,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      body,
+                      maxLines: compact ? 4 : 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: _TodayText.muted.copyWith(fontSize: 13.5, height: 1.32),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _LaunchMetricPill(icon: Icons.track_changes_rounded, label: status),
+                        _LaunchMetricPill(
+                          icon: Icons.folder_copy_outlined,
+                          label: data.projects.isEmpty
+                              ? 'No active projects'
+                              : '${data.projects.length} active project${data.projects.length == 1 ? '' : 's'}',
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (compact) ...[
+                intro,
+                const SizedBox(height: 18),
+                actionBlock,
+              ] else
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(child: intro),
+                    const SizedBox(width: 24),
+                    SizedBox(width: 330, child: actionBlock),
+                  ],
+                ),
+              const SizedBox(height: 16),
+              _TodayLaunchShortcuts(
+                onOpenLibrary: onOpenLibrary,
+                onOpenCalendar: onOpenCalendar,
+                onCreatePlan: onCreatePlan,
+                onCreateProject: onCreateProject,
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _TodayLaunchActionBlock extends StatelessWidget {
+  const _TodayLaunchActionBlock({
+    required this.primaryLabel,
+    required this.primaryIcon,
+    required this.onPrimary,
+    required this.onOpenCalendar,
+    required this.onCreatePlan,
+  });
+
+  final String primaryLabel;
+  final IconData primaryIcon;
+  final Future<void> Function() onPrimary;
+  final Future<void> Function() onOpenCalendar;
+  final Future<void> Function() onCreatePlan;
+
+  @override
+  Widget build(BuildContext context) {
+    final chroma = _TodayChromaticScope.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          height: 48,
+          child: ElevatedButton.icon(
+            onPressed: () => unawaited(onPrimary()),
+            icon: Icon(primaryIcon, size: 20),
+            label: Text(primaryLabel),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: chroma.accent,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              textStyle: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w900),
+            ),
+          ),
+        ),
+        const SizedBox(height: 9),
+        Row(
+          children: [
+            Expanded(
+              child: _LaunchSecondaryButton(
+                icon: Icons.calendar_month_outlined,
+                label: 'Calendar',
+                onTap: onOpenCalendar,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _LaunchSecondaryButton(
+                icon: Icons.add_task_rounded,
+                label: 'Plan',
+                onTap: onCreatePlan,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _LaunchSecondaryButton extends StatelessWidget {
+  const _LaunchSecondaryButton({required this.icon, required this.label, required this.onTap});
+
+  final IconData icon;
+  final String label;
+  final Future<void> Function() onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final chroma = _TodayChromaticScope.of(context);
+    return InkWell(
+      onTap: () => unawaited(onTap()),
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        height: 40,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: chroma.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: chroma.border),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 17, color: chroma.accent),
+            const SizedBox(width: 7),
+            Text(label, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w900, color: chroma.accent)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LaunchMetricPill extends StatelessWidget {
+  const _LaunchMetricPill({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final chroma = _TodayChromaticScope.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: Color.lerp(chroma.surface, Colors.white, .35),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: chroma.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: chroma.accent),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(fontSize: 11.5, height: 1, fontWeight: FontWeight.w900, color: _TodayColors.inkMuted)),
+        ],
+      ),
+    );
+  }
+}
+
+class _TodayLaunchShortcuts extends StatelessWidget {
+  const _TodayLaunchShortcuts({
+    required this.onOpenLibrary,
+    required this.onOpenCalendar,
+    required this.onCreatePlan,
+    required this.onCreateProject,
+  });
+
+  final Future<void> Function() onOpenLibrary;
+  final Future<void> Function() onOpenCalendar;
+  final Future<void> Function() onCreatePlan;
+  final Future<void> Function() onCreateProject;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final twoColumn = constraints.maxWidth < 760;
+        final tiles = [
+          _LaunchShortcutTile(icon: Icons.menu_book_outlined, title: 'Library', subtitle: 'Open material', onTap: onOpenLibrary),
+          _LaunchShortcutTile(icon: Icons.calendar_month_outlined, title: 'Calendar', subtitle: 'Review distribution', onTap: onOpenCalendar),
+          _LaunchShortcutTile(icon: Icons.checklist_rounded, title: 'Create plan', subtitle: 'Break work down', onTap: onCreatePlan),
+          _LaunchShortcutTile(icon: Icons.grid_view_rounded, title: 'Create project', subtitle: 'New work stream', onTap: onCreateProject),
+        ];
+        if (twoColumn) {
+          return Wrap(spacing: 8, runSpacing: 8, children: [
+            for (final tile in tiles) SizedBox(width: (constraints.maxWidth - 8) / 2, child: tile),
+          ]);
+        }
+        return Row(
+          children: [
+            for (var i = 0; i < tiles.length; i++) ...[
+              Expanded(child: tiles[i]),
+              if (i != tiles.length - 1) const SizedBox(width: 8),
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _LaunchShortcutTile extends StatelessWidget {
+  const _LaunchShortcutTile({required this.icon, required this.title, required this.subtitle, required this.onTap});
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Future<void> Function() onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final chroma = _TodayChromaticScope.of(context);
+    return InkWell(
+      onTap: () => unawaited(onTap()),
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 58),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        decoration: BoxDecoration(
+          color: Color.lerp(chroma.surface, chroma.card, .35),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: chroma.border),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(color: chroma.soft, borderRadius: BorderRadius.circular(10)),
+              child: Icon(icon, size: 17, color: chroma.accent),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.6, fontWeight: FontWeight.w900, color: _TodayColors.ink)),
+                  const SizedBox(height: 2),
+                  Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10.8, fontWeight: FontWeight.w700, color: _TodayColors.inkFaint)),
+                ],
+              ),
+            ),
+            const Icon(Icons.arrow_forward_rounded, size: 16, color: _TodayColors.inkMuted),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+List<_TodayWorkItemVm> _todayActionableWorkItems(_TodayDashboardData data) {
+  _TodayWorkSectionVm sectionFor(_TodayWorkSectionKind kind) {
+    return data.workSections.firstWhere(
+      (section) => section.kind == kind,
+      orElse: () => _TodayWorkSectionVm(
+        title: kind.name,
+        subtitle: null,
+        icon: Icons.check_circle_outline_rounded,
+        kind: kind,
+        items: const <_TodayWorkItemVm>[],
+      ),
+    );
+  }
+
+  return <_TodayWorkItemVm>[
+    ...sectionFor(_TodayWorkSectionKind.critical).items,
+    ...sectionFor(_TodayWorkSectionKind.pressure).items,
+    ...sectionFor(_TodayWorkSectionKind.planned).items,
+  ];
+}
+
+int _todayOpenWorkCount(_TodayDashboardData data) {
+  final setup = data.dailySetup;
+  if (setup != null) {
+    return setup.includedItems.where((item) => !data.todayWorkDoneIds.contains(item.id)).length;
+  }
+  return _todayActionableWorkItems(data)
+      .where((item) => !data.todayWorkDoneIds.contains(_workItemStableId(item)))
+      .length;
+}
+
+class _PreparedTodayPill extends StatelessWidget {
+  const _PreparedTodayPill({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final chroma = _TodayChromaticScope.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: chroma.soft,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: chroma.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.task_alt_rounded, size: 14, color: chroma.accent),
+          const SizedBox(width: 6),
+          Text('$count selected', style: TextStyle(fontSize: 11.5, height: 1, fontWeight: FontWeight.w900, color: chroma.accent)),
+        ],
+      ),
+    );
+  }
+}
+
 class _TodayMainColumn extends StatelessWidget {
   const _TodayMainColumn({required this.data});
 
@@ -756,11 +1262,6 @@ class _TodayMainColumn extends StatelessWidget {
     return Column(
       children: [
         _TodayTasksPanel(data: data),
-        const SizedBox(height: 16),
-        _SchedulePressurePanel(
-          pressures: data.schedulePressures,
-          onOpenCalendar: data.onOpenCalendar,
-        ),
       ],
     );
   }
@@ -785,13 +1286,6 @@ class _TodaySideColumn extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        _QuickAccessPanel(
-          onOpenLibrary: onOpenLibrary,
-          onOpenCalendar: onOpenCalendar,
-          onCreatePlan: onCreatePlan,
-          onCreateProject: onCreateProject,
-        ),
-        const SizedBox(height: 16),
         _ActiveProjectsPanel(projects: data.projects, onCreateProject: onCreateProject),
       ],
     );
@@ -1350,19 +1844,25 @@ class _TodayTasksPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final plannedSection = data.workSections.firstWhere(
-      (section) => section.kind == _TodayWorkSectionKind.planned,
-      orElse: () => const _TodayWorkSectionVm(
-        title: 'Planned for today',
-        subtitle: null,
-        icon: Icons.menu_book_rounded,
-        kind: _TodayWorkSectionKind.planned,
-        items: <_TodayWorkItemVm>[],
-      ),
-    );
-    final plannedItems = plannedSection.items;
+    _TodayWorkSectionVm sectionFor(_TodayWorkSectionKind kind) {
+      return data.workSections.firstWhere(
+        (section) => section.kind == kind,
+        orElse: () => _TodayWorkSectionVm(
+          title: kind.name,
+          subtitle: null,
+          icon: Icons.check_circle_outline_rounded,
+          kind: kind,
+          items: const <_TodayWorkItemVm>[],
+        ),
+      );
+    }
+
+    final plannedItems = _todayActionableWorkItems(data);
     final setup = data.dailySetup;
     final setupItems = setup?.includedItems ?? const <_DailySetupItemVm>[];
+    final visibleCount = setup == null
+        ? plannedItems.where((item) => !data.todayWorkDoneIds.contains(_workItemStableId(item))).length
+        : setupItems.where((item) => !data.todayWorkDoneIds.contains(item.id)).length;
 
     return Container(
       width: double.infinity,
@@ -1374,9 +1874,9 @@ class _TodayTasksPanel extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  setup == null
-                      ? '${plannedItems.length} planned today'
-                      : '${setupItems.length} item${setupItems.length == 1 ? '' : 's'} in today',
+                  visibleCount == 0
+                      ? 'Nothing left for today'
+                      : '$visibleCount planned today',
                   style: const TextStyle(
                     fontSize: 12.2,
                     height: 1,
@@ -1386,16 +1886,17 @@ class _TodayTasksPanel extends StatelessWidget {
                   ),
                 ),
               ),
-              _SetupTodayButton(onTap: data.onOpenTodaySetup),
+              if (setup != null)
+                _PreparedTodayPill(count: setupItems.length),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           if (setup != null && setupItems.isNotEmpty)
-            _SetupTodayList(items: setupItems)
+            _SetupTodayList(data: data, items: setupItems)
           else if (plannedItems.isEmpty)
             _IntegratedEmptyToday(onSetupToday: data.onOpenTodaySetup)
           else
-            _PlannedTodayList(items: plannedItems),
+            _PlannedTodayList(data: data, items: plannedItems),
         ],
       ),
     );
@@ -1424,61 +1925,151 @@ class _SetupTodayButton extends StatelessWidget {
 }
 
 class _PlannedTodayList extends StatelessWidget {
-  const _PlannedTodayList({required this.items});
+  const _PlannedTodayList({required this.data, required this.items});
 
+  final _TodayDashboardData data;
   final List<_TodayWorkItemVm> items;
 
   @override
   Widget build(BuildContext context) {
     final chroma = _TodayChromaticScope.of(context);
-    return Container(
-      decoration: BoxDecoration(
-        color: Color.lerp(chroma.card, chroma.canvas, .32),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Color.lerp(chroma.border, chroma.canvas, .18)!),
-      ),
-      child: Column(
-        children: [
-          for (var index = 0; index < items.length; index++)
-            _PlannedTodayRow(
-              title: items[index].title,
-              description: _todayItemDescription(amount: items[index].amount, reason: items[index].reason, source: items[index].sourceLabel),
-              onComplete: items[index].onComplete,
-              last: index == items.length - 1,
-            ),
-        ],
-      ),
+    return Column(
+      children: [
+        for (var index = 0; index < items.length; index++)
+          _PlannedTodayRow(
+            title: items[index].title,
+            description: _todayItemDescription(amount: items[index].amount, reason: items[index].reason, source: items[index].sourceLabel),
+            done: data.todayWorkDoneIds.contains(_workItemStableId(items[index])),
+            onComplete: items[index].onComplete == null
+                ? null
+                : () => data.onCompleteTodayItem(_workItemStableId(items[index]), items[index].onComplete),
+            last: index == items.length - 1,
+            dividerColor: chroma.border,
+          ),
+      ],
     );
   }
 }
 
 class _SetupTodayList extends StatelessWidget {
-  const _SetupTodayList({required this.items});
+  const _SetupTodayList({required this.data, required this.items});
 
+  final _TodayDashboardData data;
   final List<_DailySetupItemVm> items;
 
   @override
   Widget build(BuildContext context) {
     final chroma = _TodayChromaticScope.of(context);
-    return Container(
-      decoration: BoxDecoration(
-        color: Color.lerp(chroma.card, chroma.canvas, .32),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Color.lerp(chroma.border, chroma.canvas, .18)!),
-      ),
-      child: Column(
-        children: [
-          for (var index = 0; index < items.length; index++)
-            _PlannedTodayRow(
-              title: items[index].title,
-              description: _todayItemDescription(amount: items[index].detail, reason: items[index].reason, source: items[index].sourceLabel),
-              onComplete: items[index].onComplete,
-              last: index == items.length - 1,
+    return Column(
+      children: [
+        for (var index = 0; index < items.length; index++)
+          _PlannedTodayRow(
+            title: items[index].title,
+            description: _todayItemDescription(amount: items[index].detail, reason: items[index].reason, source: items[index].sourceLabel),
+            done: data.todayWorkDoneIds.contains(items[index].id),
+            onComplete: items[index].onComplete == null
+                ? null
+                : () => data.onCompleteTodayItem(items[index].id, items[index].onComplete),
+            last: index == items.length - 1,
+            dividerColor: chroma.border,
+          ),
+      ],
+    );
+  }
+}
+
+class _PlannedTodayRow extends StatelessWidget {
+  const _PlannedTodayRow({
+    required this.title,
+    required this.description,
+    required this.done,
+    required this.onComplete,
+    required this.last,
+    required this.dividerColor,
+  });
+
+  final String title;
+  final String description;
+  final bool done;
+  final Future<void> Function()? onComplete;
+  final bool last;
+  final Color dividerColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final chroma = _TodayChromaticScope.of(context);
+    return InkWell(
+      onTap: onComplete == null || done ? null : () => unawaited(onComplete!()),
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 11),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: last ? Colors.transparent : dividerColor)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Transform.translate(
+              offset: const Offset(-5, -5),
+              child: Checkbox(
+                value: done,
+                activeColor: chroma.accent,
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                onChanged: onComplete == null || done ? null : (_) => unawaited(onComplete!()),
+              ),
             ),
-        ],
+            const SizedBox(width: 5),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13.8,
+                      height: 1.2,
+                      fontWeight: FontWeight.w900,
+                      color: done ? _TodayColors.inkFaint : _TodayColors.ink,
+                      decoration: done ? TextDecoration.lineThrough : TextDecoration.none,
+                    ),
+                  ),
+                  if (description.trim().isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      description,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11.8,
+                        height: 1.26,
+                        fontWeight: FontWeight.w700,
+                        color: done ? _TodayColors.inkFaint : _TodayColors.inkMuted,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
+}
+
+String _workItemStableId(_TodayWorkItemVm item) {
+  return '${item.title}|${item.amount ?? ''}|${item.reason}|${item.sourceLabel ?? ''}';
+}
+
+String _todayItemDescription({String? amount, required String reason, String? source}) {
+  final parts = <String>[];
+  if (amount != null && amount.trim().isNotEmpty) parts.add(amount.trim());
+  if (reason.trim().isNotEmpty) parts.add(reason.trim());
+  if (source != null && source.trim().isNotEmpty) parts.add(source.trim());
+  return parts.join(' · ');
 }
 
 class _IntegratedEmptyToday extends StatelessWidget {
@@ -1510,80 +2101,6 @@ class _IntegratedEmptyToday extends StatelessWidget {
       ),
     );
   }
-}
-
-class _PlannedTodayRow extends StatelessWidget {
-  const _PlannedTodayRow({required this.title, required this.description, required this.onComplete, required this.last});
-
-  final String title;
-  final String description;
-  final Future<void> Function()? onComplete;
-  final bool last;
-
-  @override
-  Widget build(BuildContext context) {
-    final chroma = _TodayChromaticScope.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        decoration: BoxDecoration(
-          border: Border(bottom: BorderSide(color: last ? Colors.transparent : chroma.border)),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            InkWell(
-              borderRadius: BorderRadius.circular(999),
-              onTap: onComplete == null ? null : () => unawaited(onComplete!()),
-              child: Container(
-                width: 22,
-                height: 22,
-                margin: const EdgeInsets.only(top: 1),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: chroma.card,
-                  border: Border.all(color: onComplete == null ? chroma.borderStrong : chroma.accent, width: 1.45),
-                ),
-                child: Icon(Icons.check_rounded, size: 14, color: onComplete == null ? chroma.borderStrong : chroma.accent),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13.6, height: 1.2, fontWeight: FontWeight.w900, color: _TodayColors.ink),
-                  ),
-                  if (description.trim().isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      description,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11.7, height: 1.26, fontWeight: FontWeight.w700, color: _TodayColors.inkMuted),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-String _todayItemDescription({String? amount, required String reason, String? source}) {
-  final parts = <String>[];
-  if (amount != null && amount.trim().isNotEmpty) parts.add(amount.trim());
-  if (reason.trim().isNotEmpty) parts.add(reason.trim());
-  if (source != null && source.trim().isNotEmpty) parts.add(source.trim());
-  return parts.join(' · ');
 }
 
 class _TodaySetupEntryCard extends StatelessWidget {
@@ -3766,7 +4283,9 @@ class _TodayDashboardData {
     required this.planningLoaded,
     required this.loadError,
     required this.dailySetup,
+    required this.todayWorkDoneIds,
     required this.onOpenTodaySetup,
+    required this.onCompleteTodayItem,
     required this.weekDays,
     required this.todayDeadlines,
     required this.tasks,
@@ -3784,7 +4303,9 @@ class _TodayDashboardData {
   final bool planningLoaded;
   final Object? loadError;
   final _DailySetupSnapshot? dailySetup;
+  final Set<String> todayWorkDoneIds;
   final Future<void> Function() onOpenTodaySetup;
+  final Future<void> Function(String itemId, Future<void> Function()? action) onCompleteTodayItem;
   final List<_WeekDayVm> weekDays;
   final List<_DeadlineSignalVm> todayDeadlines;
   final List<_TodayTaskVm> tasks;
@@ -3804,7 +4325,9 @@ class _TodayDashboardData {
     required bool planningLoaded,
     required Object? loadError,
     required _DailySetupSnapshot? dailySetup,
+    required Set<String> todayWorkDoneIds,
     required Future<void> Function() onOpenTodaySetup,
+    required Future<void> Function(String itemId, Future<void> Function()? action) onCompleteTodayItem,
     required Future<void> Function(StudyPlanRequirement requirement) onCompleteRequirement,
     required Future<void> Function(StudyPlanDebt debt) onResolveDebt,
     required Future<void> Function(TodoItem todo) onCompleteTodo,
@@ -3823,7 +4346,11 @@ class _TodayDashboardData {
     for (var index = 0; index < visibleDayCount; index++) {
       final date = weekStart.add(Duration(days: index));
       final requirements = planningRepository.requirementsForRange(rangeStart: date, rangeEnd: date, now: now);
-      final dayTodos = todos.where((todo) => todo.deadline != null && _DateText.sameDate(todo.deadline!, date)).toList(growable: false);
+      final dayTodos = todos.where((todo) {
+        final deadline = todo.deadline;
+        if (deadline != null && _DateText.sameDate(deadline, date)) return true;
+        return todo.sourceType == kTodoSourceTodaySetup && _DateText.sameDate(todo.note.createdAt, date);
+      }).toList(growable: false);
       final openDayTodos = dayTodos.where((todo) => !todo.isCompleted).toList(growable: false);
       final doneTodoCount = dayTodos.where((todo) => todo.isCompleted).length;
       final items = _weekWorkItemsForDate(
@@ -3854,12 +4381,19 @@ class _TodayDashboardData {
 
     final todayRequirements = planningRepository.requirementsForRange(rangeStart: today, rangeEnd: today, now: now);
     final debts = planningRepository.studyDebts(now);
+    final todaySetupTodos = openTodos.where((todo) {
+      return todo.sourceType == kTodoSourceTodaySetup && _DateText.sameDate(todo.note.createdAt, today);
+    }).toList(growable: false);
     final todayTodos = openTodos.where((todo) {
       final deadline = todo.deadline;
       if (deadline == null) return false;
       return !_DateText.dateOnly(deadline).isAfter(today);
     }).toList(growable: false);
-    final undatedTodos = openTodos.where((todo) => todo.deadline == null).toList(growable: false);
+    final undatedTodos = openTodos.where((todo) {
+      if (todo.deadline != null) return false;
+      if (todaySetupTodos.any((candidate) => candidate.id == todo.id)) return false;
+      return true;
+    }).toList(growable: false);
 
     final tasks = <_TodayTaskVm>[];
     for (final debt in debts.take(2)) {
@@ -3883,7 +4417,7 @@ class _TodayDashboardData {
       );
       if (tasks.length >= 6) break;
     }
-    for (final todo in [...todayTodos, ...undatedTodos]) {
+    for (final todo in [...todayTodos, ...todaySetupTodos, ...undatedTodos]) {
       if (tasks.length >= 6) break;
       tasks.add(
         _TodayTaskVm(
@@ -3900,6 +4434,7 @@ class _TodayDashboardData {
       debts: debts,
       requirements: todayRequirements,
       todayTodos: todayTodos,
+      todaySetupTodos: todaySetupTodos,
       undatedTodos: undatedTodos,
       onCompleteRequirement: onCompleteRequirement,
       onResolveDebt: onResolveDebt,
@@ -3941,7 +4476,9 @@ class _TodayDashboardData {
       planningLoaded: planningLoaded,
       loadError: loadError,
       dailySetup: dailySetup,
+      todayWorkDoneIds: todayWorkDoneIds,
       onOpenTodaySetup: onOpenTodaySetup,
+      onCompleteTodayItem: onCompleteTodayItem,
       weekDays: weekDays,
       todayDeadlines: todayDeadlines,
       tasks: tasks,
@@ -3961,6 +4498,7 @@ class _TodayDashboardData {
     required List<StudyPlanDebt> debts,
     required List<StudyPlanRequirement> requirements,
     required List<TodoItem> todayTodos,
+    required List<TodoItem> todaySetupTodos,
     required List<TodoItem> undatedTodos,
     required Future<void> Function(StudyPlanRequirement requirement) onCompleteRequirement,
     required Future<void> Function(StudyPlanDebt debt) onResolveDebt,
@@ -4044,6 +4582,22 @@ class _TodayDashboardData {
             }
           },
           completeLabel: 'Done today',
+        ),
+      );
+    }
+
+    for (final todo in todaySetupTodos) {
+      final sourceLink = _relatedLinkForTodo(todo, onOpenRelatedFile);
+      plannedItems.add(
+        _TodayWorkItemVm(
+          title: todo.title,
+          amount: todo.body,
+          reason: 'Added for today',
+          sourceLabel: todo.pdfLabel == 'No source' || todo.pdfLabel == 'Unlinked notes' ? null : todo.pdfLabel,
+          sourceIcon: sourceLink?.icon,
+          onOpenSource: sourceLink == null ? null : () => onOpenRelatedFile(sourceLink),
+          onComplete: () => onCompleteTodo(todo),
+          completeLabel: 'Done',
         ),
       );
     }
@@ -4155,7 +4709,11 @@ class _TodayDashboardData {
     }
 
     for (final todo in todos) {
-      addDeadline(todo.title, key: 'todo-${todo.id}', detail: todo.pdfLabel == 'No source' ? 'Deadline' : todo.pdfLabel);
+      if (todo.sourceType == kTodoSourceTodaySetup) {
+        workItems.add(_WeekWorkItemVm.work(todo.title, detail: 'Added for today', units: 1, unitNoun: 'item'));
+      } else {
+        addDeadline(todo.title, key: 'todo-${todo.id}', detail: todo.pdfLabel == 'No source' ? 'Deadline' : todo.pdfLabel);
+      }
     }
 
     for (final requirement in requirements.where((item) => item.isDeadlineMarker)) {

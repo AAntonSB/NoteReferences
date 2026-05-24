@@ -27,6 +27,7 @@ import '../data/pdf_reader_session_state_store.dart';
 import '../domain/pdf_viewport_state.dart';
 import 'pdf_hover_highlight_overlay.dart';
 import 'pdf_document_notes_panel.dart';
+import 'pdf_owned_document_notes_panel.dart';
 import 'pdf_reader_toolbar.dart';
 import 'pdf_search_bar.dart';
 import 'pdf_selection_action_overlay.dart';
@@ -66,7 +67,10 @@ class PdfReaderScreen extends StatefulWidget {
 }
 
 class _PdfReaderScreenState extends State<PdfReaderScreen> {
-  final pdfrx.PdfViewerController _controller = pdfrx.PdfViewerController();
+  pdfrx.PdfViewerController? _controller;
+
+  final Map<int, pdfrx.PdfPage> _visiblePdfPagesByNumber = {};
+  final Map<int, Rect> _visiblePdfPageRectsByNumber = {};
 
   final ValueNotifier<PdfViewportState> _viewportNotifier =
       ValueNotifier<PdfViewportState>(PdfViewportState.initial());
@@ -110,6 +114,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   _persistentHighlightsSubscription;
   Timer? _pdfSearchDebounce;
   Timer? _sessionSaveDebounce;
+  Timer? _viewportPulseTimer;
+  int _viewportPulseTicksRemaining = 0;
   OverlayEntry? _todosOverlayEntry;
 
   PdfReaderSessionState? _restoredSession;
@@ -121,6 +127,17 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   SourceReaderWorkspaceLayout _workspaceLayout = SourceReaderWorkspaceLayout.sidecar;
   String? _activeWorkspaceDocumentId;
+
+  SourceReaderWorkspaceLayout get _betaVisibleWorkspaceLayout {
+    // The standalone project writing workspace is intentionally hidden from the
+    // PDF reader for the beta launch. If an older session left the reader in
+    // that mode, fall back to the owned document-note pane instead of rendering
+    // an unreachable hidden state.
+    if (_workspaceLayout == SourceReaderWorkspaceLayout.workspaceDocument) {
+      return SourceReaderWorkspaceLayout.document;
+    }
+    return _workspaceLayout;
+  }
   PdfReaderTool _activeTool = PdfReaderTool.cursor;
   int _activeHighlightColorValue = kDefaultPdfHighlightColorValue;
 
@@ -150,8 +167,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     _ownsPlanningRepository = widget.planningRepository == null;
     _planningRepository = widget.planningRepository ?? StudyPlanningRepository();
 
-    _controller.addListener(_publishViewportState);
-
     _persistentHighlightsSubscription = _noteRepository
         .watchPersistentHighlightRegionsForDocument(
           documentId: widget.documentId,
@@ -175,6 +190,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   void dispose() {
     _closeTodosPanel();
     _sessionSaveDebounce?.cancel();
+    _viewportPulseTimer?.cancel();
     _pdfSearchDebounce?.cancel();
     unawaited(_saveReaderSessionNow());
 
@@ -183,7 +199,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     _pdfTextSearcher?.removeListener(_handlePdfTextSearcherChanged);
     _pdfTextSearcher?.dispose();
 
-    _controller.removeListener(_publishViewportState);
+    _detachPdfController();
 
     _screenFocusNode.dispose();
     _pdfSearchFocusNode.dispose();
@@ -226,6 +242,75 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     setState(() => _planningLoaded = true);
   }
 
+  void _attachPdfController(pdfrx.PdfViewerController controller) {
+    if (identical(_controller, controller)) {
+      return;
+    }
+
+    _detachPdfController();
+    _controller = controller;
+    controller.addListener(_handlePdfControllerChanged);
+
+    _pdfTextSearcher?.removeListener(_handlePdfTextSearcherChanged);
+    _pdfTextSearcher?.dispose();
+    _pdfTextSearcher = null;
+  }
+
+  void _detachPdfController() {
+    final controller = _controller;
+    if (controller == null) {
+      return;
+    }
+
+    try {
+      controller.removeListener(_handlePdfControllerChanged);
+    } catch (_) {
+      // The viewer owns this controller when it is supplied by pdfrx. During
+      // route teardown pdfrx may already have detached its state; removing the
+      // listener is best-effort only.
+    }
+
+    _controller = null;
+    _visiblePdfPagesByNumber.clear();
+    _visiblePdfPageRectsByNumber.clear();
+  }
+
+  void _handlePdfControllerChanged() {
+    _publishViewportState();
+  }
+
+  pdfrx.PdfViewerController? get _readyPdfController {
+    final controller = _controller;
+    if (controller == null) {
+      return null;
+    }
+
+    try {
+      return controller.isReady ? controller : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _startViewportPulse({int ticks = 8}) {
+    _viewportPulseTicksRemaining = math.max(_viewportPulseTicksRemaining, ticks);
+    if (_viewportPulseTimer != null) {
+      return;
+    }
+
+    _viewportPulseTimer = Timer.periodic(const Duration(milliseconds: 80), (timer) {
+      if (!mounted || _viewportPulseTicksRemaining <= 0) {
+        timer.cancel();
+        _viewportPulseTimer = null;
+        _viewportPulseTicksRemaining = 0;
+        return;
+      }
+
+      _viewportPulseTicksRemaining--;
+      _publishViewportState();
+    });
+  }
+
   void _scheduleReaderSessionSave() {
     if (!_sessionLoaded) {
       return;
@@ -238,21 +323,23 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   Future<void> _saveReaderSessionNow() async {
-    if (!_sessionLoaded || !_controller.isReady) {
+    final controller = _readyPdfController;
+    if (!_sessionLoaded || controller == null) {
       return;
     }
 
-    final visibleRect = _controller.visibleRect;
-
-    if (visibleRect == Rect.zero || visibleRect.height <= 0) {
+    final viewport = _readViewportStateFromController(controller);
+    if (viewport == null ||
+        viewport.visibleRect == Rect.zero ||
+        viewport.visibleRect.height <= 0) {
       return;
     }
 
     final state = PdfReaderSessionState(
       documentId: widget.documentId,
-      visibleTop: visibleRect.top,
-      visibleCenterX: visibleRect.center.dx,
-      zoom: _controller.currentZoom,
+      visibleTop: viewport.visibleRect.top,
+      visibleCenterX: viewport.visibleRect.center.dx,
+      zoom: viewport.zoom,
       pdfPaneFraction: _pdfPaneFraction,
       outlineOpen: _latestOutlineOpen,
       debugEnabled: _latestDebugEnabled,
@@ -263,27 +350,28 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   void _restorePdfViewportIfNeeded() {
+    final controller = _readyPdfController;
     if (_didRestorePdfViewport ||
         !_sessionLoaded ||
-        !_controller.isReady ||
+        controller == null ||
         _restoredSession == null) {
       return;
     }
 
-    final visibleRect = _controller.visibleRect;
-    final documentSize = _controller.documentSize;
-
-    if (visibleRect == Rect.zero ||
-        visibleRect.height <= 0 ||
-        documentSize.height <= 0) {
+    final viewport = _readViewportStateFromController(controller);
+    if (viewport == null ||
+        viewport.visibleRect == Rect.zero ||
+        viewport.visibleRect.height <= 0 ||
+        viewport.documentSize.height <= 0) {
       return;
     }
 
     final session = _restoredSession!;
     _didRestorePdfViewport = true;
 
+    final visibleRect = viewport.visibleRect;
     final zoom = math.max(0.01, session.zoom);
-    final maxTop = math.max(0.0, documentSize.height - visibleRect.height);
+    final maxTop = math.max(0.0, viewport.documentSize.height - visibleRect.height);
     final targetTop = session.visibleTop.clamp(0.0, maxTop).toDouble();
 
     final targetCenter = Offset(
@@ -293,15 +381,16 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       targetTop + visibleRect.height / 2,
     );
 
-    final matrix = _controller.calcMatrixFor(targetCenter, zoom: zoom);
+    final matrix = controller.calcMatrixFor(targetCenter, zoom: zoom);
 
     unawaited(
-      _controller.goTo(matrix, duration: Duration.zero).whenComplete(() {
+      controller.goTo(matrix, duration: Duration.zero).whenComplete(() {
         if (!mounted) {
           return;
         }
 
         _publishViewportStateForNextFrames();
+        _startViewportPulse(ticks: 8);
       }),
     );
   }
@@ -318,10 +407,16 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       return;
     }
 
-    if (!_controller.isReady ||
-        _controller.visibleRect == Rect.zero ||
-        _controller.visibleRect.height <= 0 ||
-        _controller.layout.pageLayouts.isEmpty) {
+    final controller = _readyPdfController;
+    final viewport = controller == null
+        ? null
+        : _readViewportStateFromController(controller);
+
+    if (controller == null ||
+        viewport == null ||
+        viewport.visibleRect == Rect.zero ||
+        viewport.visibleRect.height <= 0 ||
+        viewport.pageRects.isEmpty) {
       if (attemptsLeft <= 0) return;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _applyInitialOpenLocatorIfNeeded(attemptsLeft: attemptsLeft - 1);
@@ -365,11 +460,12 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       return;
     }
 
-    if (!_controller.isReady) {
+    final controller = _readyPdfController;
+    if (controller == null) {
       return;
     }
 
-    final searcher = pdfrx.PdfTextSearcher(_controller);
+    final searcher = pdfrx.PdfTextSearcher(controller);
     searcher.addListener(_handlePdfTextSearcherChanged);
 
     _pdfTextSearcher = searcher;
@@ -551,8 +647,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     pdfrx.PdfDocument document,
     pdfrx.PdfViewerController controller,
   ) {
+    _attachPdfController(controller);
     _ensurePdfTextSearcherReady();
     _publishViewportState();
+    _startViewportPulse(ticks: 8);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -569,11 +667,19 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   void _publishViewportState() {
-    if (!mounted || !_controller.isReady) {
+    if (!mounted) {
       return;
     }
 
-    final next = _readViewportStateFromController();
+    final controller = _readyPdfController;
+    if (controller == null) {
+      return;
+    }
+
+    final next = _readViewportStateFromController(controller);
+    if (next == null) {
+      return;
+    }
 
     if (_viewportNotifier.value.isEquivalentTo(next)) {
       return;
@@ -598,35 +704,46 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     });
   }
 
-  PdfViewportState _readViewportStateFromController() {
-    final pageCount = _controller.pageCount <= 0 ? 1 : _controller.pageCount;
-    final currentPage = (_controller.pageNumber ?? 1)
-        .clamp(1, pageCount)
-        .toInt();
+  PdfViewportState? _readViewportStateFromController(
+    pdfrx.PdfViewerController controller,
+  ) {
+    try {
+      final pageCount = controller.pageCount <= 0 ? 1 : controller.pageCount;
+      final currentPage = (controller.pageNumber ?? 1)
+          .clamp(1, pageCount)
+          .toInt();
 
-    final layout = _controller.layout;
+      final layout = controller.layout;
 
-    return PdfViewportState(
-      isReady: _controller.isReady,
-      currentPage: currentPage,
-      pageCount: pageCount,
-      zoom: _controller.currentZoom,
-      visibleRect: _controller.visibleRect,
-      documentSize: layout.documentSize,
-      pageRects: List<Rect>.from(layout.pageLayouts),
-    );
+      return PdfViewportState(
+        isReady: controller.isReady,
+        currentPage: currentPage,
+        pageCount: pageCount,
+        zoom: controller.currentZoom,
+        visibleRect: controller.visibleRect,
+        documentSize: layout.documentSize,
+        pageRects: List<Rect>.from(layout.pageLayouts),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   void _handlePageChanged(int? pageNumber) {
     if (!mounted) return;
 
-    setState(() {
-      _selectedText = null;
-      _selectedSourceRects = const [];
+    if (_selectedText != null || _selectedSourceRects.isNotEmpty) {
+      setState(() {
+        _selectedText = null;
+        _selectedSourceRects = const [];
+        _selectionRequestId++;
+      });
+    } else {
       _selectionRequestId++;
-    });
+    }
 
     _publishViewportState();
+    _startViewportPulse(ticks: 10);
   }
 
   void _handleTextSelectionChange(pdfrx.PdfTextSelection textSelection) {
@@ -747,23 +864,24 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   void _handleSidecarScrollDelta(Offset scrollDelta) {
-    if (!_controller.isReady || scrollDelta.dy == 0) {
+    final controller = _readyPdfController;
+    if (controller == null || scrollDelta.dy == 0) {
       return;
     }
 
-    final visibleRect = _controller.visibleRect;
-    final documentSize = _controller.documentSize;
-
-    if (visibleRect == Rect.zero ||
-        visibleRect.height <= 0 ||
-        documentSize.height <= 0) {
+    final viewport = _readViewportStateFromController(controller);
+    if (viewport == null ||
+        viewport.visibleRect == Rect.zero ||
+        viewport.visibleRect.height <= 0 ||
+        viewport.documentSize.height <= 0) {
       return;
     }
 
-    final zoom = math.max(_controller.currentZoom, 0.01);
+    final visibleRect = viewport.visibleRect;
+    final zoom = math.max(viewport.zoom, 0.01);
     final documentDeltaY = (scrollDelta.dy * _mouseWheelScrollRatio) / zoom;
 
-    final maxTop = math.max(0.0, documentSize.height - visibleRect.height);
+    final maxTop = math.max(0.0, viewport.documentSize.height - visibleRect.height);
     final nextTop = (visibleRect.top + documentDeltaY)
         .clamp(0.0, maxTop)
         .toDouble();
@@ -777,29 +895,36 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       nextTop + visibleRect.height / 2,
     );
 
-    final matrix = _controller.calcMatrixFor(
+    final matrix = controller.calcMatrixFor(
       nextCenter,
-      zoom: _controller.currentZoom,
+      zoom: viewport.zoom,
     );
 
-    unawaited(_controller.goTo(matrix, duration: Duration.zero));
+    unawaited(
+      controller.goTo(matrix, duration: Duration.zero).whenComplete(() {
+        if (!mounted) return;
+        _publishViewportStateForNextFrames();
+        _startViewportPulse(ticks: 8);
+      }),
+    );
   }
 
   void _handleRequestPdfJumpToDocumentY(double documentY) {
-    if (!_controller.isReady) {
+    final controller = _readyPdfController;
+    if (controller == null) {
       return;
     }
 
-    final visibleRect = _controller.visibleRect;
-    final documentSize = _controller.documentSize;
-
-    if (visibleRect == Rect.zero ||
-        visibleRect.height <= 0 ||
-        documentSize.height <= 0) {
+    final viewport = _readViewportStateFromController(controller);
+    if (viewport == null ||
+        viewport.visibleRect == Rect.zero ||
+        viewport.visibleRect.height <= 0 ||
+        viewport.documentSize.height <= 0) {
       return;
     }
 
-    final maxTop = math.max(0.0, documentSize.height - visibleRect.height);
+    final visibleRect = viewport.visibleRect;
+    final maxTop = math.max(0.0, viewport.documentSize.height - visibleRect.height);
     final targetTop = (documentY - visibleRect.height * 0.30)
         .clamp(0.0, maxTop)
         .toDouble();
@@ -809,13 +934,17 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       targetTop + visibleRect.height / 2,
     );
 
-    final matrix = _controller.calcMatrixFor(
+    final matrix = controller.calcMatrixFor(
       targetCenter,
-      zoom: _controller.currentZoom,
+      zoom: viewport.zoom,
     );
 
     unawaited(
-      _controller.goTo(matrix, duration: const Duration(milliseconds: 140)),
+      controller.goTo(matrix, duration: const Duration(milliseconds: 140)).whenComplete(() {
+        if (!mounted) return;
+        _publishViewportStateForNextFrames();
+        _startViewportPulse(ticks: 8);
+      }),
     );
   }
 
@@ -1076,29 +1205,115 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   void _jumpToDocumentNoteReference(DocumentNotePdfReference reference) {
+    if (reference.documentId != widget.documentId) {
+      _showSnackBar('Open the linked PDF to jump to this source.');
+      return;
+    }
+
+    if (_workspaceLayout != SourceReaderWorkspaceLayout.sidecar &&
+        _workspaceLayout != SourceReaderWorkspaceLayout.synthesis) {
+      setState(() {
+        _workspaceLayout = SourceReaderWorkspaceLayout.sidecar;
+      });
+    }
+
     _jumpToPdfSource(
       pageNumber: reference.pageNumber,
       sourceRects: reference.sourceRects,
+      openForReading: true,
     );
+  }
+
+  void _rememberVisiblePdfPage({
+    required pdfrx.PdfPage page,
+    required Rect pageRectInViewer,
+  }) {
+    _visiblePdfPagesByNumber[page.pageNumber] = page;
+    _visiblePdfPageRectsByNumber[page.pageNumber] = pageRectInViewer;
+  }
+
+  double? _targetDocumentYForPdfSourceRects({
+    required int pageNumber,
+    required Rect pageRect,
+    required List<PdfSourceRect> sourceRects,
+  }) {
+    final page = _visiblePdfPagesByNumber[pageNumber];
+    final projectionPageRect =
+        _visiblePdfPageRectsByNumber[pageNumber] ?? pageRect;
+    if (page == null) {
+      return null;
+    }
+
+    final rectsForPage = sourceRects
+        .where((rect) => rect.pageNumber == pageNumber && rect.isValid)
+        .toList(growable: false);
+
+    if (rectsForPage.isEmpty) {
+      return pageRect.top;
+    }
+
+    final documentRects = <Rect>[];
+    for (final sourceRect in rectsForPage) {
+      try {
+        final pdfRect = pdfrx.PdfRect(
+          sourceRect.left,
+          sourceRect.top,
+          sourceRect.right,
+          sourceRect.bottom,
+        );
+        final rectInDocument = pdfRect.toRectInDocument(
+          page: page,
+          pageRect: projectionPageRect,
+        );
+        if (rectInDocument.width.isFinite &&
+            rectInDocument.height.isFinite &&
+            rectInDocument.height > 0) {
+          documentRects.add(rectInDocument);
+        }
+      } catch (_) {
+        // Fall back to page-top navigation if pdfrx cannot project the saved
+        // source geometry during this frame.
+      }
+    }
+
+    if (documentRects.isEmpty) {
+      return null;
+    }
+
+    final top = documentRects
+        .map((rect) => math.min(rect.top, rect.bottom))
+        .reduce(math.min);
+    final bottom = documentRects
+        .map((rect) => math.max(rect.top, rect.bottom))
+        .reduce(math.max);
+    return ((top + bottom) / 2).clamp(pageRect.top, pageRect.bottom).toDouble();
   }
 
   void _jumpToPdfSource({
     required int pageNumber,
     required List<PdfSourceRect> sourceRects,
+    bool openForReading = false,
+    int geometryRetryCount = 0,
   }) {
-    if (!_controller.isReady) {
+    final controller = _readyPdfController;
+    if (controller == null) {
       return;
     }
 
-    final safePageNumber = pageNumber.clamp(1, _controller.pageCount).toInt();
-    final layouts = _controller.layout.pageLayouts;
+    final viewport = _readViewportStateFromController(controller);
+    if (viewport == null || viewport.pageRects.isEmpty) {
+      return;
+    }
+
+    final safePageNumber = pageNumber.clamp(1, viewport.pageCount).toInt();
+    final layouts = viewport.pageRects;
 
     if (layouts.isEmpty || safePageNumber > layouts.length) {
       return;
     }
 
-    final visibleRect = _controller.visibleRect;
-    final documentSize = _controller.documentSize;
+    final visibleRect = viewport.visibleRect;
+    final documentSize = viewport.documentSize;
     final pageRect = layouts[safePageNumber - 1];
 
     if (visibleRect == Rect.zero ||
@@ -1107,25 +1322,24 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       return;
     }
 
-    final rectsForPage = sourceRects
-        .where((rect) => rect.pageNumber == safePageNumber)
+    final validSourceRects = sourceRects
+        .where((rect) => rect.isValid)
         .toList(growable: false);
+    final hasSourceGeometry = validSourceRects.any(
+      (rect) => rect.pageNumber == safePageNumber,
+    );
 
-    final targetY = rectsForPage.isEmpty
-        ? pageRect.top
-        : pageRect.top +
-            ((rectsForPage
-                        .map((rect) => math.min(rect.top, rect.bottom))
-                        .reduce(math.min) +
-                    rectsForPage
-                        .map((rect) => math.max(rect.top, rect.bottom))
-                        .reduce(math.max)) /
-                2)
-                .clamp(0.0, pageRect.height)
-                .toDouble();
+    final projectedTargetY = hasSourceGeometry
+        ? _targetDocumentYForPdfSourceRects(
+            pageNumber: safePageNumber,
+            pageRect: pageRect,
+            sourceRects: validSourceRects,
+          )
+        : null;
 
+    final targetY = projectedTargetY ?? pageRect.top;
     final maxTop = math.max(0.0, documentSize.height - visibleRect.height);
-    final targetTop = (targetY - visibleRect.height * 0.25)
+    final targetTop = (targetY - visibleRect.height * 0.28)
         .clamp(0.0, maxTop)
         .toDouble();
 
@@ -1134,26 +1348,54 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       targetTop + visibleRect.height / 2,
     );
 
-    final matrix = _controller.calcMatrixFor(
+    final matrix = controller.calcMatrixFor(
       targetCenter,
-      zoom: _controller.currentZoom,
+      zoom: viewport.zoom,
     );
 
     unawaited(
-      _controller.goTo(matrix, duration: const Duration(milliseconds: 180)),
+      controller
+          .goTo(matrix, duration: const Duration(milliseconds: 180))
+          .whenComplete(() {
+        if (!mounted) return;
+        _publishViewportStateForNextFrames(frameCount: 6);
+        _startViewportPulse(ticks: 12);
+
+        if (hasSourceGeometry &&
+            projectedTargetY == null &&
+            geometryRetryCount < 6) {
+          unawaited(
+            Future<void>.delayed(const Duration(milliseconds: 120), () {
+              if (!mounted) return;
+              _jumpToPdfSource(
+                pageNumber: safePageNumber,
+                sourceRects: validSourceRects,
+                openForReading: openForReading,
+                geometryRetryCount: geometryRetryCount + 1,
+              );
+            }),
+          );
+        }
+      }),
     );
 
-    _hoverHighlightRectsNotifier.value = List.unmodifiable(sourceRects);
+    if (validSourceRects.isNotEmpty) {
+      _hoverHighlightRectsNotifier.value = List.unmodifiable(validSourceRects);
 
-    Timer(const Duration(milliseconds: 1400), () {
-      if (!mounted) return;
-      if (_sourceRectListsEqual(
-        _hoverHighlightRectsNotifier.value,
-        sourceRects,
-      )) {
-        _hoverHighlightRectsNotifier.value = const [];
-      }
-    });
+      Timer(const Duration(milliseconds: 1800), () {
+        if (!mounted) return;
+        if (_sourceRectListsEqual(
+          _hoverHighlightRectsNotifier.value,
+          validSourceRects,
+        )) {
+          _hoverHighlightRectsNotifier.value = const [];
+        }
+      });
+    }
+
+    if (openForReading) {
+      _showSnackBar('Opened PDF source on p. $safePageNumber');
+    }
   }
 
   void _handlePersistentHighlightActivated(PdfLinkedHighlightRegion region) {
@@ -1494,8 +1736,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     return pdfrx.PdfViewer.file(
       widget.filePath,
       key: ValueKey(widget.filePath),
-      controller: _controller,
-      initialPageNumber: widget.initialPageNumber ?? _viewportNotifier.value.currentPage,
+      initialPageNumber: widget.initialPageNumber ?? 1,
       params: pdfrx.PdfViewerParams(
         margin: 8,
         backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -1509,6 +1750,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             ? [searcher.pageTextMatchPaintCallback]
             : const [],
         pageOverlaysBuilder: (context, pageRectInViewer, page) {
+          _rememberVisiblePdfPage(
+            page: page,
+            pageRectInViewer: pageRectInViewer,
+          );
           return [
             PdfHoverHighlightOverlay(
               persistentRegionsListenable: _persistentHighlightRegionsNotifier,
@@ -1554,13 +1799,20 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         onPageChanged: _handlePageChanged,
         onViewSizeChanged: (oldSize, newSize, pageLayouts) {
           _publishViewportState();
+          _startViewportPulse(ticks: 8);
           _restorePdfViewportIfNeeded();
+        },
+        onInteractionStart: (_) {
+          _publishViewportState();
+          _startViewportPulse(ticks: 10);
         },
         onInteractionUpdate: (_) {
           _publishViewportState();
+          _startViewportPulse(ticks: 10);
         },
         onInteractionEnd: (_) {
           _publishViewportState();
+          _startViewportPulse(ticks: 8);
         },
         loadingBannerBuilder: (context, bytesDownloaded, totalBytes) {
           if (totalBytes == null || totalBytes <= 0) {
@@ -1608,7 +1860,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     return Listener(
       onPointerSignal: (event) {
         if (event is PointerScrollEvent) {
-          _publishViewportStateForNextFrames();
+          _publishViewportStateForNextFrames(frameCount: 6);
+          _startViewportPulse(ticks: 12);
         }
       },
       child: Stack(
@@ -1635,8 +1888,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   Widget _buildWorkspaceSelector() {
     return SourceReaderWorkspaceSelector(
-      selected: _workspaceLayout,
+      selected: _betaVisibleWorkspaceLayout,
       readerIcon: Icons.picture_as_pdf_outlined,
+      showWorkspaceDocument: false,
       onChanged: (layout) {
         setState(() {
           _workspaceLayout = layout;
@@ -1678,7 +1932,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   Widget _buildDocumentPane() {
-    return PdfDocumentNotesPanel(
+    return PdfOwnedDocumentNotesPanel(
       noteRepository: _noteRepository,
       documentId: widget.documentId,
       documentTitle: widget.title,
@@ -1828,12 +2082,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       handoffCount: handoffCount,
       onOpenProject: () => _openProjectsPanel(context),
       onOpenCalendar: _openCalendarOverview,
-      onEndSession: _endAssignedProjectSession,
     );
   }
 
   Widget _buildWorkspaceBody() {
-    return switch (_workspaceLayout) {
+    return switch (_betaVisibleWorkspaceLayout) {
       SourceReaderWorkspaceLayout.reader => _buildPdfPane(),
       SourceReaderWorkspaceLayout.sidecar => _buildTwoPaneBody(
         notesPaneBuilder: _buildSidecarPane,
@@ -1943,20 +2196,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                       onOpenSettings: _openSettings,
                     );
                   },
-                );
-              },
-            ),
-            ValueListenableBuilder<PdfViewportState>(
-              valueListenable: _viewportNotifier,
-              builder: (context, viewport, _) {
-                return Padding(
-                  padding: const EdgeInsets.only(right: 16),
-                  child: Center(
-                    child: Text(
-                      'Page ${viewport.safeCurrentPage} / ${viewport.safePageCount} | '
-                      'Zoom ${viewport.zoom.toStringAsFixed(2)}',
-                    ),
-                  ),
                 );
               },
             ),
@@ -2225,7 +2464,6 @@ class _ReaderProjectContextHeader extends StatelessWidget {
   final int handoffCount;
   final VoidCallback onOpenProject;
   final VoidCallback onOpenCalendar;
-  final VoidCallback onEndSession;
 
   const _ReaderProjectContextHeader({
     required this.projectTitle,
@@ -2233,7 +2471,6 @@ class _ReaderProjectContextHeader extends StatelessWidget {
     required this.handoffCount,
     required this.onOpenProject,
     required this.onOpenCalendar,
-    required this.onEndSession,
   });
 
   @override
@@ -2310,12 +2547,6 @@ class _ReaderProjectContextHeader extends StatelessWidget {
               onPressed: onOpenCalendar,
               icon: const Icon(Icons.calendar_month_rounded, size: 18),
               label: const Text('Calendar'),
-            ),
-            const SizedBox(width: 6),
-            FilledButton.tonalIcon(
-              onPressed: onEndSession,
-              icon: const Icon(Icons.logout_rounded, size: 18),
-              label: const Text('End session'),
             ),
           ],
         ),

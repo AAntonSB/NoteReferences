@@ -421,6 +421,7 @@ class TextSystemInlineReferenceInteractionController {
     final openTarget = onOpenReferenceTarget;
     if (openTarget != null) {
       openTarget(inlineReference);
+      hide();
       return;
     }
     final context = contextForOverlay();
@@ -787,7 +788,12 @@ List<_ReferencePreviewPill> _referencePreviewWorkStatePills(TextSystemInlineRefe
 
 String _referencePreviewOpenLabel(TextSystemInlineReferenceMark inlineReference) {
   final locator = TextSystemSourceLocator.tryFromInlineReference(inlineReference);
-  if (locator?.hasPdfTarget == true) return 'Open PDF';
+  if (locator?.hasPdfTarget == true ||
+      inlineReference.metadata['pdfReferenceId'] != null ||
+      inlineReference.metadata['pageNumber'] != null ||
+      inlineReference.metadata['sourceRects'] != null) {
+    return 'Open in PDF';
+  }
   return 'Open';
 }
 

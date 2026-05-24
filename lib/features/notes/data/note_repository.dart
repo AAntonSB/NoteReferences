@@ -411,6 +411,7 @@ const String kTodoSourcePdfTextSelection = 'pdfTextSelection';
 const String kTodoSourcePdfFreeform = 'pdfFreeform';
 const String kTodoSourceSidecarNote = 'sidecarNote';
 const String kTodoSourceDocumentNote = 'documentNote';
+const String kTodoSourceTodaySetup = 'todaySetup';
 const String kReaderAnchorTypeDocument = 'readerDocument';
 const String kReaderAnchorTypeEpubSection = 'readerEpubSection';
 const String kReaderAnchorTypeEpubParagraph = 'readerEpubParagraph';
@@ -2054,6 +2055,61 @@ class NoteRepository {
 
       return todos;
     });
+  }
+
+
+  Future<String> createStandaloneTodo({
+    required String title,
+    String? body,
+    String priority = kTodoPriorityMedium,
+    String sourceType = kTodoSourceTodaySetup,
+    DateTime? deadline,
+  }) async {
+    final cleanTitle = title.trim().isEmpty ? 'New TODO' : title.trim();
+    final cleanBody = body?.trim();
+    final now = DateTime.now();
+    final noteId = _uuid.v4();
+    final blockId = _uuid.v4();
+    final normalizedPriority = _normalizeTodoPriority(priority);
+
+    await database.transaction(() async {
+      await database
+          .into(database.notes)
+          .insert(
+            NotesCompanion.insert(
+              id: noteId,
+              title: Value(cleanTitle),
+              noteType: const Value(kTodoNoteType),
+              createdAt: now,
+              updatedAt: now,
+            ),
+          );
+
+      await database
+          .into(database.noteBlocks)
+          .insert(
+            NoteBlocksCompanion.insert(
+              id: blockId,
+              noteId: noteId,
+              blockType: const Value(kTodoBlockType),
+              contentText: Value(cleanTitle),
+              contentJson: Value(
+                jsonEncode({
+                  'sourceType': sourceType,
+                  if (cleanBody != null && cleanBody.isNotEmpty) 'body': cleanBody,
+                  'priority': normalizedPriority,
+                  'isCompleted': false,
+                  if (deadline != null) 'deadline': deadline.toIso8601String(),
+                }),
+              ),
+              sortOrder: const Value(0),
+              createdAt: now,
+              updatedAt: now,
+            ),
+          );
+    });
+
+    return noteId;
   }
 
   Future<void> createPdfTextSelectionTodo({

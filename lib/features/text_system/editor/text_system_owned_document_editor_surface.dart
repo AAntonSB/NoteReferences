@@ -63,6 +63,10 @@ class TextSystemOwnedDocumentEditorSurface extends StatefulWidget {
     required this.focusMode,
     this.showMarginGuides = true,
     this.showDebugBanner = true,
+    this.showPageHeader = true,
+    this.pageGap,
+    this.verticalPadding,
+    this.horizontalPadding,
     this.scrollController,
     this.commandController,
     this.referenceActionRepository,
@@ -79,6 +83,10 @@ class TextSystemOwnedDocumentEditorSurface extends StatefulWidget {
   final bool focusMode;
   final bool showMarginGuides;
   final bool showDebugBanner;
+  final bool showPageHeader;
+  final double? pageGap;
+  final double? verticalPadding;
+  final double? horizontalPadding;
   final ScrollController? scrollController;
   final TextSystemOwnedEditorCommandController? commandController;
   final TextSystemReferenceActionRepository? referenceActionRepository;
@@ -224,7 +232,18 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
         decoration: BoxDecoration(color: colorScheme.surfaceContainerLow),
         child: LayoutBuilder(
         builder: (context, constraints) {
-          final horizontalPadding = widget.focusMode ? 30.0 : 58.0;
+          final horizontalPadding =
+              widget.horizontalPadding ?? (widget.focusMode ? 30.0 : 58.0);
+          final verticalPadding =
+              widget.verticalPadding ?? (widget.focusMode ? 30.0 : 58.0);
+          final pageHeaderHeight = widget.showPageHeader
+              ? TextSystemOwnedDocumentEditorSurface._pageHeaderHeight
+              : 0.0;
+          final pageHeaderGap = widget.showPageHeader
+              ? TextSystemOwnedDocumentEditorSurface._pageHeaderGap
+              : 0.0;
+          final pageGap = widget.pageGap ??
+              TextSystemOwnedDocumentEditorSurface._pageGap;
           final viewportContentWidth = math.max(320.0, constraints.maxWidth - horizontalPadding * 2);
           final zoom = widget.pageZoom.clamp(0.75, 1.75).toDouble();
           final physicalWidth = widget.pageMaxWidth * (widget.pageSetup.pageWidthMm / TextSystemOwnedDocumentEditorSurface._a4PortraitReferenceWidthMm);
@@ -241,7 +260,7 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
             pageWidthPx: pageWidth,
             activeDisplayEquationBlockId: _activeDisplayEquationBlockForRange()?.id,
           );
-          final pageOuterHeight = TextSystemOwnedDocumentEditorSurface._pageHeaderHeight + TextSystemOwnedDocumentEditorSurface._pageHeaderGap + pageHeight;
+          final pageOuterHeight = pageHeaderHeight + pageHeaderGap + pageHeight;
           final horizontalContentWidth = math.max(viewportContentWidth, pageWidth * zoom);
           final snapshot = _OwnedDocumentLayoutSnapshotBuilder.build(
             document: displayDocument,
@@ -249,7 +268,7 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
             pageWidth: pageWidth,
             pageHeight: pageHeight,
             pageOuterHeight: pageOuterHeight,
-            pageGap: TextSystemOwnedDocumentEditorSurface._pageGap,
+            pageGap: pageGap,
             margins: margins,
             revision: widget.textController.revision,
           );
@@ -260,9 +279,7 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
             controller: widget.scrollController,
             child: SingleChildScrollView(
               controller: widget.scrollController,
-              padding: EdgeInsets.symmetric(
-                vertical: widget.focusMode ? 30 : 58,
-              ),
+              padding: EdgeInsets.symmetric(vertical: verticalPadding),
               child: SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
@@ -283,7 +300,7 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
                         ],
                         for (final page in layout.pages)
                           Padding(
-                            padding: EdgeInsets.only(bottom: TextSystemOwnedDocumentEditorSurface._pageGap * zoom),
+                            padding: EdgeInsets.only(bottom: pageGap * zoom),
                             child: SizedBox(
                               width: pageWidth * zoom,
                               height: pageOuterHeight * zoom,
@@ -304,6 +321,9 @@ class TextSystemOwnedDocumentEditorSurfaceState extends State<TextSystemOwnedDoc
                                     pageHeight: pageHeight,
                                     margins: margins,
                                     showMarginGuides: widget.showMarginGuides,
+                                    showPageHeader: widget.showPageHeader,
+                                    pageHeaderHeight: pageHeaderHeight,
+                                    pageHeaderGap: pageHeaderGap,
                                     snapshot: snapshot,
                                     selectionState: _selectionState,
                                     textInputClient: _textInputClient,
@@ -4275,6 +4295,9 @@ class _OwnedDocumentPageView extends StatelessWidget {
     required this.pageHeight,
     required this.margins,
     required this.showMarginGuides,
+    required this.showPageHeader,
+    required this.pageHeaderHeight,
+    required this.pageHeaderGap,
     required this.snapshot,
     required this.selectionState,
     required this.textInputClient,
@@ -4325,6 +4348,9 @@ class _OwnedDocumentPageView extends StatelessWidget {
   final double pageHeight;
   final EdgeInsets margins;
   final bool showMarginGuides;
+  final bool showPageHeader;
+  final double pageHeaderHeight;
+  final double pageHeaderGap;
   final TextSystemEditorLayoutSnapshot snapshot;
   final TextSystemEditorSelectionState selectionState;
   final TextSystemEditorTextInputClient textInputClient;
@@ -4370,20 +4396,22 @@ class _OwnedDocumentPageView extends StatelessWidget {
     final colorScheme = theme.colorScheme;
     return Column(
       children: [
-        SizedBox(
-          height: TextSystemOwnedDocumentEditorSurface._pageHeaderHeight,
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              'Page ${page.displayPageNumber} of $pageCount · owned preview',
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w700,
+        if (showPageHeader) ...[
+          SizedBox(
+            height: pageHeaderHeight,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Page ${page.displayPageNumber} of $pageCount · owned preview',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
           ),
-        ),
-        const SizedBox(height: TextSystemOwnedDocumentEditorSurface._pageHeaderGap),
+          SizedBox(height: pageHeaderGap),
+        ],
         DecoratedBox(
           decoration: BoxDecoration(
             color: colorScheme.surface,
