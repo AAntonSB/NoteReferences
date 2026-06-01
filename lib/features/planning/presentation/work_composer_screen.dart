@@ -12,6 +12,8 @@ import '../domain/planning_intake_engine.dart';
 import '../domain/planning_intent.dart';
 import '../domain/study_material_source.dart';
 
+enum _TimePlanInputMode { duration, window }
+
 class WorkComposerScreen extends StatefulWidget {
   final StudyPlanningRepository planningRepository;
   final StudyProject project;
@@ -41,6 +43,10 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
   final _startUnitController = TextEditingController();
   final _endUnitController = TextEditingController();
   final _dailyTargetController = TextEditingController();
+  final _timeHoursController = TextEditingController(text: '1');
+  final _timeMinutesController = TextEditingController();
+  final _timeStartController = TextEditingController();
+  final _timeEndController = TextEditingController();
   final _checklistController = TextEditingController();
   final _customSingularController = TextEditingController();
   final _customPluralController = TextEditingController();
@@ -53,6 +59,8 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
   final _chapterTitleController = TextEditingController();
 
   late PlanningDraft _draft;
+  bool _planByTime = false;
+  _TimePlanInputMode _timePlanInputMode = _TimePlanInputMode.duration;
   bool _saving = false;
   bool _updatingControllers = false;
   _StudyMaterialSourceType _materialSource = _StudyMaterialSourceType.noSourceYet;
@@ -74,6 +82,10 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
       _startUnitController,
       _endUnitController,
       _dailyTargetController,
+      _timeHoursController,
+      _timeMinutesController,
+      _timeStartController,
+      _timeEndController,
       _checklistController,
       _customSingularController,
       _customPluralController,
@@ -90,6 +102,10 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
     _startUnitController.dispose();
     _endUnitController.dispose();
     _dailyTargetController.dispose();
+    _timeHoursController.dispose();
+    _timeMinutesController.dispose();
+    _timeStartController.dispose();
+    _timeEndController.dispose();
     _checklistController.dispose();
     _customSingularController.dispose();
     _customPluralController.dispose();
@@ -390,16 +406,24 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
               onChanged: (value) => setState(() => _draft = _draft.copyWith(weekendsOff: !value)),
             ),
           ],
-          if (_draft.usesDueDate && _draft.dueDate != null) ...[
+          if (_draft.usesDueDate &&
+              _draft.dueDate != null &&
+              !(_planByTime && _draft.storageKind == StudyPlanKind.progress)) ...[
             const SizedBox(height: 10),
             _ScheduleDistributionPreview(
               startDate: _draft.startDate,
               dueDate: _draft.dueDate!,
               weekendsOff: _draft.weekendsOff,
-              totalUnits: _draft.storageKind == StudyPlanKind.checklist ? _checklistItems().length : _draft.totalUnits,
-              unitLabel: _draft.storageKind == StudyPlanKind.checklist
-                  ? (_checklistItems().length == 1 ? 'item' : 'items')
-                  : _nounForCount(_draft.totalUnits),
+              totalUnits: _planByTime && _draft.storageKind == StudyPlanKind.progress
+                  ? (_timePlanMinutes() ?? 0)
+                  : _draft.storageKind == StudyPlanKind.checklist
+                      ? _checklistItems().length
+                      : _draft.totalUnits,
+              unitLabel: _planByTime && _draft.storageKind == StudyPlanKind.progress
+                  ? 'minutes each study day'
+                  : _draft.storageKind == StudyPlanKind.checklist
+                      ? (_checklistItems().length == 1 ? 'item' : 'items')
+                      : _nounForCount(_draft.totalUnits),
             ),
           ],
           if (_draft.questions.isNotEmpty) ...[
@@ -513,35 +537,41 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
                 ),
         ),
         const SizedBox(height: 14),
-        _unitControls(title: 'How should progress be measured?', helper: _studyMeasurementHelper()),
+        _planModeCard(),
         const SizedBox(height: 14),
-        if (_draft.unitType == 'chapters')
-          _ChapterStructureCard(
-            chapters: _chapterTitles(),
-            detectedSegments: _detectedChapterSegments(),
-            selectedDetectedKeys: _selectedDetectedChapterKeys,
-            keyForDetected: _detectedChapterKey,
-            addController: _chapterTitleController,
-            onAdd: _addChapterTitlesFromInput,
-            onRemove: _removeChapterTitle,
-            onToggleDetected: _toggleDetectedChapter,
-            onSelectAllDetected: _selectAllDetectedChapters,
-            onClearDetected: _clearDetectedChapters,
-            sourceTitle: _sourceTitleController.text.trim().isEmpty ? null : _sourceTitleController.text.trim(),
-          )
-        else
-          _RangePlannerCard(
-            startController: _startUnitController,
-            endController: _endUnitController,
-            startLabel: _startUnitLabel(),
-            endLabel: _endUnitLabel(),
-            totalUnits: _draft.totalUnits,
-            totalLabel: _nounForCount(_draft.totalUnits),
-            shortLabel: _unitShortLabel(),
-            explanation: _rangeExplanation(),
-            startValidator: _validatePositiveNumber,
-            endValidator: _rangeEndValidator,
-          ),
+        if (_planByTime)
+          _timePlanCard()
+        else ...[
+          _unitControls(title: 'How should progress be measured?', helper: _studyMeasurementHelper()),
+          const SizedBox(height: 14),
+          if (_draft.unitType == 'chapters')
+            _ChapterStructureCard(
+              chapters: _chapterTitles(),
+              detectedSegments: _detectedChapterSegments(),
+              selectedDetectedKeys: _selectedDetectedChapterKeys,
+              keyForDetected: _detectedChapterKey,
+              addController: _chapterTitleController,
+              onAdd: _addChapterTitlesFromInput,
+              onRemove: _removeChapterTitle,
+              onToggleDetected: _toggleDetectedChapter,
+              onSelectAllDetected: _selectAllDetectedChapters,
+              onClearDetected: _clearDetectedChapters,
+              sourceTitle: _sourceTitleController.text.trim().isEmpty ? null : _sourceTitleController.text.trim(),
+            )
+          else
+            _RangePlannerCard(
+              startController: _startUnitController,
+              endController: _endUnitController,
+              startLabel: _startUnitLabel(),
+              endLabel: _endUnitLabel(),
+              totalUnits: _draft.totalUnits,
+              totalLabel: _nounForCount(_draft.totalUnits),
+              shortLabel: _unitShortLabel(),
+              explanation: _rangeExplanation(),
+              startValidator: _validatePositiveNumber,
+              endValidator: _rangeEndValidator,
+            ),
+        ],
       ],
     );
   }
@@ -555,20 +585,26 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
           text: 'A full writing workflow should eventually split research, outlining, drafting, revision, formatting, and references. This first version plans the measurable output target.',
         ),
         const SizedBox(height: 14),
-        _unitControls(title: 'What output should be tracked?', helper: 'Use sections, words, pages, revision passes, or define your own output unit.'),
+        _planModeCard(),
         const SizedBox(height: 14),
-        _RangePlannerCard(
-          startController: _startUnitController,
-          endController: _endUnitController,
-          startLabel: _startUnitLabel(),
-          endLabel: _endUnitLabel(),
-          totalUnits: _draft.totalUnits,
-          totalLabel: _nounForCount(_draft.totalUnits),
-          shortLabel: _unitShortLabel(),
-          explanation: _rangeExplanation(),
-          startValidator: _validatePositiveNumber,
-          endValidator: _rangeEndValidator,
-        ),
+        if (_planByTime)
+          _timePlanCard()
+        else ...[
+          _unitControls(title: 'What output should be tracked?', helper: 'Use sections, words, pages, revision passes, or define your own output unit.'),
+          const SizedBox(height: 14),
+          _RangePlannerCard(
+            startController: _startUnitController,
+            endController: _endUnitController,
+            startLabel: _startUnitLabel(),
+            endLabel: _endUnitLabel(),
+            totalUnits: _draft.totalUnits,
+            totalLabel: _nounForCount(_draft.totalUnits),
+            shortLabel: _unitShortLabel(),
+            explanation: _rangeExplanation(),
+            startValidator: _validatePositiveNumber,
+            endValidator: _rangeEndValidator,
+          ),
+        ],
       ],
     );
   }
@@ -576,22 +612,137 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
   Widget _workThroughFields() {
     return Column(
       children: [
-        _unitControls(title: 'How should the work be measured?', helper: 'Choose the measurable unit that best matches this work. Custom units are first-class.'),
+        _planModeCard(),
         const SizedBox(height: 14),
-        _RangePlannerCard(
-          startController: _startUnitController,
-          endController: _endUnitController,
-          startLabel: _startUnitLabel(),
-          endLabel: _endUnitLabel(),
-          totalUnits: _draft.totalUnits,
-          totalLabel: _nounForCount(_draft.totalUnits),
-          shortLabel: _unitShortLabel(),
-          explanation: _rangeExplanation(),
-          startValidator: _validatePositiveNumber,
-          endValidator: _rangeEndValidator,
-        ),
+        if (_planByTime)
+          _timePlanCard()
+        else ...[
+          _unitControls(title: 'How should the work be measured?', helper: 'Choose the measurable unit that best matches this work. Custom units are first-class.'),
+          const SizedBox(height: 14),
+          _RangePlannerCard(
+            startController: _startUnitController,
+            endController: _endUnitController,
+            startLabel: _startUnitLabel(),
+            endLabel: _endUnitLabel(),
+            totalUnits: _draft.totalUnits,
+            totalLabel: _nounForCount(_draft.totalUnits),
+            shortLabel: _unitShortLabel(),
+            explanation: _rangeExplanation(),
+            startValidator: _validatePositiveNumber,
+            endValidator: _rangeEndValidator,
+          ),
+        ],
       ],
     );
+  }
+
+  Widget _planModeCard() {
+    return _PlanModeCard(
+      byTime: _planByTime,
+      onChanged: (value) {
+        setState(() {
+          _planByTime = value;
+          if (_planByTime && _timeHoursController.text.trim().isEmpty && _timeMinutesController.text.trim().isEmpty) {
+            _timeHoursController.text = '1';
+          }
+        });
+      },
+    );
+  }
+
+  Widget _timePlanCard() {
+    return _TimePlanCard(
+      inputMode: _timePlanInputMode,
+      hoursController: _timeHoursController,
+      minutesController: _timeMinutesController,
+      startController: _timeStartController,
+      endController: _timeEndController,
+      onInputModeChanged: (mode) {
+        final flexibleDuration = _durationPlanMinutes();
+        setState(() {
+          _timePlanInputMode = mode;
+          if (mode == _TimePlanInputMode.window) {
+            _ensureTimeWindowDefaults(flexibleDuration ?? 60);
+          }
+        });
+      },
+      onChanged: () => setState(() {}),
+    );
+  }
+
+  int? _durationPlanMinutes() {
+    final hours = int.tryParse(_timeHoursController.text.trim().isEmpty ? '0' : _timeHoursController.text.trim());
+    final minutes = int.tryParse(_timeMinutesController.text.trim().isEmpty ? '0' : _timeMinutesController.text.trim());
+    if (hours == null || minutes == null || hours < 0 || minutes < 0 || minutes > 59) return null;
+    final total = hours * 60 + minutes;
+    return total > 0 ? total : null;
+  }
+
+  void _ensureTimeWindowDefaults(int durationMinutes) {
+    final normalizedDuration = durationMinutes.clamp(15, 8 * 60).toInt();
+    final existingStart = _parseMinuteOfDay(_timeStartController.text);
+    final start = existingStart ?? 8 * 60;
+    final end = (start + normalizedDuration).clamp(start + 15, 23 * 60 + 59).toInt();
+    if (_timeStartController.text.trim().isEmpty) {
+      _timeStartController.text = _formatMinuteOfDay(start);
+    }
+    if (_timeEndController.text.trim().isEmpty) {
+      _timeEndController.text = _formatMinuteOfDay(end);
+    }
+  }
+
+  int? _timePlanMinutes() {
+    if (_timePlanInputMode == _TimePlanInputMode.window) {
+      final start = _parseMinuteOfDay(_timeStartController.text);
+      final end = _parseMinuteOfDay(_timeEndController.text);
+      if (start == null || end == null || end <= start) return null;
+      return end - start;
+    }
+    return _durationPlanMinutes();
+  }
+
+  int? _timeWindowStartMinutes() {
+    if (_timePlanInputMode != _TimePlanInputMode.window) return null;
+    return _parseMinuteOfDay(_timeStartController.text);
+  }
+
+  int? _timeWindowEndMinutes() {
+    if (_timePlanInputMode != _TimePlanInputMode.window) return null;
+    return _parseMinuteOfDay(_timeEndController.text);
+  }
+
+  int? _parseMinuteOfDay(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return null;
+    final parts = trimmed.replaceAll('.', ':').split(':');
+    if (parts.isEmpty || parts.length > 2) return null;
+    final hour = int.tryParse(parts[0]);
+    final minute = parts.length == 2 ? int.tryParse(parts[1]) : 0;
+    if (hour == null || minute == null) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return hour * 60 + minute;
+  }
+
+  String _formatMinutesForPlan(int minutes) {
+    final hours = minutes ~/ 60;
+    final remainder = minutes % 60;
+    if (hours > 0 && remainder > 0) return '${hours}h ${remainder}m';
+    if (hours > 0) return hours == 1 ? '1 hour' : '$hours hours';
+    return minutes == 1 ? '1 minute' : '$minutes minutes';
+  }
+
+  String? _timeWindowPreview() {
+    final start = _timeWindowStartMinutes();
+    final end = _timeWindowEndMinutes();
+    if (start == null || end == null || end <= start) return null;
+    return '${_formatMinuteOfDay(start)}–${_formatMinuteOfDay(end)}';
+  }
+
+  String _formatMinuteOfDay(int value) {
+    final minutes = value.clamp(0, 23 * 60 + 59).toInt();
+    final hour = minutes ~/ 60;
+    final minute = minutes % 60;
+    return '${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')}';
   }
 
   String? _rangeEndValidator(String? value) {
@@ -898,6 +1049,7 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
     }
     if (_draft.intent == PlanningIntentType.studyMaterial &&
         _draft.storageKind == StudyPlanKind.progress &&
+        !_planByTime &&
         _draft.unitType == 'chapters' &&
         !_hasChapterStructure()) {
       _showSnack('Add the chapter structure first, or switch to pages. The app will not guess unknown chapters.');
@@ -911,23 +1063,47 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
       _showSnack('Pick a date.');
       return;
     }
+    final timePlanMinutes = _planByTime && _draft.storageKind == StudyPlanKind.progress ? _timePlanMinutes() : null;
+    final timeWindowStart = _planByTime && _draft.storageKind == StudyPlanKind.progress ? _timeWindowStartMinutes() : null;
+    final timeWindowEnd = _planByTime && _draft.storageKind == StudyPlanKind.progress ? _timeWindowEndMinutes() : null;
+    if (_planByTime && _draft.storageKind == StudyPlanKind.progress) {
+      if (timePlanMinutes == null) {
+        _showSnack(_timePlanInputMode == _TimePlanInputMode.window
+            ? 'Enter a valid time window, for example 09:00 to 11:00.'
+            : 'Enter a valid daily duration.');
+        return;
+      }
+      if (_timePlanInputMode == _TimePlanInputMode.window &&
+          (timeWindowStart == null || timeWindowEnd == null || timeWindowEnd <= timeWindowStart)) {
+        _showSnack('The end time must be after the start time.');
+        return;
+      }
+    }
 
     setState(() => _saving = true);
 
     final plan = await widget.planningRepository.createPlan(
       projectId: widget.project.id,
       title: _titleController.text.trim(),
-      planKind: _draft.storageKind,
-      unitType: _unitTypeForSave(),
-      startUnit: _draft.storageKind == StudyPlanKind.progress
+      planKind: _planByTime && _draft.storageKind == StudyPlanKind.progress
+          ? StudyPlanKind.recurring
+          : _draft.storageKind,
+      unitType: _planByTime && _draft.storageKind == StudyPlanKind.progress
+          ? 'minutes'
+          : _unitTypeForSave(),
+      startUnit: _draft.storageKind == StudyPlanKind.progress && !_planByTime
           ? int.parse(_startUnitController.text.trim())
           : null,
-      endUnit: _draft.storageKind == StudyPlanKind.progress
+      endUnit: _draft.storageKind == StudyPlanKind.progress && !_planByTime
           ? int.parse(_endUnitController.text.trim())
           : null,
-      dailyTarget: _draft.storageKind == StudyPlanKind.recurring
-          ? int.parse(_dailyTargetController.text.trim())
-          : null,
+      dailyTarget: _planByTime && _draft.storageKind == StudyPlanKind.progress
+          ? timePlanMinutes
+          : _draft.storageKind == StudyPlanKind.recurring
+              ? int.parse(_dailyTargetController.text.trim())
+              : null,
+      timeStartMinutes: timeWindowStart,
+      timeEndMinutes: timeWindowEnd,
       startDate: _draft.startDate,
       deadline: _draft.storageKind == StudyPlanKind.singleTask
           ? _draft.taskDate
@@ -936,13 +1112,13 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
               : _draft.dueDate,
       taskDate: _draft.usesSingleDate ? _draft.taskDate : null,
       weekendsOff: _draft.usesWeekends ? _draft.weekendsOff : false,
-      customUnitSingular: _draft.unitType == 'custom' && _draft.usesUnits
+      customUnitSingular: !_planByTime && _draft.unitType == 'custom' && _draft.usesUnits
           ? _customSingularController.text.trim()
           : null,
-      customUnitPlural: _draft.unitType == 'custom' && _draft.usesUnits
+      customUnitPlural: !_planByTime && _draft.unitType == 'custom' && _draft.usesUnits
           ? _customPluralController.text.trim()
           : null,
-      customUnitLabel: _draft.unitType == 'custom' && _draft.usesUnits
+      customUnitLabel: !_planByTime && _draft.unitType == 'custom' && _draft.usesUnits
           ? (_customLabelController.text.trim().isEmpty
               ? _customSingularController.text.trim()
               : _customLabelController.text.trim())
@@ -1539,10 +1715,24 @@ class _WorkComposerScreenState extends State<WorkComposerScreen> {
         ];
       case StudyPlanKind.progress:
       default:
+        final days = _draft.dueDate == null ? 0 : _eligibleDays(_draft.startDate, _draft.dueDate!, _draft.weekendsOff).length;
+        if (_planByTime) {
+          final minutes = _timePlanMinutes();
+          final window = _timeWindowPreview();
+          return <String>[
+            'Create a time-based plan: “$title”.',
+            if (_draft.intent == PlanningIntentType.studyMaterial) _materialSourcePreviewLine(),
+            minutes == null
+                ? 'Choose a daily duration or a valid time window.'
+                : 'Amount: ${_formatMinutesForPlan(minutes)} per study day.',
+            if (window != null) 'Calendar block: $window on each eligible study day.',
+            'Runs from ${_formatDate(_draft.startDate)} to ${_formatNullableDate(_draft.dueDate)}${days == 0 ? '' : ' across $days study day${days == 1 ? '' : 's'}'}.',
+            _draft.weekendsOff ? 'Weekends are excluded.' : 'Weekends are included.',
+          ];
+        }
         final start = int.tryParse(_startUnitController.text.trim()) ?? _draft.startUnit;
         final end = int.tryParse(_endUnitController.text.trim()) ?? _draft.endUnit;
         final total = (end - start + 1).clamp(1, 999999).toInt();
-        final days = _draft.dueDate == null ? 0 : _eligibleDays(_draft.startDate, _draft.dueDate!, _draft.weekendsOff).length;
         if (_draft.intent == PlanningIntentType.studyMaterial && _draft.unitType == 'chapters') {
           final chapters = _chapterTitles();
           return <String>[
@@ -4164,6 +4354,385 @@ class _RangePlannerCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+
+class _PlanModeCard extends StatelessWidget {
+  final bool byTime;
+  final ValueChanged<bool> onChanged;
+
+  const _PlanModeCard({
+    required this.byTime,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'How should this plan be created?',
+            style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Plan by measurable output, or reserve a fixed amount of study time across the calendar.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              height: 1.3,
+            ),
+          ),
+          const SizedBox(height: 12),
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment<bool>(
+                value: false,
+                icon: Icon(Icons.format_list_numbered_rounded),
+                label: Text('Quantity'),
+              ),
+              ButtonSegment<bool>(
+                value: true,
+                icon: Icon(Icons.schedule_rounded),
+                label: Text('Time'),
+              ),
+            ],
+            selected: {byTime},
+            onSelectionChanged: (selection) => onChanged(selection.first),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TimePlanCard extends StatelessWidget {
+  final _TimePlanInputMode inputMode;
+  final TextEditingController hoursController;
+  final TextEditingController minutesController;
+  final TextEditingController startController;
+  final TextEditingController endController;
+  final ValueChanged<_TimePlanInputMode> onInputModeChanged;
+  final VoidCallback onChanged;
+
+  const _TimePlanCard({
+    required this.inputMode,
+    required this.hoursController,
+    required this.minutesController,
+    required this.startController,
+    required this.endController,
+    required this.onInputModeChanged,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primaryContainer.withAlpha(130),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(Icons.schedule_rounded, size: 18, color: theme.colorScheme.primary),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Plan time on the calendar',
+                      style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Choose flexible daily effort, or place the work at a concrete time of day.',
+                      style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant, height: 1.25),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: _TimePlanModeTile(
+                  selected: inputMode == _TimePlanInputMode.duration,
+                  icon: Icons.hourglass_bottom_rounded,
+                  title: 'Flexible duration',
+                  subtitle: 'Example: 90 minutes each study day. The app does not reserve a clock time.',
+                  onTap: () => onInputModeChanged(_TimePlanInputMode.duration),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _TimePlanModeTile(
+                  selected: inputMode == _TimePlanInputMode.window,
+                  icon: Icons.calendar_view_day_rounded,
+                  title: 'Fixed time of day',
+                  subtitle: 'Example: 08:00–09:00. The app places a real block in the calendar.',
+                  onTap: () => onInputModeChanged(_TimePlanInputMode.window),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 160),
+            child: inputMode == _TimePlanInputMode.duration
+                ? _durationFields(context)
+                : _timeWindowFields(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _durationFields(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      key: const ValueKey('duration-plan-fields'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: hoursController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Hours per day',
+                  hintText: '1',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (_) => onChanged(),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextFormField(
+                controller: minutesController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Minutes',
+                  hintText: '30',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (_) => onChanged(),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        _TimePlanHint(
+          icon: Icons.info_outline_rounded,
+          text: 'Flexible duration appears as an amount of planned work on each eligible day. Use Fixed time of day when you want 08:00–09:00, 13:00–14:30, and so on.',
+          color: theme.colorScheme.primary,
+        ),
+      ],
+    );
+  }
+
+  Widget _timeWindowFields(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      key: const ValueKey('window-plan-fields'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: startController,
+                keyboardType: TextInputType.datetime,
+                decoration: const InputDecoration(
+                  labelText: 'Start time',
+                  hintText: '08:00',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (_) => onChanged(),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextFormField(
+                controller: endController,
+                keyboardType: TextInputType.datetime,
+                decoration: const InputDecoration(
+                  labelText: 'End time',
+                  hintText: '09:00',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (_) => onChanged(),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _TimeWindowPresetChip(label: 'Start of day', range: '08:00–09:00', onTap: () => _applyPreset('08:00', '09:00')),
+            _TimeWindowPresetChip(label: 'Deep work', range: '09:00–11:00', onTap: () => _applyPreset('09:00', '11:00')),
+            _TimeWindowPresetChip(label: 'After lunch', range: '13:00–14:30', onTap: () => _applyPreset('13:00', '14:30')),
+            _TimeWindowPresetChip(label: 'Evening', range: '18:00–19:00', onTap: () => _applyPreset('18:00', '19:00')),
+          ],
+        ),
+        const SizedBox(height: 10),
+        _TimePlanHint(
+          icon: Icons.event_available_rounded,
+          text: 'Fixed time creates actual calendar blocks on every eligible day between the selected dates.',
+          color: theme.colorScheme.primary,
+        ),
+      ],
+    );
+  }
+
+  void _applyPreset(String start, String end) {
+    startController.text = start;
+    endController.text = end;
+    onChanged();
+  }
+}
+
+class _TimePlanModeTile extends StatelessWidget {
+  const _TimePlanModeTile({
+    required this.selected,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final bool selected;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = selected ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant;
+    return InkWell(
+      borderRadius: BorderRadius.circular(18),
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: selected ? theme.colorScheme.primaryContainer.withAlpha(130) : theme.colorScheme.surfaceContainerHighest.withAlpha(80),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: selected ? theme.colorScheme.primary.withOpacity(.55) : theme.colorScheme.outlineVariant),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 17, color: color),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w900, color: color),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 7),
+            Text(
+              subtitle,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                height: 1.22,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TimeWindowPresetChip extends StatelessWidget {
+  const _TimeWindowPresetChip({required this.label, required this.range, required this.onTap});
+
+  final String label;
+  final String range;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ActionChip(
+      avatar: Icon(Icons.schedule_rounded, size: 15, color: theme.colorScheme.primary),
+      label: Text('$label · $range'),
+      onPressed: onTap,
+      side: BorderSide(color: theme.colorScheme.outlineVariant),
+      backgroundColor: theme.colorScheme.surface,
+      labelStyle: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w800),
+    );
+  }
+}
+
+class _TimePlanHint extends StatelessWidget {
+  const _TimePlanHint({required this.icon, required this.text, required this.color});
+
+  final IconData icon;
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: color),
+        const SizedBox(width: 7),
+        Expanded(
+          child: Text(
+            text,
+            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant, height: 1.3),
+          ),
+        ),
+      ],
     );
   }
 }

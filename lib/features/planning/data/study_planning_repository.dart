@@ -17,6 +17,8 @@ class StudyPlanningRepository extends ChangeNotifier {
   final List<SessionHandoff> _handoffs = <SessionHandoff>[];
   final List<WorkspaceDocument> _documents = <WorkspaceDocument>[];
   final List<DevTodo> _devTodos = <DevTodo>[];
+  final List<PlanningEntry> _planningEntries = <PlanningEntry>[];
+  final List<TodayPlanSnapshot> _todayPlans = <TodayPlanSnapshot>[];
   final Map<String, String> _pdfProjectIds = <String, String>{};
   final List<LibraryFolder> _libraryFolders = <LibraryFolder>[];
   final Map<String, String> _pdfFolderIds = <String, String>{};
@@ -46,6 +48,25 @@ class StudyPlanningRepository extends ChangeNotifier {
         _devTodos.where((todo) => !todo.isArchived),
       );
 
+  List<PlanningEntry> get planningEntries => List.unmodifiable(
+        _planningEntries.where((entry) => !entry.isArchived),
+      );
+
+  List<PlanningEntry> get planningInboxEntries {
+    final result = planningEntries
+        .where((entry) => !entry.isDone && entry.calendarDate == null)
+        .toList(growable: false);
+    result.sort((a, b) {
+      final priorityCompare = PlanningEntryPriority.rank(b.priority)
+          .compareTo(PlanningEntryPriority.rank(a.priority));
+      if (priorityCompare != 0) return priorityCompare;
+      return b.updatedAt.compareTo(a.updatedAt);
+    });
+    return result;
+  }
+
+  List<TodayPlanSnapshot> get todayPlans => List.unmodifiable(_todayPlans);
+
   Map<String, String> get pdfProjectIds => Map.unmodifiable(_pdfProjectIds);
 
   List<LibraryFolder> get libraryFolders => List.unmodifiable(
@@ -72,6 +93,8 @@ class StudyPlanningRepository extends ChangeNotifier {
           final rawHandoffs = map['sessionHandoffs'];
           final rawDocuments = map['workspaceDocuments'] ?? map['documents'];
           final rawDevTodos = map['devTodos'];
+          final rawPlanningEntries = map['planningEntries'];
+          final rawTodayPlans = map['todayPlans'];
           final rawPdfProjects = map['pdfProjectIds'];
           final rawLibraryFolders = map['libraryFolders'];
           final rawPdfFolders = map['pdfFolderIds'];
@@ -120,6 +143,24 @@ class StudyPlanningRepository extends ChangeNotifier {
                       .whereType<Map>()
                       .map((item) => DevTodo.fromJson(_stringMap(item)))
                   : const <DevTodo>[],
+            );
+          _planningEntries
+            ..clear()
+            ..addAll(
+              rawPlanningEntries is List
+                  ? rawPlanningEntries
+                      .whereType<Map>()
+                      .map((item) => PlanningEntry.fromJson(_stringMap(item)))
+                  : const <PlanningEntry>[],
+            );
+          _todayPlans
+            ..clear()
+            ..addAll(
+              rawTodayPlans is List
+                  ? rawTodayPlans
+                      .whereType<Map>()
+                      .map((item) => TodayPlanSnapshot.fromJson(_stringMap(item)))
+                  : const <TodayPlanSnapshot>[],
             );
           _pdfProjectIds
             ..clear()
@@ -189,6 +230,8 @@ class StudyPlanningRepository extends ChangeNotifier {
     int? startUnit,
     int? endUnit,
     int? dailyTarget,
+    int? timeStartMinutes,
+    int? timeEndMinutes,
     DateTime? deadline,
     DateTime? taskDate,
     String? customUnitSingular,
@@ -210,6 +253,14 @@ class StudyPlanningRepository extends ChangeNotifier {
     final normalizedDailyTarget = normalizedKind == StudyPlanKind.recurring
         ? (requestedDailyTarget < 1 ? 1 : requestedDailyTarget)
         : null;
+    final normalizedTimeStart = _normalizeMinuteOfDay(timeStartMinutes);
+    final normalizedTimeEnd = _normalizeMinuteOfDay(timeEndMinutes);
+    final effectiveTimeStart = normalizedTimeStart != null &&
+            normalizedTimeEnd != null &&
+            normalizedTimeEnd > normalizedTimeStart
+        ? normalizedTimeStart
+        : null;
+    final effectiveTimeEnd = effectiveTimeStart == null ? null : normalizedTimeEnd;
 
     final cleanChecklist = (checklistItems ?? const <String>[])
         .map((item) => item.trim())
@@ -245,6 +296,8 @@ class StudyPlanningRepository extends ChangeNotifier {
       endUnit: normalizedEnd,
       completedThroughUnit: normalizedKind == StudyPlanKind.progress ? normalizedStart - 1 : 0,
       dailyTarget: normalizedDailyTarget,
+      timeStartMinutes: effectiveTimeStart,
+      timeEndMinutes: effectiveTimeEnd,
       completedDateKeys: const <String>{},
       checklistItems: cleanChecklist,
       completedChecklistIndexes: const <int>{},
@@ -260,6 +313,186 @@ class StudyPlanningRepository extends ChangeNotifier {
     await _save();
     notifyListeners();
     return plan;
+  }
+
+
+  Future<PlanningEntry> createPlanningEntry({
+    required String title,
+    String? notes,
+    String kind = PlanningEntryKind.task,
+    String priority = PlanningEntryPriority.normal,
+    String? projectId,
+    DateTime? date,
+    DateTime? dueAt,
+    DateTime? startAt,
+    DateTime? endAt,
+    bool allDay = true,
+    int? estimateMinutes,
+  }) async {
+    final now = DateTime.now();
+    final cleanTitle = title.trim().isEmpty ? 'Untitled planning item' : title.trim();
+    final cleanProjectId = _cleanOptional(projectId);
+    final entry = PlanningEntry(
+      id: _uuid.v4(),
+      title: cleanTitle,
+      notes: _cleanOptional(notes),
+      kind: PlanningEntryKind.normalize(kind),
+      priority: PlanningEntryPriority.normalize(priority),
+      status: PlanningEntryStatus.open,
+      projectId: cleanProjectId == null || projectById(cleanProjectId) == null ? null : cleanProjectId,
+      date: date == null ? null : _dateOnly(date),
+      dueAt: dueAt,
+      startAt: startAt,
+      endAt: endAt,
+      allDay: allDay,
+      estimateMinutes: estimateMinutes == null || estimateMinutes <= 0 ? null : estimateMinutes,
+      createdAt: now,
+      updatedAt: now,
+    );
+    _planningEntries.add(entry);
+    await _save();
+    notifyListeners();
+    return entry;
+  }
+
+  Future<void> updatePlanningEntry({
+    required String entryId,
+    String? title,
+    Object? notes = _sentinel,
+    String? kind,
+    String? priority,
+    Object? projectId = _sentinel,
+    Object? date = _sentinel,
+    Object? dueAt = _sentinel,
+    Object? startAt = _sentinel,
+    Object? endAt = _sentinel,
+    bool? allDay,
+    Object? estimateMinutes = _sentinel,
+  }) async {
+    final index = _planningEntries.indexWhere((entry) => entry.id == entryId);
+    if (index == -1) return;
+    final existing = _planningEntries[index];
+    final cleanProjectId = identical(projectId, _sentinel)
+        ? existing.projectId
+        : projectId is String
+            ? _cleanOptional(projectId)
+            : null;
+    _planningEntries[index] = existing.copyWith(
+      title: title == null ? null : (title.trim().isEmpty ? existing.title : title.trim()),
+      notes: notes,
+      kind: kind == null ? null : PlanningEntryKind.normalize(kind),
+      priority: priority == null ? null : PlanningEntryPriority.normalize(priority),
+      projectId: cleanProjectId == null || projectById(cleanProjectId) == null ? null : cleanProjectId,
+      date: date,
+      dueAt: dueAt,
+      startAt: startAt,
+      endAt: endAt,
+      allDay: allDay,
+      estimateMinutes: estimateMinutes,
+      updatedAt: DateTime.now(),
+    );
+    await _save();
+    notifyListeners();
+  }
+
+  Future<void> completePlanningEntry(String entryId, {bool isDone = true}) async {
+    final index = _planningEntries.indexWhere((entry) => entry.id == entryId);
+    if (index == -1) return;
+    final now = DateTime.now();
+    _planningEntries[index] = _planningEntries[index].copyWith(
+      status: isDone ? PlanningEntryStatus.done : PlanningEntryStatus.open,
+      completedAt: isDone ? now : null,
+      clearCompletedAt: !isDone,
+      updatedAt: now,
+    );
+    await _save();
+    notifyListeners();
+  }
+
+  Future<void> archivePlanningEntry(String entryId) async {
+    final index = _planningEntries.indexWhere((entry) => entry.id == entryId);
+    if (index == -1) return;
+    _planningEntries[index] = _planningEntries[index].copyWith(
+      isArchived: true,
+      updatedAt: DateTime.now(),
+    );
+    await _save();
+    notifyListeners();
+  }
+
+  Future<void> schedulePlanningEntry({
+    required String entryId,
+    required DateTime date,
+  }) async {
+    await updatePlanningEntry(entryId: entryId, date: _dateOnly(date));
+  }
+
+  Future<void> postponePlanningEntry({
+    required String entryId,
+    required DateTime date,
+  }) async {
+    await updatePlanningEntry(entryId: entryId, date: _dateOnly(date), dueAt: _dateOnly(date));
+  }
+
+  List<PlanningEntry> planningEntriesForDate(DateTime date) {
+    final day = _dateOnly(date);
+    final result = planningEntries.where((entry) {
+      if (entry.isDone) return false;
+      final calendarDate = entry.calendarDate;
+      return calendarDate != null && _dateKey(calendarDate) == _dateKey(day);
+    }).toList(growable: false);
+    result.sort(PlanningEntry.compareForCalendar);
+    return result;
+  }
+
+  List<PlanningEntry> planningEntriesForRange({
+    required DateTime rangeStart,
+    required DateTime rangeEnd,
+    bool includeDone = false,
+  }) {
+    final start = _dateOnly(rangeStart);
+    final end = _dateOnly(rangeEnd);
+    final result = planningEntries.where((entry) {
+      if (!includeDone && entry.isDone) return false;
+      final calendarDate = entry.calendarDate;
+      if (calendarDate == null) return false;
+      final day = _dateOnly(calendarDate);
+      return !day.isBefore(start) && !day.isAfter(end);
+    }).toList(growable: false);
+    result.sort(PlanningEntry.compareForCalendar);
+    return result;
+  }
+
+  TodayPlanSnapshot? todayPlanForDate(DateTime date) {
+    final key = _dateKey(date);
+    for (final plan in _todayPlans) {
+      if (_dateKey(plan.date) == key) return plan;
+    }
+    return null;
+  }
+
+  Future<TodayPlanSnapshot> saveTodayPlan({
+    required DateTime date,
+    required List<TodayPlanItem> items,
+  }) async {
+    final now = DateTime.now();
+    final key = _dateKey(date);
+    final index = _todayPlans.indexWhere((plan) => _dateKey(plan.date) == key);
+    final existing = index == -1 ? null : _todayPlans[index];
+    final snapshot = TodayPlanSnapshot(
+      date: _dateOnly(date),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      items: items,
+    );
+    if (index == -1) {
+      _todayPlans.add(snapshot);
+    } else {
+      _todayPlans[index] = snapshot;
+    }
+    await _save();
+    notifyListeners();
+    return snapshot;
   }
 
   List<SessionHandoff> handoffsForProject(String projectId) {
@@ -928,7 +1161,7 @@ class StudyPlanningRepository extends ChangeNotifier {
     }
 
     result.sort((a, b) {
-      final dateCompare = a.date.compareTo(b.date);
+      final dateCompare = a.sortAt.compareTo(b.sortAt);
       if (dateCompare != 0) return dateCompare;
       if (a.isDeadlineMarker != b.isDeadlineMarker) return a.isDeadlineMarker ? 1 : -1;
       final projectCompare = a.projectTitle.toLowerCase().compareTo(
@@ -1060,6 +1293,8 @@ class StudyPlanningRepository extends ChangeNotifier {
       'sessionHandoffs': _handoffs.map((handoff) => handoff.toJson()).toList(),
       'workspaceDocuments': _documents.map((document) => document.toJson()).toList(),
       'devTodos': _devTodos.map((todo) => todo.toJson()).toList(),
+      'planningEntries': _planningEntries.map((entry) => entry.toJson()).toList(),
+      'todayPlans': _todayPlans.map((plan) => plan.toJson()).toList(),
       'pdfProjectIds': _pdfProjectIds,
       'libraryFolders': _libraryFolders.map((folder) => folder.toJson()).toList(),
       'pdfFolderIds': _pdfFolderIds,
@@ -1338,6 +1573,355 @@ class StudyPlanningRepository extends ChangeNotifier {
   }
 }
 
+
+
+int? _normalizeMinuteOfDay(int? value) {
+  if (value == null) return null;
+  if (value < 0 || value > 23 * 60 + 59) return null;
+  return value;
+}
+
+String _formatMinuteOfDay(int value) {
+  final minutes = value.clamp(0, 23 * 60 + 59).toInt();
+  final hour = minutes ~/ 60;
+  final minute = minutes % 60;
+  return '${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')}';
+}
+
+class PlanningEntryKind {
+  static const String task = 'task';
+  static const String deadline = 'deadline';
+  static const String event = 'event';
+  static const String reminder = 'reminder';
+
+  static const List<String> values = <String>[task, deadline, event, reminder];
+
+  static String normalize(String? value) {
+    if (values.contains(value)) return value!;
+    return task;
+  }
+
+  static String label(String value) {
+    switch (normalize(value)) {
+      case deadline:
+        return 'Deadline';
+      case event:
+        return 'Event';
+      case reminder:
+        return 'Reminder';
+      case task:
+      default:
+        return 'Task';
+    }
+  }
+}
+
+class PlanningEntryStatus {
+  static const String open = 'open';
+  static const String done = 'done';
+  static const String archived = 'archived';
+
+  static const List<String> values = <String>[open, done, archived];
+
+  static String normalize(String? value) {
+    if (values.contains(value)) return value!;
+    return open;
+  }
+}
+
+class PlanningEntryPriority {
+  static const String low = 'low';
+  static const String normal = 'normal';
+  static const String high = 'high';
+
+  static const List<String> values = <String>[low, normal, high];
+
+  static String normalize(String? value) {
+    if (values.contains(value)) return value!;
+    return normal;
+  }
+
+  static int rank(String value) {
+    switch (normalize(value)) {
+      case high:
+        return 3;
+      case normal:
+        return 2;
+      case low:
+        return 1;
+      default:
+        return 2;
+    }
+  }
+
+  static String label(String value) {
+    switch (normalize(value)) {
+      case high:
+        return 'High';
+      case low:
+        return 'Low';
+      case normal:
+      default:
+        return 'Normal';
+    }
+  }
+}
+
+class PlanningEntry {
+  final String id;
+  final String title;
+  final String? notes;
+  final String kind;
+  final String priority;
+  final String status;
+  final String? projectId;
+  final DateTime? date;
+  final DateTime? dueAt;
+  final DateTime? startAt;
+  final DateTime? endAt;
+  final bool allDay;
+  final int? estimateMinutes;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final DateTime? completedAt;
+  final bool isArchived;
+
+  const PlanningEntry({
+    required this.id,
+    required this.title,
+    this.notes,
+    required this.kind,
+    required this.priority,
+    required this.status,
+    this.projectId,
+    this.date,
+    this.dueAt,
+    this.startAt,
+    this.endAt,
+    this.allDay = true,
+    this.estimateMinutes,
+    required this.createdAt,
+    required this.updatedAt,
+    this.completedAt,
+    this.isArchived = false,
+  });
+
+  bool get isDone => status == PlanningEntryStatus.done;
+  bool get isDeadline => kind == PlanningEntryKind.deadline;
+  bool get isEvent => kind == PlanningEntryKind.event;
+  DateTime? get calendarDate => startAt ?? dueAt ?? date;
+  bool get isInbox => calendarDate == null && !isDone && !isArchived;
+
+  factory PlanningEntry.fromJson(Map<String, dynamic> json) {
+    return PlanningEntry(
+      id: _readString(json['id']) ?? '',
+      title: _readString(json['title']) ?? 'Untitled planning item',
+      notes: _readString(json['notes']),
+      kind: PlanningEntryKind.normalize(_readString(json['kind'])),
+      priority: PlanningEntryPriority.normalize(_readString(json['priority'])),
+      status: PlanningEntryStatus.normalize(_readString(json['status'])),
+      projectId: _readString(json['projectId']),
+      date: _readDate(json['date']),
+      dueAt: _readDateTime(json['dueAt']),
+      startAt: _readDateTime(json['startAt']),
+      endAt: _readDateTime(json['endAt']),
+      allDay: _readBool(json['allDay']) ?? true,
+      estimateMinutes: _readInt(json['estimateMinutes']),
+      createdAt: _readDateTime(json['createdAt']) ?? DateTime.now(),
+      updatedAt: _readDateTime(json['updatedAt']) ?? DateTime.now(),
+      completedAt: _readDateTime(json['completedAt']),
+      isArchived: _readBool(json['isArchived']) ?? false,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'notes': notes,
+      'kind': kind,
+      'priority': priority,
+      'status': status,
+      'projectId': projectId,
+      'date': date?.toIso8601String(),
+      'dueAt': dueAt?.toIso8601String(),
+      'startAt': startAt?.toIso8601String(),
+      'endAt': endAt?.toIso8601String(),
+      'allDay': allDay,
+      'estimateMinutes': estimateMinutes,
+      'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt.toIso8601String(),
+      'completedAt': completedAt?.toIso8601String(),
+      'isArchived': isArchived,
+    };
+  }
+
+  PlanningEntry copyWith({
+    String? title,
+    Object? notes = _sentinel,
+    String? kind,
+    String? priority,
+    String? status,
+    Object? projectId = _sentinel,
+    Object? date = _sentinel,
+    Object? dueAt = _sentinel,
+    Object? startAt = _sentinel,
+    Object? endAt = _sentinel,
+    bool? allDay,
+    Object? estimateMinutes = _sentinel,
+    DateTime? updatedAt,
+    DateTime? completedAt,
+    bool clearCompletedAt = false,
+    bool? isArchived,
+  }) {
+    DateTime? readDateObject(Object? value, DateTime? fallback) {
+      if (identical(value, _sentinel)) return fallback;
+      if (value == null) return null;
+      if (value is DateTime) return _dateOnly(value);
+      return fallback;
+    }
+
+    DateTime? readDateTimeObject(Object? value, DateTime? fallback) {
+      if (identical(value, _sentinel)) return fallback;
+      if (value == null) return null;
+      if (value is DateTime) return value;
+      return fallback;
+    }
+
+    int? readIntObject(Object? value, int? fallback) {
+      if (identical(value, _sentinel)) return fallback;
+      if (value == null) return null;
+      if (value is int) return value <= 0 ? null : value;
+      return fallback;
+    }
+
+    return PlanningEntry(
+      id: id,
+      title: title ?? this.title,
+      notes: identical(notes, _sentinel) ? this.notes : notes as String?,
+      kind: kind ?? this.kind,
+      priority: priority ?? this.priority,
+      status: status ?? this.status,
+      projectId: identical(projectId, _sentinel) ? this.projectId : projectId as String?,
+      date: readDateObject(date, this.date),
+      dueAt: readDateTimeObject(dueAt, this.dueAt),
+      startAt: readDateTimeObject(startAt, this.startAt),
+      endAt: readDateTimeObject(endAt, this.endAt),
+      allDay: allDay ?? this.allDay,
+      estimateMinutes: readIntObject(estimateMinutes, this.estimateMinutes),
+      createdAt: createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      completedAt: clearCompletedAt ? null : completedAt ?? this.completedAt,
+      isArchived: isArchived ?? this.isArchived,
+    );
+  }
+
+  static int compareForCalendar(PlanningEntry a, PlanningEntry b) {
+    final aDate = a.calendarDate;
+    final bDate = b.calendarDate;
+    if (aDate != null && bDate != null) {
+      final dateCompare = aDate.compareTo(bDate);
+      if (dateCompare != 0) return dateCompare;
+    } else if (aDate != null) {
+      return -1;
+    } else if (bDate != null) {
+      return 1;
+    }
+    final kindCompare = (a.isDeadline ? 0 : a.isEvent ? 1 : 2).compareTo(b.isDeadline ? 0 : b.isEvent ? 1 : 2);
+    if (kindCompare != 0) return kindCompare;
+    final priorityCompare = PlanningEntryPriority.rank(b.priority).compareTo(PlanningEntryPriority.rank(a.priority));
+    if (priorityCompare != 0) return priorityCompare;
+    return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+  }
+}
+
+class TodayPlanSnapshot {
+  final DateTime date;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final List<TodayPlanItem> items;
+
+  const TodayPlanSnapshot({
+    required this.date,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.items,
+  });
+
+  factory TodayPlanSnapshot.fromJson(Map<String, dynamic> json) {
+    final rawItems = json['items'];
+    return TodayPlanSnapshot(
+      date: _readDate(json['date']) ?? DateTime.now(),
+      createdAt: _readDateTime(json['createdAt']) ?? DateTime.now(),
+      updatedAt: _readDateTime(json['updatedAt']) ?? DateTime.now(),
+      items: rawItems is List
+          ? rawItems.whereType<Map>().map((item) => TodayPlanItem.fromJson(_stringMap(item))).toList(growable: false)
+          : const <TodayPlanItem>[],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'date': date.toIso8601String(),
+      'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt.toIso8601String(),
+      'items': items.map((item) => item.toJson()).toList(),
+    };
+  }
+}
+
+class TodayPlanItem {
+  final String id;
+  final String title;
+  final String? detail;
+  final String reason;
+  final String kind;
+  final String priority;
+  final bool included;
+  final bool manual;
+  final String? sourceLabel;
+
+  const TodayPlanItem({
+    required this.id,
+    required this.title,
+    this.detail,
+    required this.reason,
+    required this.kind,
+    required this.priority,
+    required this.included,
+    required this.manual,
+    this.sourceLabel,
+  });
+
+  factory TodayPlanItem.fromJson(Map<String, dynamic> json) {
+    return TodayPlanItem(
+      id: _readString(json['id']) ?? '',
+      title: _readString(json['title']) ?? 'Untitled item',
+      detail: _readString(json['detail']),
+      reason: _readString(json['reason']) ?? 'Saved in today plan',
+      kind: _readString(json['kind']) ?? 'manualReminder',
+      priority: _readString(json['priority']) ?? 'should',
+      included: _readBool(json['included']) ?? true,
+      manual: _readBool(json['manual']) ?? false,
+      sourceLabel: _readString(json['sourceLabel']),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'detail': detail,
+      'reason': reason,
+      'kind': kind,
+      'priority': priority,
+      'included': included,
+      'manual': manual,
+      'sourceLabel': sourceLabel,
+    };
+  }
+}
+
 class StudyPlanKind {
   static const String progress = 'progress';
   static const String recurring = 'recurring';
@@ -1516,6 +2100,8 @@ class StudyPlan {
   final int endUnit;
   final int completedThroughUnit;
   final int? dailyTarget;
+  final int? timeStartMinutes;
+  final int? timeEndMinutes;
   final Set<String> completedDateKeys;
   final List<String> checklistItems;
   final Set<int> completedChecklistIndexes;
@@ -1541,6 +2127,8 @@ class StudyPlan {
     required this.endUnit,
     required this.completedThroughUnit,
     this.dailyTarget,
+    this.timeStartMinutes,
+    this.timeEndMinutes,
     this.completedDateKeys = const <String>{},
     this.checklistItems = const <String>[],
     this.completedChecklistIndexes = const <int>{},
@@ -1558,6 +2146,8 @@ class StudyPlan {
   bool get isSingleTask => planKind == StudyPlanKind.singleTask;
   bool get isDeadlineMarker => planKind == StudyPlanKind.deadline;
   bool get isChecklist => planKind == StudyPlanKind.checklist;
+  bool get isTimeBased => unitType == 'minutes' || unitType == 'time';
+  bool get hasTimeWindow => timeStartMinutes != null && timeEndMinutes != null && timeEndMinutes! > timeStartMinutes!;
   int get dailyTargetValue => dailyTarget == null || dailyTarget! < 1 ? 1 : dailyTarget!;
   int get totalUnits => isRecurring
       ? dailyTargetValue
@@ -1610,6 +2200,9 @@ class StudyPlan {
         return 'deadline';
       case 'topic':
         return 'topic';
+      case 'minutes':
+      case 'time':
+        return 'min';
       default:
         return customUnitSingular?.trim().isNotEmpty == true
             ? customUnitSingular!.trim()
@@ -1644,9 +2237,34 @@ class StudyPlan {
         return count == 1 ? 'deadline' : 'deadlines';
       case 'topic':
         return count == 1 ? 'topic' : 'topics';
+      case 'minutes':
+      case 'time':
+        return count == 1 ? 'minute' : 'minutes';
       default:
         return count == 1 ? 'unit' : 'units';
     }
+  }
+
+
+  String get timeAmountLabel {
+    final minutes = dailyTargetValue;
+    if (!isTimeBased) return '$minutes ${unitNounForCount(minutes)}';
+    final hours = minutes ~/ 60;
+    final remainder = minutes % 60;
+    if (hours > 0 && remainder > 0) return '${hours}h ${remainder}m';
+    if (hours > 0) return hours == 1 ? '1 hour' : '$hours hours';
+    return minutes == 1 ? '1 minute' : '$minutes minutes';
+  }
+
+  String? get timeWindowLabel {
+    if (!hasTimeWindow) return null;
+    return '${_formatMinuteOfDay(timeStartMinutes!)}–${_formatMinuteOfDay(timeEndMinutes!)}';
+  }
+
+  DateTime dateWithStartTime(DateTime date) {
+    final start = timeStartMinutes;
+    if (start == null) return date;
+    return DateTime(date.year, date.month, date.day, start ~/ 60, start % 60);
   }
 
   factory StudyPlan.fromJson(Map<String, dynamic> json) {
@@ -1673,6 +2291,8 @@ class StudyPlan {
       endUnit: kind == StudyPlanKind.progress ? endUnit : 0,
       completedThroughUnit: _readInt(json['completedThroughUnit']) ?? startUnit - 1,
       dailyTarget: _readInt(json['dailyTarget']),
+      timeStartMinutes: _readInt(json['timeStartMinutes']),
+      timeEndMinutes: _readInt(json['timeEndMinutes']),
       completedDateKeys: completedDates is List
           ? completedDates.map((value) => value.toString()).toSet()
           : const <String>{},
@@ -1707,6 +2327,8 @@ class StudyPlan {
       'endUnit': endUnit,
       'completedThroughUnit': completedThroughUnit,
       'dailyTarget': dailyTarget,
+      'timeStartMinutes': timeStartMinutes,
+      'timeEndMinutes': timeEndMinutes,
       'completedDateKeys': completedDateKeys.toList()..sort(),
       'checklistItems': checklistItems,
       'completedChecklistIndexes': completedChecklistIndexes.toList()..sort(),
@@ -1744,6 +2366,8 @@ class StudyPlan {
       endUnit: endUnit,
       completedThroughUnit: completedThroughUnit ?? this.completedThroughUnit,
       dailyTarget: dailyTarget ?? this.dailyTarget,
+      timeStartMinutes: this.timeStartMinutes,
+      timeEndMinutes: this.timeEndMinutes,
       completedDateKeys: completedDateKeys ?? this.completedDateKeys,
       checklistItems: checklistItems ?? this.checklistItems,
       completedChecklistIndexes: completedChecklistIndexes ?? this.completedChecklistIndexes,
@@ -1779,6 +2403,8 @@ class StudyPlanRequirement {
   bool get isDeadlineMarker => plan.isDeadlineMarker;
   bool get isSingleTask => plan.isSingleTask;
   bool get isChecklistItem => plan.isChecklist;
+  String? get timeLabel => plan.timeWindowLabel;
+  DateTime get sortAt => plan.dateWithStartTime(date);
 
   String get rangeLabel {
     if (plan.isDeadlineMarker) return 'deadline';
@@ -1791,6 +2417,7 @@ class StudyPlanRequirement {
       return 'Checklist item';
     }
     if (plan.isRecurring) {
+      if (plan.isTimeBased) return plan.timeAmountLabel;
       return '$unitCount ${plan.unitNounForCount(unitCount)}';
     }
     if (startUnit == endUnit) return '${plan.unitLabel} $startUnit';

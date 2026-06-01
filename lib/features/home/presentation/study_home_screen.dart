@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../infrastructure/database/app_database.dart';
+import '../../calendar/presentation/study_calendar_screen.dart';
 import '../../library/presentation/library_screen.dart';
 import '../../notes/data/note_repository.dart';
 import '../../planning/data/study_planning_repository.dart';
@@ -10,6 +11,7 @@ import '../../planning/domain/study_material_source.dart';
 import '../../planning/presentation/create_project_screen.dart';
 import '../../planning/presentation/dev_todo_drawer.dart';
 import '../../planning/presentation/planning_create_hub_screen.dart';
+import '../../planning/presentation/planning_entry_dialog.dart';
 import '../../planning/presentation/project_planning_screen.dart';
 import '../../reader/presentation/reader_screen.dart';
 
@@ -42,7 +44,7 @@ Future<void> showTodayBriefingModal({
   );
 }
 
-/// Calendar/requirements modal used by Library and Reader shortcuts.
+/// Opens the first-class Calendar module used by Today, Library, and Reader shortcuts.
 Future<void> showStudyCalendarModal({
   required BuildContext context,
   required StudyPlanningRepository planningRepository,
@@ -51,34 +53,15 @@ Future<void> showStudyCalendarModal({
 }) async {
   await planningRepository.load();
   if (!context.mounted) return;
-  return showDialog<void>(
-    context: context,
-    builder: (context) {
-      final media = MediaQuery.of(context);
-      final availableWidth = media.size.width - 48;
-      final availableHeight = media.size.height - 48;
-      final dialogWidth = availableWidth < 1180.0
-          ? availableWidth
-          : (availableWidth > 1480.0 ? 1480.0 : availableWidth);
-      final dialogHeight = availableHeight < 760.0
-          ? availableHeight
-          : (availableHeight > 920.0 ? 920.0 : availableHeight);
-
-      return Dialog(
-        insetPadding: const EdgeInsets.all(24),
-        clipBehavior: Clip.antiAlias,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
-        child: SizedBox(
-          width: dialogWidth,
-          height: dialogHeight,
-          child: _StudyCalendarModal(
-            planningRepository: planningRepository,
-            noteRepository: noteRepository,
-            onOpenTodo: onOpenTodo,
-          ),
-        ),
-      );
-    },
+  return Navigator.of(context).push<void>(
+    MaterialPageRoute(
+      fullscreenDialog: false,
+      builder: (_) => StudyCalendarScreen(
+        planningRepository: planningRepository,
+        noteRepository: noteRepository,
+        onOpenTodo: onOpenTodo,
+      ),
+    ),
   );
 }
 
@@ -178,29 +161,45 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
   }
 
   Widget _buildScaffold(List<TodoItem> todos) {
-    late final _TodayDashboardData data;
+    late _TodayDashboardData data;
     final today = _DateText.dateOnly(_now);
-    final activeDailySetup = _dailySetup != null && _DateText.sameDate(_dailySetup!.date, today)
+    final inMemorySetup = _dailySetup != null && _DateText.sameDate(_dailySetup!.date, today)
         ? _dailySetup
         : null;
-    data = _TodayDashboardData.fromRepositories(
-      planningRepository: _planningRepository,
-      todos: todos,
-      now: _now,
-      planningLoaded: _planningLoaded,
-      loadError: _loadError,
-      dailySetup: activeDailySetup,
-      todayWorkDoneIds: _todayWorkDoneIds,
-      onOpenTodaySetup: () => _openTodaySetup(data),
-      onCompleteTodayItem: _completeTodayItem,
-      onCompleteRequirement: _completeRequirement,
-      onResolveDebt: _resolveDebt,
-      onCompleteTodo: _completeTodo,
-      onOpenRelatedFile: _openRelatedFile,
-      onOpenProject: _openProject,
-      onCreatePlan: _createPlan,
-      onOpenCalendar: _openCalendar,
-    );
+
+    _TodayDashboardData buildData(_DailySetupSnapshot? setup) {
+      return _TodayDashboardData.fromRepositories(
+        planningRepository: _planningRepository,
+        todos: todos,
+        now: _now,
+        planningLoaded: _planningLoaded,
+        loadError: _loadError,
+        dailySetup: setup,
+        todayWorkDoneIds: _todayWorkDoneIds,
+        onOpenTodaySetup: () => _openTodaySetup(data),
+        onCompleteTodayItem: _completeTodayItem,
+        onCompleteRequirement: _completeRequirement,
+        onResolveDebt: _resolveDebt,
+        onCompleteTodo: _completeTodo,
+        onCompletePlanningEntry: _completePlanningEntry,
+        onOpenRelatedFile: _openRelatedFile,
+        onOpenProject: _openProject,
+        onCreatePlan: _createPlan,
+        onQuickAddPlanningEntry: _quickAddPlanningEntry,
+        onOpenCalendar: _openCalendar,
+      );
+    }
+
+    data = buildData(inMemorySetup);
+    if (inMemorySetup == null) {
+      final persistedSetup = _resolvePersistedTodaySetup(
+        date: today,
+        suggestedItems: _DailySetupItemVm.fromWorkSections(data.workSections),
+      );
+      if (persistedSetup != null) {
+        data = buildData(persistedSetup);
+      }
+    }
 
     final chroma = _TodayColors.monthChroma(_now.month);
     return _TodayChromaticScope(
@@ -225,6 +224,7 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
                   onOpenLibrary: _openLibrary,
                   onOpenCalendar: _openCalendar,
                   onCreatePlan: _createPlan,
+                  onQuickAddPlanningEntry: _quickAddPlanningEntry,
                   onCreateProject: _createProject,
                   onOpenDevTodos: _openDevTodos,
                 ),
@@ -415,6 +415,20 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
     );
   }
 
+  Future<void> _quickAddPlanningEntry() async {
+    await _planningRepository.load();
+    if (!mounted) return;
+    await showPlanningEntryDialog(
+      context: context,
+      planningRepository: _planningRepository,
+      initialDate: _DateText.dateOnly(_now),
+    );
+  }
+
+  Future<void> _completePlanningEntry(PlanningEntry entry) async {
+    await _planningRepository.completePlanningEntry(entry.id);
+  }
+
   Future<void> _createProject() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
@@ -535,12 +549,17 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
       );
     }
 
-    return _DailySetupSnapshot(
+    final persisted = _DailySetupSnapshot(
       date: snapshot.date,
       createdAt: snapshot.createdAt,
       updatedAt: snapshot.updatedAt,
       items: items,
     );
+    await _planningRepository.saveTodayPlan(
+      date: persisted.date,
+      items: persisted.items.map(_todayPlanItemFromSetupVm).toList(growable: false),
+    );
+    return persisted;
   }
 
   LibraryTodayWorkSession _libraryTodayWorkSessionFromSetup(_DailySetupSnapshot setup) {
@@ -565,6 +584,64 @@ class _StudyHomeScreenState extends State<StudyHomeScreen> {
     );
   }
 
+  TodayPlanItem _todayPlanItemFromSetupVm(_DailySetupItemVm item) {
+    return TodayPlanItem(
+      id: item.id,
+      title: item.title,
+      detail: item.detail,
+      reason: item.reason,
+      kind: item.kind.name,
+      priority: item.priority.name,
+      included: item.included,
+      manual: item.manual,
+      sourceLabel: item.sourceLabel,
+    );
+  }
+
+  _DailySetupSnapshot? _resolvePersistedTodaySetup({
+    required DateTime date,
+    required List<_DailySetupItemVm> suggestedItems,
+  }) {
+    final stored = _planningRepository.todayPlanForDate(date);
+    if (stored == null) return null;
+
+    final suggestionsById = <String, _DailySetupItemVm>{
+      for (final item in suggestedItems) item.id: item,
+    };
+    final resolvedItems = <_DailySetupItemVm>[];
+    for (final storedItem in stored.items) {
+      final current = suggestionsById[storedItem.id];
+      if (current != null) {
+        resolvedItems.add(current.copyWith(
+          included: storedItem.included,
+          priority: _dailySetupPriorityFromName(storedItem.priority),
+        ));
+        continue;
+      }
+      resolvedItems.add(
+        _DailySetupItemVm(
+          id: storedItem.id,
+          kind: _dailySetupKindFromName(storedItem.kind),
+          title: storedItem.title,
+          detail: storedItem.detail,
+          reason: storedItem.reason,
+          included: storedItem.included,
+          priority: _dailySetupPriorityFromName(storedItem.priority),
+          sourceLabel: storedItem.sourceLabel,
+          completeLabel: 'Done',
+          manual: storedItem.manual,
+        ),
+      );
+    }
+    if (resolvedItems.isEmpty) return null;
+    return _DailySetupSnapshot(
+      date: stored.date,
+      createdAt: stored.createdAt,
+      updatedAt: stored.updatedAt,
+      items: resolvedItems,
+    );
+  }
+
   void _showSnackBar(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -579,6 +656,7 @@ class _TodayDashboard extends StatelessWidget {
     required this.onOpenLibrary,
     required this.onOpenCalendar,
     required this.onCreatePlan,
+    required this.onQuickAddPlanningEntry,
     required this.onCreateProject,
     required this.onOpenDevTodos,
   });
@@ -587,6 +665,7 @@ class _TodayDashboard extends StatelessWidget {
   final Future<void> Function() onOpenLibrary;
   final Future<void> Function() onOpenCalendar;
   final Future<void> Function() onCreatePlan;
+  final Future<void> Function() onQuickAddPlanningEntry;
   final Future<void> Function() onCreateProject;
   final Future<void> Function() onOpenDevTodos;
 
@@ -609,41 +688,6 @@ class _TodayDashboard extends StatelessWidget {
                   _TodayDateCard(now: data.now),
                   const SizedBox(height: 16),
                   _WeekOverviewCard(data: data),
-                ],
-              );
-
-        final mainContent = wide
-            ? Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    flex: 7,
-                    child: _TodayMainColumn(data: data),
-                  ),
-                  const SizedBox(width: 18),
-                  SizedBox(
-                    width: 360,
-                    child: _TodaySideColumn(
-                      data: data,
-                      onOpenLibrary: onOpenLibrary,
-                      onOpenCalendar: onOpenCalendar,
-                      onCreatePlan: onCreatePlan,
-                      onCreateProject: onCreateProject,
-                    ),
-                  ),
-                ],
-              )
-            : Column(
-                children: [
-                  _TodayMainColumn(data: data),
-                  const SizedBox(height: 16),
-                  _TodaySideColumn(
-                    data: data,
-                    onOpenLibrary: onOpenLibrary,
-                    onOpenCalendar: onOpenCalendar,
-                    onCreatePlan: onCreatePlan,
-                    onCreateProject: onCreateProject,
-                  ),
                 ],
               );
 
@@ -671,15 +715,15 @@ class _TodayDashboard extends StatelessWidget {
                       text: 'Could not load planning data: ${data.loadError}',
                     ),
                   ),
-                _TodayLaunchPanel(
+                _TodayPlanningSurface(
                   data: data,
+                  wide: wide,
                   onOpenLibrary: onOpenLibrary,
                   onOpenCalendar: onOpenCalendar,
                   onCreatePlan: onCreatePlan,
+                  onQuickAddPlanningEntry: onQuickAddPlanningEntry,
                   onCreateProject: onCreateProject,
                 ),
-                const SizedBox(height: 18),
-                mainContent,
               ],
             ),
           ),
@@ -833,6 +877,417 @@ class _NavPillButton extends StatelessWidget {
   }
 }
 
+
+class _TodayPlanningSurface extends StatelessWidget {
+  const _TodayPlanningSurface({
+    required this.data,
+    required this.wide,
+    required this.onOpenLibrary,
+    required this.onOpenCalendar,
+    required this.onCreatePlan,
+    required this.onQuickAddPlanningEntry,
+    required this.onCreateProject,
+  });
+
+  final _TodayDashboardData data;
+  final bool wide;
+  final Future<void> Function() onOpenLibrary;
+  final Future<void> Function() onOpenCalendar;
+  final Future<void> Function() onCreatePlan;
+  final Future<void> Function() onQuickAddPlanningEntry;
+  final Future<void> Function() onCreateProject;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!wide) {
+      return Column(
+        children: [
+          _TodayAgendaCard(
+            data: data,
+            onOpenCalendar: onOpenCalendar,
+            onQuickAddPlanningEntry: onQuickAddPlanningEntry,
+          ),
+          const SizedBox(height: 14),
+          _TodayActionDock(
+            onOpenLibrary: onOpenLibrary,
+            onOpenCalendar: onOpenCalendar,
+            onCreatePlan: onCreatePlan,
+            onQuickAddPlanningEntry: onQuickAddPlanningEntry,
+            onCreateProject: onCreateProject,
+          ),
+          const SizedBox(height: 14),
+          _ActiveProjectsPanel(projects: data.projects, onCreateProject: onCreateProject),
+        ],
+      );
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          flex: 7,
+          child: _TodayAgendaCard(
+            data: data,
+            onOpenCalendar: onOpenCalendar,
+            onQuickAddPlanningEntry: onQuickAddPlanningEntry,
+          ),
+        ),
+        const SizedBox(width: 16),
+        SizedBox(
+          width: 390,
+          child: Column(
+            children: [
+              _TodayActionDock(
+                onOpenLibrary: onOpenLibrary,
+                onOpenCalendar: onOpenCalendar,
+                onCreatePlan: onCreatePlan,
+                onQuickAddPlanningEntry: onQuickAddPlanningEntry,
+                onCreateProject: onCreateProject,
+              ),
+              const SizedBox(height: 14),
+              _ActiveProjectsPanel(projects: data.projects, onCreateProject: onCreateProject),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TodayAgendaCard extends StatelessWidget {
+  const _TodayAgendaCard({
+    required this.data,
+    required this.onOpenCalendar,
+    required this.onQuickAddPlanningEntry,
+  });
+
+  final _TodayDashboardData data;
+  final Future<void> Function() onOpenCalendar;
+  final Future<void> Function() onQuickAddPlanningEntry;
+
+  @override
+  Widget build(BuildContext context) {
+    final chroma = _TodayChromaticScope.of(context);
+    final openCount = _todayOpenWorkCount(data);
+    final setup = data.dailySetup;
+    final headline = openCount == 0 ? 'Clear today' : 'Today';
+    final subtitle = setup == null
+        ? 'Choose what belongs in the day, then work from a clean list.'
+        : '${setup.mustCount} must · ${setup.shouldCount} should · ${setup.extraCount} extra';
+
+    return _SurfaceCard(
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 760;
+          final heading = Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: chroma.soft,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Color.lerp(chroma.border, chroma.accent, .16)!),
+                ),
+                child: Icon(
+                  openCount == 0 ? Icons.check_circle_outline_rounded : Icons.today_rounded,
+                  color: chroma.accent,
+                  size: 21,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      headline,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        height: 1,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -.45,
+                        color: _TodayColors.ink,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        height: 1.2,
+                        fontWeight: FontWeight.w700,
+                        color: _TodayColors.inkMuted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+          final actions = Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: compact ? WrapAlignment.start : WrapAlignment.end,
+            children: [
+              _TodayInlinePillButton(
+                icon: Icons.wb_twilight_rounded,
+                label: setup == null ? 'Set up' : 'Review',
+                filled: true,
+                onTap: data.onOpenTodaySetup,
+              ),
+              _TodayInlinePillButton(
+                icon: Icons.add_rounded,
+                label: 'Add',
+                onTap: onQuickAddPlanningEntry,
+              ),
+              _TodayInlinePillButton(
+                icon: Icons.calendar_month_outlined,
+                label: 'Calendar',
+                onTap: onOpenCalendar,
+              ),
+            ],
+          );
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (compact) ...[
+                heading,
+                const SizedBox(height: 12),
+                actions,
+              ] else
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(child: heading),
+                    const SizedBox(width: 12),
+                    actions,
+                  ],
+                ),
+              const SizedBox(height: 14),
+              Container(height: 1, color: chroma.border),
+              const SizedBox(height: 10),
+              _TodayTasksPanel(data: data),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _TodayInlinePillButton extends StatelessWidget {
+  const _TodayInlinePillButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.filled = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final Future<void> Function() onTap;
+  final bool filled;
+
+  @override
+  Widget build(BuildContext context) {
+    final chroma = _TodayChromaticScope.of(context);
+    final foreground = filled ? Colors.white : chroma.accent;
+    return InkWell(
+      onTap: () => unawaited(onTap()),
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        height: 34,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: filled ? chroma.accent : Color.lerp(chroma.surface, Colors.white, .20),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: filled ? chroma.accent : chroma.borderStrong),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: foreground),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                height: 1,
+                fontWeight: FontWeight.w900,
+                color: foreground,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TodayActionDock extends StatelessWidget {
+  const _TodayActionDock({
+    required this.onOpenLibrary,
+    required this.onOpenCalendar,
+    required this.onCreatePlan,
+    required this.onQuickAddPlanningEntry,
+    required this.onCreateProject,
+  });
+
+  final Future<void> Function() onOpenLibrary;
+  final Future<void> Function() onOpenCalendar;
+  final Future<void> Function() onCreatePlan;
+  final Future<void> Function() onQuickAddPlanningEntry;
+  final Future<void> Function() onCreateProject;
+
+  @override
+  Widget build(BuildContext context) {
+    final chroma = _TodayChromaticScope.of(context);
+    return _SurfaceCard(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.square_rounded, color: chroma.accent, size: 10),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Quick actions',
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    height: 1,
+                    fontWeight: FontWeight.w900,
+                    color: _TodayColors.ink,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _TodayDockAction(
+            icon: Icons.calendar_month_outlined,
+            title: 'Calendar',
+            subtitle: 'Open the full planning surface',
+            onTap: onOpenCalendar,
+          ),
+          _TodayDockDivider(color: chroma.border),
+          _TodayDockAction(
+            icon: Icons.add_task_rounded,
+            title: 'Quick add',
+            subtitle: 'Capture a task, event, or deadline',
+            onTap: onQuickAddPlanningEntry,
+          ),
+          _TodayDockDivider(color: chroma.border),
+          _TodayDockAction(
+            icon: Icons.menu_book_outlined,
+            title: 'Library',
+            subtitle: 'Continue from PDFs, EPUBs, and notes',
+            onTap: onOpenLibrary,
+          ),
+          _TodayDockDivider(color: chroma.border),
+          _TodayDockAction(
+            icon: Icons.checklist_rounded,
+            title: 'Create plan',
+            subtitle: 'Break larger work into the calendar',
+            onTap: onCreatePlan,
+          ),
+          _TodayDockDivider(color: chroma.border),
+          _TodayDockAction(
+            icon: Icons.grid_view_rounded,
+            title: 'Create project',
+            subtitle: 'Start a new work stream',
+            onTap: onCreateProject,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TodayDockDivider extends StatelessWidget {
+  const _TodayDockDivider({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 1,
+      margin: const EdgeInsets.only(left: 42),
+      color: color,
+    );
+  }
+}
+
+class _TodayDockAction extends StatelessWidget {
+  const _TodayDockAction({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Future<void> Function() onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final chroma = _TodayChromaticScope.of(context);
+    return InkWell(
+      onTap: () => unawaited(onTap()),
+      borderRadius: BorderRadius.circular(13),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 10),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: chroma.soft,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, color: chroma.accent, size: 18),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12.8, height: 1.1, fontWeight: FontWeight.w900, color: _TodayColors.ink),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11, height: 1.1, fontWeight: FontWeight.w700, color: _TodayColors.inkFaint),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, color: chroma.accent, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _TodayLaunchPanel extends StatelessWidget {
   const _TodayLaunchPanel({
     required this.data,
@@ -969,6 +1424,7 @@ class _TodayLaunchPanel extends StatelessWidget {
                 onOpenLibrary: onOpenLibrary,
                 onOpenCalendar: onOpenCalendar,
                 onCreatePlan: onCreatePlan,
+                onQuickAddPlanningEntry: data.onQuickAddPlanningEntry,
                 onCreateProject: onCreateProject,
               ),
             ],
@@ -1107,12 +1563,14 @@ class _TodayLaunchShortcuts extends StatelessWidget {
     required this.onOpenLibrary,
     required this.onOpenCalendar,
     required this.onCreatePlan,
+    required this.onQuickAddPlanningEntry,
     required this.onCreateProject,
   });
 
   final Future<void> Function() onOpenLibrary;
   final Future<void> Function() onOpenCalendar;
   final Future<void> Function() onCreatePlan;
+  final Future<void> Function() onQuickAddPlanningEntry;
   final Future<void> Function() onCreateProject;
 
   @override
@@ -1123,6 +1581,7 @@ class _TodayLaunchShortcuts extends StatelessWidget {
         final tiles = [
           _LaunchShortcutTile(icon: Icons.menu_book_outlined, title: 'Library', subtitle: 'Open material', onTap: onOpenLibrary),
           _LaunchShortcutTile(icon: Icons.calendar_month_outlined, title: 'Calendar', subtitle: 'Review distribution', onTap: onOpenCalendar),
+          _LaunchShortcutTile(icon: Icons.add_task_rounded, title: 'Quick add', subtitle: 'Inbox task', onTap: onQuickAddPlanningEntry),
           _LaunchShortcutTile(icon: Icons.checklist_rounded, title: 'Create plan', subtitle: 'Break work down', onTap: onCreatePlan),
           _LaunchShortcutTile(icon: Icons.grid_view_rounded, title: 'Create project', subtitle: 'New work stream', onTap: onCreateProject),
         ];
@@ -1679,70 +2138,78 @@ class _WeekDayHeading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final textColor = active
+        ? labelColor
+        : muted
+            ? _TodayColors.inkFaint
+            : _TodayColors.inkMuted;
     return SizedBox(
-      height: active ? 38 : 31,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        mainAxisSize: MainAxisSize.min,
+      height: 34,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (active) ...[
-                Container(
-                  width: 5,
-                  height: 5,
-                  decoration: BoxDecoration(color: labelColor, shape: BoxShape.circle),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (active) ...[
+                      Container(
+                        width: 5,
+                        height: 5,
+                        decoration: BoxDecoration(color: labelColor, shape: BoxShape.circle),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                    Flexible(
+                      child: Text(
+                        weekday,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12.6,
+                          height: 1,
+                          fontWeight: active ? FontWeight.w900 : FontWeight.w800,
+                          color: textColor,
+                          letterSpacing: -.15,
+                        ),
+                      ),
+                    ),
+                    if (hasDeadline) ...[
+                      const SizedBox(width: 5),
+                      const Icon(Icons.flag_rounded, size: 10.5, color: _TodayColors.deadline),
+                    ],
+                  ],
                 ),
-                const SizedBox(width: 6),
-              ],
-              Flexible(
-                child: Text(
-                  weekday,
-                  textAlign: TextAlign.center,
+                const SizedBox(height: 5),
+                Text(
+                  dateLabel,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 13.3,
+                    fontSize: 10.2,
                     height: 1,
-                    fontWeight: active ? FontWeight.w900 : FontWeight.w800,
-                    color: labelColor,
-                    letterSpacing: -.2,
+                    fontWeight: FontWeight.w900,
+                    color: muted ? _TodayColors.inkFaint : textColor.withOpacity(.78),
+                    letterSpacing: .05,
                   ),
                 ),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                dateLabel,
-                style: TextStyle(
-                  fontSize: 10.4,
-                  height: 1,
-                  fontWeight: FontWeight.w900,
-                  color: active
-                      ? labelColor
-                      : muted
-                          ? _TodayColors.inkFaint
-                          : _TodayColors.inkMuted,
-                ),
-              ),
-              if (hasDeadline) ...[
-                const SizedBox(width: 5),
-                const Icon(Icons.flag_rounded, size: 11, color: _TodayColors.deadline),
               ],
-            ],
+            ),
           ),
-          if (active) ...[
-            const SizedBox(height: 6),
+          if (active)
             Container(
-              width: 34,
+              width: 26,
               height: 2,
+              margin: const EdgeInsets.only(top: 3),
               decoration: BoxDecoration(
                 color: labelColor,
                 borderRadius: BorderRadius.circular(999),
               ),
             ),
-          ],
         ],
       ),
     );
@@ -1776,53 +2243,67 @@ class _WeekWorkLine extends StatelessWidget {
             : faded
                 ? _TodayColors.inkFaint
                 : _TodayColors.inkMuted;
+    final badge = _badgeFromDetail(item.detail);
+    final secondary = _secondaryDetail(item.detail, badge);
 
-    final marker = item.isDeadline
-        ? const Icon(Icons.flag_rounded, size: 11, color: _TodayColors.deadline)
-        : item.isFinish
-            ? const Icon(Icons.keyboard_double_arrow_down_rounded, size: 12, color: _TodayColors.finish)
-            : Container(
-                width: 4,
-                height: 4,
-                decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
-              );
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 1),
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.symmetric(horizontal: compact ? 6 : 7, vertical: compact ? 5 : 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(faded ? .34 : .58),
+        borderRadius: BorderRadius.circular(13),
+        border: Border.all(color: accent.withOpacity(faded ? .08 : .16)),
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(
-            width: 13,
-            height: item.detail == null ? 20 : 36,
-            child: Align(alignment: const Alignment(0, -.70), child: marker),
+          Container(
+            width: 3,
+            height: secondary == null ? 20 : 30,
+            margin: const EdgeInsets.only(top: 1),
+            decoration: BoxDecoration(
+              color: accent.withOpacity(faded ? .45 : .82),
+              borderRadius: BorderRadius.circular(999),
+            ),
           ),
-          const SizedBox(width: 5),
+          const SizedBox(width: 7),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  item.label,
-                  maxLines: compact ? 1 : 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: compact ? 10 : 11.1,
-                    height: 1.08,
-                    fontWeight: item.isDeadline ? FontWeight.w900 : FontWeight.w800,
-                    color: titleColor,
-                  ),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (badge != null) ...[
+                      _WeekDetailBadge(label: badge, accent: accent, faded: faded),
+                      const SizedBox(width: 6),
+                    ],
+                    Expanded(
+                      child: Text(
+                        item.label,
+                        maxLines: compact ? 1 : 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: compact ? 9.9 : 10.8,
+                          height: 1.08,
+                          fontWeight: item.isDeadline ? FontWeight.w900 : FontWeight.w800,
+                          color: titleColor,
+                          letterSpacing: -.1,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                if (item.detail != null) ...[
-                  const SizedBox(height: 2),
+                if (secondary != null) ...[
+                  const SizedBox(height: 3),
                   Text(
-                    item.detail!,
+                    secondary,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: compact ? 9.3 : 10.1,
-                      height: 1.04,
+                      fontSize: compact ? 8.8 : 9.4,
+                      height: 1,
                       fontWeight: FontWeight.w800,
                       color: detailColor,
                     ),
@@ -1832,6 +2313,61 @@ class _WeekWorkLine extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  static String? _badgeFromDetail(String? detail) {
+    final raw = detail?.trim();
+    if (raw == null || raw.isEmpty) return null;
+    final first = raw.split(' · ').first.trim();
+    if (RegExp(r'^\d{1,2}:\d{2}').hasMatch(first)) return first;
+    final minuteMatch = RegExp(r'^(\d+)\s+minutes?$', caseSensitive: false).firstMatch(first);
+    if (minuteMatch != null) return '${minuteMatch.group(1)}m';
+    final minMatch = RegExp(r'^(\d+)\s+min$', caseSensitive: false).firstMatch(first);
+    if (minMatch != null) return '${minMatch.group(1)}m';
+    final hourMatch = RegExp(r'^(\d+)\s+hours?$', caseSensitive: false).firstMatch(first);
+    if (hourMatch != null) return '${hourMatch.group(1)}h';
+    return null;
+  }
+
+  static String? _secondaryDetail(String? detail, String? badge) {
+    final raw = detail?.trim();
+    if (raw == null || raw.isEmpty) return null;
+    if (badge == null) return raw;
+    final parts = raw.split(' · ').map((part) => part.trim()).where((part) => part.isNotEmpty).toList(growable: false);
+    if (parts.length <= 1) return null;
+    final remaining = parts.skip(1).join(' · ');
+    return remaining.isEmpty ? null : remaining;
+  }
+}
+
+class _WeekDetailBadge extends StatelessWidget {
+  const _WeekDetailBadge({required this.label, required this.accent, required this.faded});
+
+  final String label;
+  final Color accent;
+  final bool faded;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5),
+      decoration: BoxDecoration(
+        color: accent.withOpacity(faded ? .08 : .13),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 8.6,
+          height: 1,
+          fontWeight: FontWeight.w900,
+          color: faded ? _TodayColors.inkFaint : accent,
+          letterSpacing: -.05,
+        ),
       ),
     );
   }
@@ -3536,12 +4072,14 @@ class _QuickAccessPanel extends StatelessWidget {
     required this.onOpenLibrary,
     required this.onOpenCalendar,
     required this.onCreatePlan,
+    required this.onQuickAddPlanningEntry,
     required this.onCreateProject,
   });
 
   final Future<void> Function() onOpenLibrary;
   final Future<void> Function() onOpenCalendar;
   final Future<void> Function() onCreatePlan;
+  final Future<void> Function() onQuickAddPlanningEntry;
   final Future<void> Function() onCreateProject;
 
   @override
@@ -3555,6 +4093,8 @@ class _QuickAccessPanel extends StatelessWidget {
           _QuickAccessTile(icon: Icons.menu_book_outlined, title: 'Library', subtitle: 'Open PDFs, EPUBs, and notes', onTap: onOpenLibrary),
           const SizedBox(height: 9),
           _QuickAccessTile(icon: Icons.calendar_month_outlined, title: 'Calendar', subtitle: 'Review plan distribution', onTap: onOpenCalendar),
+          const SizedBox(height: 9),
+          _QuickAccessTile(icon: Icons.add_task_rounded, title: 'Quick add', subtitle: 'Capture an inbox item', onTap: onQuickAddPlanningEntry),
           const SizedBox(height: 9),
           _QuickAccessTile(icon: Icons.checklist_rounded, title: 'Create plan', subtitle: 'Turn work into daily steps', onTap: onCreatePlan),
           const SizedBox(height: 9),
@@ -3721,7 +4261,7 @@ class _ProjectRow extends StatelessWidget {
 }
 
 
-class _StudyCalendarModal extends StatelessWidget {
+class _StudyCalendarModal extends StatefulWidget {
   const _StudyCalendarModal({
     required this.planningRepository,
     this.noteRepository,
@@ -3733,8 +4273,33 @@ class _StudyCalendarModal extends StatelessWidget {
   final FutureOr<void> Function(TodoItem todo)? onOpenTodo;
 
   @override
+  State<_StudyCalendarModal> createState() => _StudyCalendarModalState();
+}
+
+class _StudyCalendarModalState extends State<_StudyCalendarModal> {
+  late DateTime _selectedDate;
+  String? _activePlanningEntryId;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedDate = _DateText.dateOnly(DateTime.now());
+    widget.planningRepository.addListener(_handlePlanningChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.planningRepository.removeListener(_handlePlanningChanged);
+    super.dispose();
+  }
+
+  void _handlePlanningChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final notes = noteRepository;
+    final notes = widget.noteRepository;
     if (notes == null) {
       return _buildBody(context, const <TodoItem>[]);
     }
@@ -3756,19 +4321,28 @@ class _StudyCalendarModal extends StatelessWidget {
       for (var index = 0; index < 6; index++) DateTime(today.year, today.month + index),
     ];
 
-    final requirements = planningRepository.requirementsForRange(
+    final requirements = widget.planningRepository.requirementsForRange(
       rangeStart: rangeStart,
       rangeEnd: rangeEnd,
       now: now,
     );
-    final debts = planningRepository.studyDebts(now);
-    final openTodos = todos.where((todo) => !todo.isCompleted).toList(growable: false);
-    final entriesByDate = _calendarEntriesByDate(
-      requirements: requirements,
-      todos: openTodos,
+    final planningEntries = widget.planningRepository.planningEntriesForRange(
       rangeStart: rangeStart,
       rangeEnd: rangeEnd,
     );
+    final debts = widget.planningRepository.studyDebts(now);
+    final openTodos = todos.where((todo) => !todo.isCompleted).toList(growable: false);
+    final inboxEntries = widget.planningRepository.planningInboxEntries;
+    final entriesByDate = _calendarEntriesByDate(
+      context: context,
+      requirements: requirements,
+      todos: openTodos,
+      planningEntries: planningEntries,
+      rangeStart: rangeStart,
+      rangeEnd: rangeEnd,
+    );
+    final selectedEntries = entriesByDate[_DateText.dateKey(_selectedDate)] ?? const <_CalendarEntryVm>[];
+    final attentionCount = debts.length + openTodos.length + inboxEntries.length;
 
     return Scaffold(
       backgroundColor: chroma.canvas,
@@ -3788,12 +4362,27 @@ class _StudyCalendarModal extends StatelessWidget {
                       Text('Calendar', style: _TodayText.sectionTitle),
                       SizedBox(height: 3),
                       Text(
-                        'Scrollable plan view with deadlines, planned finishes, reading work, and source todos.',
+                        'Calendar is the planning surface. Pick a day, add work, edit items, move plans, or clean up what no longer belongs.',
                         style: _TodayText.muted,
                       ),
                     ],
                   ),
                 ),
+                TextButton.icon(
+                  onPressed: () => setState(() {
+                    _selectedDate = today;
+                    _activePlanningEntryId = null;
+                  }),
+                  icon: const Icon(Icons.today_rounded, size: 18),
+                  label: const Text('Today'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  onPressed: () => _createPlanningEntryForDate(context, _selectedDate),
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text('Add'),
+                ),
+                const SizedBox(width: 8),
                 IconButton(
                   tooltip: 'Close',
                   onPressed: () => Navigator.of(context).maybePop(),
@@ -3803,57 +4392,80 @@ class _StudyCalendarModal extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             Expanded(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final compact = constraints.maxWidth < 920;
-                  final calendar = _SurfaceCard(
-                    padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-                    child: CustomScrollView(
-                      slivers: [
-                        SliverList(
-                          delegate: SliverChildBuilderDelegate(
-                            (context, index) {
-                              final month = months[index];
-                              return Padding(
-                                padding: EdgeInsets.only(bottom: index == months.length - 1 ? 0 : 24),
-                                child: _CalendarMonthSection(
-                                  month: month,
-                                  today: today,
-                                  entriesByDate: entriesByDate,
-                                ),
-                              );
-                            },
-                            childCount: months.length,
-                          ),
-                        ),
-                      ],
+              child: _SurfaceCard(
+                padding: EdgeInsets.zero,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 16, 18, 12),
+                      child: _CalendarSelectedDayHeader(
+                        selectedDate: _selectedDate,
+                        itemCount: selectedEntries.length,
+                        attentionCount: attentionCount,
+                        onAdd: () => _createPlanningEntryForDate(context, _selectedDate),
+                        onToday: () => setState(() {
+                          _selectedDate = today;
+                          _activePlanningEntryId = null;
+                        }),
+                      ),
                     ),
-                  );
-                  final sidebar = _CalendarSidebar(
-                    debts: debts,
-                    openTodos: openTodos,
-                    onOpenTodo: onOpenTodo,
-                  );
-
-                  if (compact) {
-                    return Column(
-                      children: [
-                        Expanded(child: calendar),
-                        const SizedBox(height: 14),
-                        SizedBox(height: 220, child: sidebar),
-                      ],
-                    );
-                  }
-
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(flex: 7, child: calendar),
-                      const SizedBox(width: 16),
-                      SizedBox(width: 340, child: sidebar),
-                    ],
-                  );
-                },
+                    const Divider(height: 1, color: _TodayColors.border),
+                    Expanded(
+                      child: CustomScrollView(
+                        slivers: [
+                          SliverPadding(
+                            padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+                            sliver: SliverList(
+                              delegate: SliverChildBuilderDelegate(
+                                (context, index) {
+                                  final month = months[index];
+                                  return Padding(
+                                    padding: EdgeInsets.only(bottom: index == months.length - 1 ? 0 : 24),
+                                    child: _CalendarMonthSection(
+                                      month: month,
+                                      today: today,
+                                      selectedDate: _selectedDate,
+                                      entriesByDate: entriesByDate,
+                                      onSelectDate: (date) => setState(() {
+                                        _selectedDate = _DateText.dateOnly(date);
+                                        _activePlanningEntryId = null;
+                                      }),
+                                      onAddEntry: (date) => _createPlanningEntryForDate(context, date),
+                                    ),
+                                  );
+                                },
+                                childCount: months.length,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1, color: _TodayColors.border),
+                    _CalendarDayDock(
+                      selectedDate: _selectedDate,
+                      selectedEntries: selectedEntries,
+                      debts: debts,
+                      openTodos: openTodos,
+                      inboxEntries: inboxEntries,
+                      activePlanningEntryId: _activePlanningEntryId,
+                      onAddToSelectedDate: () => _createPlanningEntryForDate(context, _selectedDate),
+                      onTogglePlanningEntry: (entry) => setState(() {
+                        final calendarDate = entry.calendarDate;
+                        if (calendarDate != null) {
+                          _selectedDate = _DateText.dateOnly(calendarDate);
+                        }
+                        _activePlanningEntryId = _activePlanningEntryId == entry.id ? null : entry.id;
+                      }),
+                      onSavePlanningEntryText: _savePlanningEntryText,
+                      onCompletePlanningEntry: (entry) => widget.planningRepository.completePlanningEntry(entry.id, isDone: !entry.isDone),
+                      onMovePlanningEntry: _movePlanningEntry,
+                      onUnschedulePlanningEntry: _unschedulePlanningEntry,
+                      onArchivePlanningEntry: _archivePlanningEntryInline,
+                      onOpenTodo: widget.onOpenTodo,
+                    ),
+                  ],
+                ),
               ),
             ),
           ],
@@ -3863,8 +4475,10 @@ class _StudyCalendarModal extends StatelessWidget {
   }
 
   Map<String, List<_CalendarEntryVm>> _calendarEntriesByDate({
+    required BuildContext context,
     required List<StudyPlanRequirement> requirements,
     required List<TodoItem> todos,
+    required List<PlanningEntry> planningEntries,
     required DateTime rangeStart,
     required DateTime rangeEnd,
   }) {
@@ -3882,10 +4496,35 @@ class _StudyCalendarModal extends StatelessWidget {
       add(
         requirement.date,
         _CalendarEntryVm(
-          title: requirement.isDeadlineMarker ? requirement.plan.title : requirement.plan.title,
+          title: requirement.plan.title,
           detail: requirement.isDeadlineMarker ? requirement.projectTitle : requirement.rangeLabel,
           isDeadline: requirement.isDeadlineMarker,
           isFinish: plannedFinish,
+          onTap: () => _showRequirementActions(context, requirement),
+        ),
+      );
+    }
+
+    for (final entry in planningEntries) {
+      final calendarDate = entry.calendarDate;
+      if (calendarDate == null) continue;
+      add(
+        calendarDate,
+        _CalendarEntryVm(
+          title: entry.title,
+          detail: _planningEntryDetail(entry, includeTime: false),
+          timeLabel: _planningEntryTimeRangeLabel(entry),
+          sortAt: calendarDate,
+          isDeadline: entry.isDeadline,
+          isFinish: false,
+          planningEntry: entry,
+          onTap: () async {
+            if (!mounted) return;
+            setState(() {
+              _selectedDate = _DateText.dateOnly(calendarDate);
+              _activePlanningEntryId = _activePlanningEntryId == entry.id ? null : entry.id;
+            });
+          },
         ),
       );
     }
@@ -3901,7 +4540,7 @@ class _StudyCalendarModal extends StatelessWidget {
           isDeadline: true,
           isFinish: false,
           onTap: () async {
-            final open = onOpenTodo;
+            final open = widget.onOpenTodo;
             if (open != null) await Future<void>.value(open(todo));
           },
         ),
@@ -3914,76 +4553,937 @@ class _StudyCalendarModal extends StatelessWidget {
         final rankB = b.isDeadline ? 0 : (b.isFinish ? 1 : 2);
         final rankCompare = rankA.compareTo(rankB);
         if (rankCompare != 0) return rankCompare;
+        final timeCompare = _compareNullableDateTimes(a.sortAt, b.sortAt);
+        if (timeCompare != 0) return timeCompare;
         return a.title.toLowerCase().compareTo(b.title.toLowerCase());
       });
     }
     return map;
   }
+
+  Future<void> _createPlanningEntryForDate(BuildContext context, DateTime date) async {
+    await showPlanningEntryDialog(
+      context: context,
+      planningRepository: widget.planningRepository,
+      initialDate: _DateText.dateOnly(date),
+    );
+  }
+
+  Future<void> _editPlanningEntry(BuildContext context, PlanningEntry entry) async {
+    await showPlanningEntryDialog(
+      context: context,
+      planningRepository: widget.planningRepository,
+      entry: entry,
+    );
+  }
+
+  Future<void> _savePlanningEntryText(PlanningEntry entry, String title, String? notes) async {
+    await widget.planningRepository.updatePlanningEntry(
+      entryId: entry.id,
+      title: title,
+      notes: notes == null || notes.trim().isEmpty ? null : notes.trim(),
+    );
+  }
+
+  Future<void> _unschedulePlanningEntry(PlanningEntry entry) async {
+    await widget.planningRepository.updatePlanningEntry(
+      entryId: entry.id,
+      date: null,
+      dueAt: null,
+      startAt: null,
+      endAt: null,
+      allDay: true,
+    );
+    if (mounted) setState(() => _activePlanningEntryId = null);
+  }
+
+  Future<void> _archivePlanningEntryInline(PlanningEntry entry) async {
+    await widget.planningRepository.archivePlanningEntry(entry.id);
+    if (mounted && _activePlanningEntryId == entry.id) setState(() => _activePlanningEntryId = null);
+  }
+
+  Future<void> _showPlanningEntryActions(BuildContext context, PlanningEntry entry) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        final scheduledLabel = entry.calendarDate == null ? 'Unscheduled' : _planningEntryDateTimeLabel(entry.calendarDate!);
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: entry.isDeadline ? _TodayColors.deadline.withOpacity(.14) : _TodayColors.cardTint,
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                      child: Icon(entry.isDeadline ? Icons.flag_rounded : Icons.event_note_rounded, color: entry.isDeadline ? _TodayColors.deadline : _TodayColors.ink),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(entry.title, style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900)),
+                          const SizedBox(height: 4),
+                          Text(
+                            '$scheduledLabel • ${PlanningEntryKind.label(entry.kind)} • ${PlanningEntryPriority.label(entry.priority)}',
+                            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                          ),
+                          if (entry.notes?.trim().isNotEmpty == true) ...[
+                            const SizedBox(height: 6),
+                            Text(entry.notes!, style: theme.textTheme.bodyMedium),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        await _editPlanningEntry(context, entry);
+                      },
+                      icon: const Icon(Icons.edit_rounded),
+                      label: const Text('Edit'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        await widget.planningRepository.completePlanningEntry(entry.id, isDone: !entry.isDone);
+                      },
+                      icon: Icon(entry.isDone ? Icons.undo_rounded : Icons.check_circle_outline_rounded),
+                      label: Text(entry.isDone ? 'Mark open' : 'Mark done'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        await _confirmArchivePlanningEntry(context, entry);
+                      },
+                      icon: const Icon(Icons.delete_outline_rounded),
+                      label: const Text('Remove'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Text('Move quickly', style: theme.textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w900)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _CalendarActionChip(
+                      label: 'Selected day',
+                      icon: Icons.ads_click_rounded,
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        await _movePlanningEntry(entry, _selectedDate);
+                      },
+                    ),
+                    _CalendarActionChip(
+                      label: 'Today',
+                      icon: Icons.today_rounded,
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        await _movePlanningEntry(entry, DateTime.now());
+                      },
+                    ),
+                    _CalendarActionChip(
+                      label: 'Tomorrow',
+                      icon: Icons.arrow_forward_rounded,
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        await _movePlanningEntry(entry, DateTime.now().add(const Duration(days: 1)));
+                      },
+                    ),
+                    _CalendarActionChip(
+                      label: 'Next week',
+                      icon: Icons.keyboard_double_arrow_right_rounded,
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        await _movePlanningEntry(entry, DateTime.now().add(const Duration(days: 7)));
+                      },
+                    ),
+                    _CalendarActionChip(
+                      label: 'Unschedule',
+                      icon: Icons.inbox_rounded,
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        await widget.planningRepository.updatePlanningEntry(
+                          entryId: entry.id,
+                          date: null,
+                          dueAt: null,
+                          startAt: null,
+                          endAt: null,
+                          allDay: true,
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _movePlanningEntry(PlanningEntry entry, DateTime targetDate) async {
+    final targetDay = _DateText.dateOnly(targetDate);
+    final originalStart = entry.startAt ?? entry.dueAt;
+    final preservesTime = !entry.allDay && originalStart != null;
+    final movedStart = preservesTime
+        ? DateTime(targetDay.year, targetDay.month, targetDay.day, originalStart.hour, originalStart.minute)
+        : targetDay;
+    DateTime? movedEnd;
+    if (preservesTime && entry.startAt != null && entry.endAt != null && entry.endAt!.isAfter(entry.startAt!)) {
+      movedEnd = movedStart.add(entry.endAt!.difference(entry.startAt!));
+    }
+
+    if (entry.isDeadline) {
+      await widget.planningRepository.updatePlanningEntry(
+        entryId: entry.id,
+        date: null,
+        dueAt: movedStart,
+        startAt: null,
+        endAt: null,
+        allDay: !preservesTime,
+      );
+    } else {
+      await widget.planningRepository.updatePlanningEntry(
+        entryId: entry.id,
+        date: targetDay,
+        dueAt: null,
+        startAt: preservesTime ? movedStart : null,
+        endAt: movedEnd,
+        allDay: !preservesTime,
+      );
+    }
+    if (mounted) setState(() => _selectedDate = targetDay);
+  }
+
+  Future<void> _confirmArchivePlanningEntry(BuildContext context, PlanningEntry entry) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Remove planning item?'),
+        content: Text('“${entry.title}” will be removed from the calendar and planning inbox.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancel')),
+          FilledButton.tonalIcon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.delete_outline_rounded),
+            label: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await widget.planningRepository.archivePlanningEntry(entry.id);
+    }
+  }
+
+  Future<void> _showRequirementActions(BuildContext context, StudyPlanRequirement requirement) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(requirement.plan.title, style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900)),
+                const SizedBox(height: 4),
+                Text(
+                  '${requirement.projectTitle} • ${_DateText.monthDay(requirement.date)} • ${requirement.isDeadlineMarker ? 'Deadline' : requirement.rangeLabel}',
+                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                ),
+                const SizedBox(height: 18),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        await widget.planningRepository.completeRequirement(requirement);
+                      },
+                      icon: const Icon(Icons.check_circle_outline_rounded),
+                      label: const Text('Mark done'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        await _confirmArchiveStudyPlan(context, requirement.plan);
+                      },
+                      icon: const Icon(Icons.delete_outline_rounded),
+                      label: const Text('Remove plan'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _confirmArchiveStudyPlan(BuildContext context, StudyPlan plan) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Remove generated plan?'),
+        content: Text('“${plan.title}” and its future generated calendar items will be removed.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancel')),
+          FilledButton.tonalIcon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.delete_outline_rounded),
+            label: const Text('Remove plan'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await widget.planningRepository.archivePlan(plan.id);
+    }
+  }
 }
 
-class _CalendarSidebar extends StatelessWidget {
-  const _CalendarSidebar({required this.debts, required this.openTodos, required this.onOpenTodo});
+class _CalendarSelectedDayHeader extends StatelessWidget {
+  const _CalendarSelectedDayHeader({
+    required this.selectedDate,
+    required this.itemCount,
+    required this.attentionCount,
+    required this.onAdd,
+    required this.onToday,
+  });
 
+  final DateTime selectedDate;
+  final int itemCount;
+  final int attentionCount;
+  final VoidCallback onAdd;
+  final VoidCallback onToday;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 46,
+          height: 46,
+          decoration: BoxDecoration(
+            color: _TodayColors.monthAccent(selectedDate.month).withOpacity(.12),
+            borderRadius: BorderRadius.circular(17),
+          ),
+          child: Center(
+            child: Text(
+              selectedDate.day.toString(),
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+                color: _TodayColors.monthAccent(selectedDate.month),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(_DateText.fullDate(selectedDate), style: _TodayText.sectionTitle),
+              const SizedBox(height: 3),
+              Text(
+                '$itemCount planned here${attentionCount == 0 ? '' : ' • $attentionCount still needs attention'}',
+                style: _TodayText.muted,
+              ),
+            ],
+          ),
+        ),
+        OutlinedButton.icon(
+          onPressed: onToday,
+          icon: const Icon(Icons.today_rounded, size: 18),
+          label: const Text('Today'),
+        ),
+        const SizedBox(width: 8),
+        FilledButton.icon(
+          onPressed: onAdd,
+          icon: const Icon(Icons.add_rounded, size: 18),
+          label: const Text('Add here'),
+        ),
+      ],
+    );
+  }
+}
+
+class _CalendarDayDock extends StatelessWidget {
+  const _CalendarDayDock({
+    required this.selectedDate,
+    required this.selectedEntries,
+    required this.debts,
+    required this.openTodos,
+    required this.inboxEntries,
+    required this.activePlanningEntryId,
+    required this.onAddToSelectedDate,
+    required this.onTogglePlanningEntry,
+    required this.onSavePlanningEntryText,
+    required this.onCompletePlanningEntry,
+    required this.onMovePlanningEntry,
+    required this.onUnschedulePlanningEntry,
+    required this.onArchivePlanningEntry,
+    required this.onOpenTodo,
+  });
+
+  final DateTime selectedDate;
+  final List<_CalendarEntryVm> selectedEntries;
   final List<StudyPlanDebt> debts;
   final List<TodoItem> openTodos;
+  final List<PlanningEntry> inboxEntries;
+  final String? activePlanningEntryId;
+  final VoidCallback onAddToSelectedDate;
+  final ValueChanged<PlanningEntry> onTogglePlanningEntry;
+  final Future<void> Function(PlanningEntry entry, String title, String? notes) onSavePlanningEntryText;
+  final Future<void> Function(PlanningEntry entry) onCompletePlanningEntry;
+  final Future<void> Function(PlanningEntry entry, DateTime targetDate) onMovePlanningEntry;
+  final Future<void> Function(PlanningEntry entry) onUnschedulePlanningEntry;
+  final Future<void> Function(PlanningEntry entry) onArchivePlanningEntry;
   final FutureOr<void> Function(TodoItem todo)? onOpenTodo;
 
   @override
   Widget build(BuildContext context) {
-    return _SurfaceCard(
-      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-      child: ListView(
-        children: [
-          Row(
-            children: [
-              const Expanded(child: Text('Needs attention', style: _TodayText.sectionTitle)),
-              _CountPill('${debts.length + openTodos.length} open'),
-            ],
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Unfinished plans remain visible here so the future distribution can be recalculated instead of silently discarded.',
-            style: _TodayText.muted,
-          ),
-          const SizedBox(height: 16),
-          if (debts.isEmpty && openTodos.isEmpty)
-            const _EmptyStateRow(
-              icon: Icons.task_alt_rounded,
-              title: 'No unfinished work or source todos',
-              subtitle: 'Missed planned work and file-linked todos will appear here.',
+    final attentionCount = debts.length + openTodos.length + inboxEntries.length;
+    return SizedBox(
+      height: 318,
+      child: Material(
+        color: Colors.white.withOpacity(.68),
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Selected day', style: _TodayText.sectionTitle),
+                      const SizedBox(height: 2),
+                      Text(_DateText.fullDate(selectedDate), style: _TodayText.muted),
+                    ],
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: onAddToSelectedDate,
+                  icon: const Icon(Icons.add_rounded, size: 17),
+                  label: const Text('Add here'),
+                ),
+                const SizedBox(width: 8),
+                _CountPill('${selectedEntries.length} items'),
+              ],
             ),
-          for (final debt in debts.take(10))
-            _CompactRequirementRow(
-              title: debt.plan.title,
-              subtitle: '${debt.project.title} • ${debt.behindUnits} ${debt.plan.unitNounForCount(debt.behindUnits)} behind',
-              icon: debt.isPastDeadline ? Icons.error_outline_rounded : Icons.auto_graph_rounded,
-              onTap: () => Future<void>.value(),
+            const SizedBox(height: 10),
+            if (selectedEntries.isEmpty)
+              _EmptyStateRow(
+                icon: Icons.event_available_rounded,
+                title: 'Nothing planned for ${_DateText.monthDay(selectedDate)}',
+                subtitle: 'Add directly to this date, or move an unscheduled item here.',
+              )
+            else
+              for (final entry in selectedEntries)
+                _CalendarDockEntryRow(
+                  entry: entry,
+                  selectedDate: selectedDate,
+                  activePlanningEntryId: activePlanningEntryId,
+                  onTogglePlanningEntry: onTogglePlanningEntry,
+                  onSavePlanningEntryText: onSavePlanningEntryText,
+                  onCompletePlanningEntry: onCompletePlanningEntry,
+                  onMovePlanningEntry: onMovePlanningEntry,
+                  onUnschedulePlanningEntry: onUnschedulePlanningEntry,
+                  onArchivePlanningEntry: onArchivePlanningEntry,
+                ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Expanded(child: Text('Needs scheduling', style: _TodayText.sectionTitle)),
+                _CountPill('$attentionCount open'),
+              ],
             ),
-          if (debts.isNotEmpty && openTodos.isNotEmpty) const Divider(height: 22, color: _TodayColors.border),
-          for (final todo in openTodos.take(12))
-            _CompactRequirementRow(
-              title: todo.title,
-              subtitle: todo.deadline == null
-                  ? todo.pdfLabel
-                  : '${todo.pdfLabel} • due ${_DateText.monthDay(todo.deadline!)}',
-              icon: todo.deadline == null ? Icons.description_outlined : Icons.flag_rounded,
-              onTap: () async {
-                final open = onOpenTodo;
-                if (open != null) await Future<void>.value(open(todo));
-              },
-            ),
-        ],
+            const SizedBox(height: 8),
+            if (attentionCount == 0)
+              const _EmptyStateRow(
+                icon: Icons.task_alt_rounded,
+                title: 'Nothing loose',
+                subtitle: 'Inbox items, missed study work, and file-linked todos will appear here.',
+              ),
+            for (final entry in inboxEntries.take(6))
+              _CalendarInboxEntryCard(
+                entry: entry,
+                selectedDate: selectedDate,
+                isActive: activePlanningEntryId == entry.id,
+                onToggle: () => onTogglePlanningEntry(entry),
+                onSaveText: (title, notes) => onSavePlanningEntryText(entry, title, notes),
+                onComplete: () => onCompletePlanningEntry(entry),
+                onMove: (targetDate) => onMovePlanningEntry(entry, targetDate),
+                onUnschedule: () => onUnschedulePlanningEntry(entry),
+                onArchive: () => onArchivePlanningEntry(entry),
+              ),
+            for (final debt in debts.take(4))
+              _CompactRequirementRow(
+                title: debt.plan.title,
+                subtitle: '${debt.project.title} • ${debt.behindUnits} ${debt.plan.unitNounForCount(debt.behindUnits)} behind',
+                icon: debt.isPastDeadline ? Icons.error_outline_rounded : Icons.auto_graph_rounded,
+                onTap: () {},
+              ),
+            for (final todo in openTodos.take(6))
+              _CompactRequirementRow(
+                title: todo.title,
+                subtitle: todo.deadline == null
+                    ? todo.pdfLabel
+                    : '${todo.pdfLabel} • due ${_DateText.monthDay(todo.deadline!)}',
+                icon: todo.deadline == null ? Icons.description_outlined : Icons.flag_rounded,
+                onTap: () async {
+                  final open = onOpenTodo;
+                  if (open != null) await Future<void>.value(open(todo));
+                },
+              ),
+          ],
+        ),
       ),
     );
   }
 }
 
+class _CalendarDockEntryRow extends StatelessWidget {
+  const _CalendarDockEntryRow({
+    required this.entry,
+    required this.selectedDate,
+    required this.activePlanningEntryId,
+    required this.onTogglePlanningEntry,
+    required this.onSavePlanningEntryText,
+    required this.onCompletePlanningEntry,
+    required this.onMovePlanningEntry,
+    required this.onUnschedulePlanningEntry,
+    required this.onArchivePlanningEntry,
+  });
+
+  final _CalendarEntryVm entry;
+  final DateTime selectedDate;
+  final String? activePlanningEntryId;
+  final ValueChanged<PlanningEntry> onTogglePlanningEntry;
+  final Future<void> Function(PlanningEntry entry, String title, String? notes) onSavePlanningEntryText;
+  final Future<void> Function(PlanningEntry entry) onCompletePlanningEntry;
+  final Future<void> Function(PlanningEntry entry, DateTime targetDate) onMovePlanningEntry;
+  final Future<void> Function(PlanningEntry entry) onUnschedulePlanningEntry;
+  final Future<void> Function(PlanningEntry entry) onArchivePlanningEntry;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = entry.isDeadline
+        ? _TodayColors.deadline
+        : entry.isFinish
+            ? _TodayColors.finish
+            : _TodayColors.ink;
+    final icon = entry.isDeadline
+        ? Icons.flag_rounded
+        : entry.isFinish
+            ? Icons.keyboard_double_arrow_down_rounded
+            : Icons.event_note_rounded;
+    final planningEntry = entry.planningEntry;
+    final isActive = planningEntry != null && activePlanningEntryId == planningEntry.id;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutCubic,
+        decoration: BoxDecoration(
+          color: isActive ? Colors.white : Colors.white.withOpacity(.84),
+          borderRadius: BorderRadius.circular(17),
+          border: Border.all(color: isActive ? color.withOpacity(.55) : _TodayColors.border, width: isActive ? 1.35 : 1),
+          boxShadow: isActive
+              ? [
+                  BoxShadow(
+                    color: _TodayColors.ink.withOpacity(.08),
+                    blurRadius: 18,
+                    offset: const Offset(0, 8),
+                  ),
+                ]
+              : null,
+        ),
+        child: Column(
+          children: [
+            InkWell(
+              borderRadius: BorderRadius.circular(17),
+              onTap: planningEntry != null
+                  ? () => onTogglePlanningEntry(planningEntry)
+                  : entry.onTap == null
+                      ? null
+                      : () => unawaited(entry.onTap!()),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                child: Row(
+                  children: [
+                    Icon(icon, size: 18, color: color),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            entry.timeLabel == null ? entry.title : '${entry.timeLabel} · ${entry.title}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w900, color: color),
+                          ),
+                          if (entry.detail != null) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              entry.detail!,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: _TodayColors.inkMuted),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Icon(isActive ? Icons.expand_less_rounded : Icons.chevron_right_rounded, size: 19, color: _TodayColors.inkFaint),
+                  ],
+                ),
+              ),
+            ),
+            if (isActive && planningEntry != null)
+              _CalendarPlanningEntryInlineEditor(
+                entry: planningEntry,
+                selectedDate: selectedDate,
+                onSaveText: (title, notes) => onSavePlanningEntryText(planningEntry, title, notes),
+                onComplete: () => onCompletePlanningEntry(planningEntry),
+                onMove: (targetDate) => onMovePlanningEntry(planningEntry, targetDate),
+                onUnschedule: () => onUnschedulePlanningEntry(planningEntry),
+                onArchive: () => onArchivePlanningEntry(planningEntry),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CalendarInboxEntryCard extends StatelessWidget {
+  const _CalendarInboxEntryCard({
+    required this.entry,
+    required this.selectedDate,
+    required this.isActive,
+    required this.onToggle,
+    required this.onSaveText,
+    required this.onComplete,
+    required this.onMove,
+    required this.onUnschedule,
+    required this.onArchive,
+  });
+
+  final PlanningEntry entry;
+  final DateTime selectedDate;
+  final bool isActive;
+  final VoidCallback onToggle;
+  final Future<void> Function(String title, String? notes) onSaveText;
+  final Future<void> Function() onComplete;
+  final Future<void> Function(DateTime targetDate) onMove;
+  final Future<void> Function() onUnschedule;
+  final Future<void> Function() onArchive;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = entry.isDeadline ? _TodayColors.deadline : _TodayColors.ink;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutCubic,
+        decoration: BoxDecoration(
+          color: isActive ? Colors.white : Colors.white.withOpacity(.74),
+          borderRadius: BorderRadius.circular(17),
+          border: Border.all(color: isActive ? color.withOpacity(.55) : _TodayColors.border, width: isActive ? 1.35 : 1),
+        ),
+        child: Column(
+          children: [
+            InkWell(
+              borderRadius: BorderRadius.circular(17),
+              onTap: onToggle,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                child: Row(
+                  children: [
+                    Icon(entry.isDeadline ? Icons.flag_rounded : Icons.inbox_rounded, size: 18, color: color),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w900, color: color)),
+                          const SizedBox(height: 2),
+                          Text(
+                            entry.notes?.trim().isNotEmpty == true
+                                ? entry.notes!.trim()
+                                : 'Unscheduled • ${PlanningEntryPriority.label(entry.priority)}',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: _TodayColors.inkMuted),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Icon(isActive ? Icons.expand_less_rounded : Icons.chevron_right_rounded, size: 19, color: _TodayColors.inkFaint),
+                  ],
+                ),
+              ),
+            ),
+            if (isActive)
+              _CalendarPlanningEntryInlineEditor(
+                entry: entry,
+                selectedDate: selectedDate,
+                onSaveText: onSaveText,
+                onComplete: onComplete,
+                onMove: onMove,
+                onUnschedule: onUnschedule,
+                onArchive: onArchive,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CalendarPlanningEntryInlineEditor extends StatefulWidget {
+  const _CalendarPlanningEntryInlineEditor({
+    required this.entry,
+    required this.selectedDate,
+    required this.onSaveText,
+    required this.onComplete,
+    required this.onMove,
+    required this.onUnschedule,
+    required this.onArchive,
+  });
+
+  final PlanningEntry entry;
+  final DateTime selectedDate;
+  final Future<void> Function(String title, String? notes) onSaveText;
+  final Future<void> Function() onComplete;
+  final Future<void> Function(DateTime targetDate) onMove;
+  final Future<void> Function() onUnschedule;
+  final Future<void> Function() onArchive;
+
+  @override
+  State<_CalendarPlanningEntryInlineEditor> createState() => _CalendarPlanningEntryInlineEditorState();
+}
+
+class _CalendarPlanningEntryInlineEditorState extends State<_CalendarPlanningEntryInlineEditor> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _notesController;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.entry.title);
+    _notesController = TextEditingController(text: widget.entry.notes ?? '');
+  }
+
+  @override
+  void didUpdateWidget(covariant _CalendarPlanningEntryInlineEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.entry.id != widget.entry.id || oldWidget.entry.updatedAt != widget.entry.updatedAt) {
+      _titleController.text = widget.entry.title;
+      _notesController.text = widget.entry.notes ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run(Future<void> Function() action) async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      await action();
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = widget.entry;
+    final scheduledLabel = entry.calendarDate == null ? 'Unscheduled' : _planningEntryDateTimeLabel(entry.calendarDate!);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: _TodayColors.cardTint.withOpacity(.72),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: _TodayColors.border),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Icon(entry.isDeadline ? Icons.flag_rounded : Icons.event_note_rounded, size: 16, color: entry.isDeadline ? _TodayColors.deadline : _TodayColors.inkMuted),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '$scheduledLabel • ${PlanningEntryKind.label(entry.kind)} • ${PlanningEntryPriority.label(entry.priority)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: _TodayColors.inkMuted),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _titleController,
+                enabled: !_saving,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  labelText: 'Title',
+                  border: OutlineInputBorder(),
+                ),
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) => unawaited(_run(() => widget.onSaveText(_titleController.text, _notesController.text))),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _notesController,
+                enabled: !_saving,
+                minLines: 1,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  labelText: 'Notes',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  FilledButton.icon(
+                    onPressed: _saving ? null : () => unawaited(_run(() => widget.onSaveText(_titleController.text, _notesController.text))),
+                    icon: const Icon(Icons.save_rounded, size: 17),
+                    label: const Text('Save'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _saving ? null : () => unawaited(_run(widget.onComplete)),
+                    icon: Icon(entry.isDone ? Icons.undo_rounded : Icons.check_circle_outline_rounded, size: 17),
+                    label: Text(entry.isDone ? 'Mark open' : 'Mark done'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _saving ? null : () => unawaited(_run(() => widget.onMove(widget.selectedDate))),
+                    icon: const Icon(Icons.ads_click_rounded, size: 17),
+                    label: const Text('Selected day'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _saving ? null : () => unawaited(_run(() => widget.onMove(DateTime.now()))),
+                    icon: const Icon(Icons.today_rounded, size: 17),
+                    label: const Text('Today'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _saving ? null : () => unawaited(_run(() => widget.onMove(DateTime.now().add(const Duration(days: 1))))),
+                    icon: const Icon(Icons.arrow_forward_rounded, size: 17),
+                    label: const Text('Tomorrow'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _saving ? null : () => unawaited(_run(() => widget.onMove(DateTime.now().add(const Duration(days: 7))))),
+                    icon: const Icon(Icons.keyboard_double_arrow_right_rounded, size: 17),
+                    label: const Text('Next week'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _saving ? null : () => unawaited(_run(widget.onUnschedule)),
+                    icon: const Icon(Icons.inbox_rounded, size: 17),
+                    label: const Text('Unschedule'),
+                  ),
+                  TextButton.icon(
+                    onPressed: _saving ? null : () => unawaited(_run(widget.onArchive)),
+                    icon: const Icon(Icons.delete_outline_rounded, size: 17),
+                    label: const Text('Remove'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CalendarActionChip extends StatelessWidget {
+  const _CalendarActionChip({required this.label, required this.icon, required this.onPressed});
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return ActionChip(
+      avatar: Icon(icon, size: 16),
+      label: Text(label),
+      onPressed: onPressed,
+      labelStyle: const TextStyle(fontWeight: FontWeight.w800),
+    );
+  }
+}
+
 class _CalendarMonthSection extends StatelessWidget {
-  const _CalendarMonthSection({required this.month, required this.today, required this.entriesByDate});
+  const _CalendarMonthSection({
+    required this.month,
+    required this.today,
+    required this.selectedDate,
+    required this.entriesByDate,
+    required this.onSelectDate,
+    required this.onAddEntry,
+  });
 
   final DateTime month;
   final DateTime today;
+  final DateTime selectedDate;
   final Map<String, List<_CalendarEntryVm>> entriesByDate;
+  final ValueChanged<DateTime> onSelectDate;
+  final ValueChanged<DateTime> onAddEntry;
 
   @override
   Widget build(BuildContext context) {
@@ -4049,7 +5549,7 @@ class _CalendarMonthSection extends StatelessWidget {
         const SizedBox(height: 8),
         for (var row = 0; row < days.length ~/ 7; row++) ...[
           SizedBox(
-            height: 112,
+            height: 116,
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -4059,7 +5559,10 @@ class _CalendarMonthSection extends StatelessWidget {
                       date: days[row * 7 + column],
                       visibleMonth: month.month,
                       today: today,
+                      selectedDate: selectedDate,
                       entries: entriesByDate[_DateText.dateKey(days[row * 7 + column])] ?? const <_CalendarEntryVm>[],
+                      onSelectDate: onSelectDate,
+                      onAddEntry: onAddEntry,
                     ),
                   ),
               ],
@@ -4073,17 +5576,29 @@ class _CalendarMonthSection extends StatelessWidget {
 }
 
 class _CalendarDayCell extends StatelessWidget {
-  const _CalendarDayCell({required this.date, required this.visibleMonth, required this.today, required this.entries});
+  const _CalendarDayCell({
+    required this.date,
+    required this.visibleMonth,
+    required this.today,
+    required this.selectedDate,
+    required this.entries,
+    required this.onSelectDate,
+    required this.onAddEntry,
+  });
 
   final DateTime date;
   final int visibleMonth;
   final DateTime today;
+  final DateTime selectedDate;
   final List<_CalendarEntryVm> entries;
+  final ValueChanged<DateTime> onSelectDate;
+  final ValueChanged<DateTime> onAddEntry;
 
   @override
   Widget build(BuildContext context) {
     final inMonth = date.month == visibleMonth;
     final isToday = _DateText.sameDate(date, today);
+    final isSelected = _DateText.sameDate(date, selectedDate);
     final isPast = _DateText.dateOnly(date).isBefore(today);
     final tint = _TodayColors.monthWeekDayTint(
       date.month,
@@ -4093,68 +5608,99 @@ class _CalendarDayCell extends StatelessWidget {
     final visibleEntries = entries.take(3).toList(growable: false);
     final hiddenCount = entries.length - visibleEntries.length;
     final accent = _TodayColors.monthAccent(date.month);
+    final borderColor = isToday
+        ? accent
+        : isSelected
+            ? _TodayColors.ink
+            : Colors.transparent;
 
-    return Container(
-      margin: const EdgeInsets.all(3),
-      padding: const EdgeInsets.fromLTRB(9, 8, 9, 8),
-      decoration: BoxDecoration(
-        color: inMonth ? tint : _TodayColors.pastDayWash,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isToday ? accent : Colors.transparent, width: isToday ? 1.2 : 1),
-      ),
-      child: Opacity(
-        opacity: inMonth ? (isPast && !isToday ? .58 : 1) : .34,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text(
-                  date.day.toString(),
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w900,
-                    color: isToday ? accent : _TodayColors.inkMuted,
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: () => onSelectDate(date),
+      onDoubleTap: () => onAddEntry(date),
+      child: Container(
+        margin: const EdgeInsets.all(3),
+        padding: const EdgeInsets.fromLTRB(9, 8, 9, 8),
+        decoration: BoxDecoration(
+          color: inMonth ? tint : _TodayColors.pastDayWash,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: borderColor, width: isToday || isSelected ? 1.4 : 1),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: _TodayColors.ink.withOpacity(.08),
+                    blurRadius: 12,
+                    offset: const Offset(0, 5),
                   ),
-                ),
-                if (isToday) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+                ]
+              : null,
+        ),
+        child: Opacity(
+          opacity: inMonth ? (isPast && !isToday ? .58 : 1) : .34,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    date.day.toString(),
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w900,
+                      color: isToday
+                          ? accent
+                          : isSelected
+                              ? _TodayColors.ink
+                              : _TodayColors.inkMuted,
+                    ),
                   ),
+                  if (isToday) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+                    ),
+                  ],
+                  const Spacer(),
+                  if (entries.isEmpty)
+                    Icon(Icons.add_rounded, size: 13, color: _TodayColors.inkFaint.withOpacity(.5))
+                  else
+                    Text(
+                      entries.length.toString(),
+                      style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w900, color: _TodayColors.inkFaint),
+                    ),
                 ],
-              ],
-            ),
-            const SizedBox(height: 7),
-            Expanded(
-              child: entries.isEmpty
-                  ? const SizedBox.shrink()
-                  : ClipRect(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          for (final entry in visibleEntries) _CalendarEntryLine(entry: entry),
-                          if (hiddenCount > 0)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 3),
-                              child: Text(
-                                '$hiddenCount more',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontSize: 9.5,
-                                  fontWeight: FontWeight.w900,
-                                  color: _TodayColors.inkFaint,
+              ),
+              const SizedBox(height: 7),
+              Expanded(
+                child: entries.isEmpty
+                    ? const SizedBox.shrink()
+                    : ClipRect(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            for (final entry in visibleEntries) _CalendarEntryLine(entry: entry),
+                            if (hiddenCount > 0)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 3),
+                                child: Text(
+                                  '$hiddenCount more',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 9.5,
+                                    fontWeight: FontWeight.w900,
+                                    color: _TodayColors.inkFaint,
+                                  ),
                                 ),
                               ),
-                            ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-            ),
-          ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -4178,7 +5724,7 @@ class _CalendarEntryLine extends StatelessWidget {
         : entry.isFinish
             ? Icons.keyboard_double_arrow_down_rounded
             : Icons.circle;
-    final line = InkWell(
+    return InkWell(
       onTap: entry.onTap == null ? null : () => unawaited(entry.onTap!()),
       child: Padding(
         padding: const EdgeInsets.only(bottom: 4),
@@ -4192,7 +5738,7 @@ class _CalendarEntryLine extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    entry.title,
+                    entry.timeLabel == null ? entry.title : '${entry.timeLabel} · ${entry.title}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -4221,7 +5767,6 @@ class _CalendarEntryLine extends StatelessWidget {
         ),
       ),
     );
-    return line;
   }
 }
 
@@ -4229,16 +5774,68 @@ class _CalendarEntryVm {
   const _CalendarEntryVm({
     required this.title,
     this.detail,
+    this.timeLabel,
+    this.sortAt,
     required this.isDeadline,
     required this.isFinish,
+    this.planningEntry,
     this.onTap,
   });
 
   final String title;
   final String? detail;
+  final String? timeLabel;
+  final DateTime? sortAt;
   final bool isDeadline;
   final bool isFinish;
+  final PlanningEntry? planningEntry;
   final Future<void> Function()? onTap;
+}
+
+String? _planningEntryTimeRangeLabel(PlanningEntry entry) {
+  final start = entry.startAt ?? entry.dueAt;
+  if (!_hasConcreteTime(start, allDay: entry.allDay)) return null;
+  final end = entry.endAt;
+  if (_hasConcreteTime(end, allDay: false) && end!.isAfter(start!)) {
+    return '${_DateText.time(start)}–${_DateText.time(end)}';
+  }
+  return _DateText.time(start!);
+}
+
+String _planningEntryDateTimeLabel(DateTime value) {
+  final date = _DateText.monthDay(value);
+  if (value.hour == 0 && value.minute == 0) return date;
+  return '$date · ${_DateText.time(value)}';
+}
+
+String? _planningEntryAmount(PlanningEntry entry) {
+  final time = _planningEntryTimeRangeLabel(entry);
+  if (time != null && entry.estimateMinutes != null) return '$time · ${entry.estimateMinutes} min';
+  if (time != null) return time;
+  if (entry.estimateMinutes != null) return '${entry.estimateMinutes} min';
+  return entry.notes;
+}
+
+String? _planningEntryDetail(PlanningEntry entry, {String? fallback, bool includeTime = true}) {
+  final note = entry.notes?.trim();
+  final base = note == null || note.isEmpty ? fallback ?? PlanningEntryKind.label(entry.kind) : note;
+  final time = _planningEntryTimeRangeLabel(entry);
+  if (!includeTime || time == null) return base;
+  if (base.contains(time)) return base;
+  return '$time · $base';
+}
+
+int _compareNullableDateTimes(DateTime? a, DateTime? b) {
+  if (a != null && b != null) return a.compareTo(b);
+  if (a != null) return -1;
+  if (b != null) return 1;
+  return 0;
+}
+
+bool _hasConcreteTime(DateTime? value, {required bool allDay}) {
+  if (value == null) return false;
+  if (allDay) return false;
+  return value.hour != 0 || value.minute != 0;
 }
 
 class _CompactRequirementRow extends StatelessWidget {
@@ -4270,12 +5867,16 @@ class _CompactRequirementRow extends StatelessWidget {
                 ],
               ),
             ),
+            const SizedBox(width: 8),
+            const Icon(Icons.chevron_right_rounded, size: 18, color: _TodayColors.inkFaint),
           ],
         ),
       ),
     );
   }
 }
+
+
 
 class _TodayDashboardData {
   const _TodayDashboardData({
@@ -4296,6 +5897,7 @@ class _TodayDashboardData {
     required this.relatedFile,
     required this.openTaskCount,
     required this.onCreatePlan,
+    required this.onQuickAddPlanningEntry,
     required this.onOpenCalendar,
   });
 
@@ -4316,6 +5918,7 @@ class _TodayDashboardData {
   final _RelatedFileLink? relatedFile;
   final int openTaskCount;
   final Future<void> Function() onCreatePlan;
+  final Future<void> Function() onQuickAddPlanningEntry;
   final Future<void> Function() onOpenCalendar;
 
   static _TodayDashboardData fromRepositories({
@@ -4331,9 +5934,11 @@ class _TodayDashboardData {
     required Future<void> Function(StudyPlanRequirement requirement) onCompleteRequirement,
     required Future<void> Function(StudyPlanDebt debt) onResolveDebt,
     required Future<void> Function(TodoItem todo) onCompleteTodo,
+    required Future<void> Function(PlanningEntry entry) onCompletePlanningEntry,
     required Future<void> Function(_RelatedFileLink link) onOpenRelatedFile,
     required Future<void> Function(String projectId) onOpenProject,
     required Future<void> Function() onCreatePlan,
+    required Future<void> Function() onQuickAddPlanningEntry,
     required Future<void> Function() onOpenCalendar,
   }) {
     final today = _DateText.dateOnly(now);
@@ -4346,6 +5951,7 @@ class _TodayDashboardData {
     for (var index = 0; index < visibleDayCount; index++) {
       final date = weekStart.add(Duration(days: index));
       final requirements = planningRepository.requirementsForRange(rangeStart: date, rangeEnd: date, now: now);
+      final planningEntries = planningRepository.planningEntriesForDate(date);
       final dayTodos = todos.where((todo) {
         final deadline = todo.deadline;
         if (deadline != null && _DateText.sameDate(deadline, date)) return true;
@@ -4357,10 +5963,11 @@ class _TodayDashboardData {
         date: date,
         requirements: requirements,
         todos: openDayTodos,
+        planningEntries: planningEntries,
         planningRepository: planningRepository,
       );
       final studyUnits = requirements.fold<int>(0, (sum, requirement) => sum + requirement.unitCount);
-      final workloadUnits = studyUnits + openDayTodos.length;
+      final workloadUnits = studyUnits + openDayTodos.length + planningEntries.length;
       if (_DateText.sameDate(date, today)) {
         todayDeadlines.addAll(items
             .where((item) => item.isDeadline)
@@ -4371,7 +5978,7 @@ class _TodayDashboardData {
           date: date,
           active: _DateText.sameDate(date, today),
           isPast: date.isBefore(today),
-          taskCount: requirements.length + openDayTodos.length,
+          taskCount: requirements.length + openDayTodos.length + planningEntries.length,
           doneCount: doneTodoCount,
           workloadUnits: workloadUnits,
           items: items,
@@ -4380,6 +5987,8 @@ class _TodayDashboardData {
     }
 
     final todayRequirements = planningRepository.requirementsForRange(rangeStart: today, rangeEnd: today, now: now);
+    final todayPlanningEntries = planningRepository.planningEntriesForDate(today);
+    final inboxPlanningEntries = planningRepository.planningInboxEntries;
     final debts = planningRepository.studyDebts(now);
     final todaySetupTodos = openTodos.where((todo) {
       return todo.sourceType == kTodoSourceTodaySetup && _DateText.sameDate(todo.note.createdAt, today);
@@ -4417,6 +6026,17 @@ class _TodayDashboardData {
       );
       if (tasks.length >= 6) break;
     }
+    for (final entry in [...todayPlanningEntries, ...inboxPlanningEntries.take(3)]) {
+      if (tasks.length >= 6) break;
+      tasks.add(
+        _TodayTaskVm(
+          title: entry.title,
+          subtitle: entry.calendarDate == null ? 'Planning inbox' : PlanningEntryKind.label(entry.kind),
+          tag: PlanningEntryPriority.label(entry.priority),
+          onComplete: () => onCompletePlanningEntry(entry),
+        ),
+      );
+    }
     for (final todo in [...todayTodos, ...todaySetupTodos, ...undatedTodos]) {
       if (tasks.length >= 6) break;
       tasks.add(
@@ -4436,9 +6056,12 @@ class _TodayDashboardData {
       todayTodos: todayTodos,
       todaySetupTodos: todaySetupTodos,
       undatedTodos: undatedTodos,
+      todayPlanningEntries: todayPlanningEntries,
+      inboxPlanningEntries: inboxPlanningEntries,
       onCompleteRequirement: onCompleteRequirement,
       onResolveDebt: onResolveDebt,
       onCompleteTodo: onCompleteTodo,
+      onCompletePlanningEntry: onCompletePlanningEntry,
       onOpenRelatedFile: onOpenRelatedFile,
     );
     final openWorkItemCount = workSections.fold<int>(0, (sum, section) => sum + section.items.length);
@@ -4447,6 +6070,7 @@ class _TodayDashboardData {
       debts: debts,
       requirements: todayRequirements,
       openTodos: openTodos,
+      planningEntries: [...todayPlanningEntries, ...inboxPlanningEntries],
     );
     final schedulePressures = _buildSchedulePressures(debts);
 
@@ -4489,6 +6113,7 @@ class _TodayDashboardData {
       relatedFile: related,
       openTaskCount: openWorkItemCount,
       onCreatePlan: onCreatePlan,
+      onQuickAddPlanningEntry: onQuickAddPlanningEntry,
       onOpenCalendar: onOpenCalendar,
     );
   }
@@ -4500,9 +6125,12 @@ class _TodayDashboardData {
     required List<TodoItem> todayTodos,
     required List<TodoItem> todaySetupTodos,
     required List<TodoItem> undatedTodos,
+    required List<PlanningEntry> todayPlanningEntries,
+    required List<PlanningEntry> inboxPlanningEntries,
     required Future<void> Function(StudyPlanRequirement requirement) onCompleteRequirement,
     required Future<void> Function(StudyPlanDebt debt) onResolveDebt,
     required Future<void> Function(TodoItem todo) onCompleteTodo,
+    required Future<void> Function(PlanningEntry entry) onCompletePlanningEntry,
     required Future<void> Function(_RelatedFileLink link) onOpenRelatedFile,
   }) {
     final deadlineRequirements = requirements.where((item) => item.isDeadlineMarker).toList(growable: false);
@@ -4537,6 +6165,19 @@ class _TodayDashboardData {
           sourceIcon: sourceLink?.icon,
           onOpenSource: sourceLink == null ? null : () => onOpenRelatedFile(sourceLink),
           onComplete: () => onCompleteRequirement(requirement),
+          completeLabel: 'Done',
+        ),
+      );
+    }
+
+    for (final entry in todayPlanningEntries.where((item) => item.isDeadline)) {
+      criticalItems.add(
+        _TodayWorkItemVm(
+          title: entry.title,
+          amount: entry.dueAt == null ? 'Deadline' : 'Due ${_planningEntryDateTimeLabel(entry.dueAt!)}',
+          reason: entry.notes?.trim().isNotEmpty == true ? entry.notes! : 'Planning deadline',
+          sourceLabel: entry.projectId == null ? 'Planning inbox' : 'Project task',
+          onComplete: () => onCompletePlanningEntry(entry),
           completeLabel: 'Done',
         ),
       );
@@ -4586,6 +6227,19 @@ class _TodayDashboardData {
       );
     }
 
+    for (final entry in todayPlanningEntries.where((item) => !item.isDeadline)) {
+      plannedItems.add(
+        _TodayWorkItemVm(
+          title: entry.title,
+          amount: _planningEntryAmount(entry),
+          reason: entry.notes?.trim().isNotEmpty == true ? entry.notes! : 'Scheduled today · ${PlanningEntryKind.label(entry.kind)}',
+          sourceLabel: entry.projectId == null ? 'Planning inbox' : 'Project task',
+          onComplete: () => onCompletePlanningEntry(entry),
+          completeLabel: 'Done',
+        ),
+      );
+    }
+
     for (final todo in todaySetupTodos) {
       final sourceLink = _relatedLinkForTodo(todo, onOpenRelatedFile);
       plannedItems.add(
@@ -4602,19 +6256,30 @@ class _TodayDashboardData {
       );
     }
 
-    final availableItems = undatedTodos.take(5).map((todo) {
-      final sourceLink = _relatedLinkForTodo(todo, onOpenRelatedFile);
-      return _TodayWorkItemVm(
-        title: todo.title,
-        amount: null,
-        reason: 'Available todo · not scheduled for a specific day',
-        sourceLabel: todo.pdfLabel == 'No source' ? null : todo.pdfLabel,
-        sourceIcon: sourceLink?.icon,
-        onOpenSource: sourceLink == null ? null : () => onOpenRelatedFile(sourceLink),
-        onComplete: () => onCompleteTodo(todo),
-        completeLabel: 'Done',
-      );
-    }).toList(growable: false);
+    final availableItems = <_TodayWorkItemVm>[
+      for (final entry in inboxPlanningEntries.take(5))
+        _TodayWorkItemVm(
+          title: entry.title,
+          amount: _planningEntryAmount(entry),
+          reason: entry.notes?.trim().isNotEmpty == true ? entry.notes! : 'Planning inbox · not scheduled yet',
+          sourceLabel: PlanningEntryPriority.label(entry.priority),
+          onComplete: () => onCompletePlanningEntry(entry),
+          completeLabel: 'Done',
+        ),
+      for (final todo in undatedTodos.take(5))
+        _TodayWorkItemVm(
+          title: todo.title,
+          amount: null,
+          reason: 'Available todo · not scheduled for a specific day',
+          sourceLabel: todo.pdfLabel == 'No source' ? null : todo.pdfLabel,
+          sourceIcon: _relatedLinkForTodo(todo, onOpenRelatedFile)?.icon,
+          onOpenSource: _relatedLinkForTodo(todo, onOpenRelatedFile) == null
+              ? null
+              : () => onOpenRelatedFile(_relatedLinkForTodo(todo, onOpenRelatedFile)!),
+          onComplete: () => onCompleteTodo(todo),
+          completeLabel: 'Done',
+        ),
+    ];
 
     return <_TodayWorkSectionVm>[
       _TodayWorkSectionVm(
@@ -4683,6 +6348,7 @@ class _TodayDashboardData {
     required DateTime date,
     required List<StudyPlanRequirement> requirements,
     required List<TodoItem> todos,
+    required List<PlanningEntry> planningEntries,
     required StudyPlanningRepository planningRepository,
   }) {
     final deadlineItems = <_WeekWorkItemVm>[];
@@ -4713,6 +6379,16 @@ class _TodayDashboardData {
         workItems.add(_WeekWorkItemVm.work(todo.title, detail: 'Added for today', units: 1, unitNoun: 'item'));
       } else {
         addDeadline(todo.title, key: 'todo-${todo.id}', detail: todo.pdfLabel == 'No source' ? 'Deadline' : todo.pdfLabel);
+      }
+    }
+
+    for (final entry in planningEntries) {
+      final project = entry.projectId == null ? null : planningRepository.projectById(entry.projectId!);
+      final detail = _planningEntryDetail(entry, fallback: project == null ? PlanningEntryKind.label(entry.kind) : project.title);
+      if (entry.isDeadline) {
+        addDeadline(entry.title, key: 'planning-entry-${entry.id}', detail: detail);
+      } else {
+        workItems.add(_WeekWorkItemVm.work(entry.title, detail: detail, units: 1, unitNoun: 'item'));
       }
     }
 
@@ -4798,6 +6474,11 @@ class _TodayDashboardData {
     if (first.isSingleTask) return 'Task';
 
     if (first.plan.isRecurring) {
+      if (first.plan.isTimeBased) {
+        final time = first.timeLabel;
+        final amount = first.plan.timeAmountLabel;
+        return time == null ? amount : '$time · $amount';
+      }
       return '$totalUnits ${first.plan.unitNounForCount(totalUnits)}';
     }
 
@@ -4844,21 +6525,26 @@ class _TodayDashboardData {
     required List<StudyPlanDebt> debts,
     required List<StudyPlanRequirement> requirements,
     required List<TodoItem> openTodos,
+    required List<PlanningEntry> planningEntries,
   }) {
     final first = debts.isNotEmpty
         ? 'Catch up: ${debts.first.plan.title}'
         : requirements.isNotEmpty
             ? _requirementTitle(requirements.first)
-            : 'No fixed morning block yet';
+            : planningEntries.isNotEmpty
+                ? planningEntries.first.title
+                : 'No fixed morning block yet';
     final second = requirements.length > 1
         ? _requirementTitle(requirements[1])
         : openTodos.isNotEmpty
             ? openTodos.first.title
-            : 'Add a task from your plans';
+            : planningEntries.length > 1
+                ? planningEntries[1].title
+                : 'Add a task from your plans';
     final third = requirements.length > 2
         ? _requirementTitle(requirements[2])
         : 'Open space for reading, writing, or review';
-    final unscheduledCount = (requirements.length > 3 ? requirements.length - 3 : 0) + openTodos.length + (debts.length > 1 ? debts.length - 1 : 0);
+    final unscheduledCount = (requirements.length > 3 ? requirements.length - 3 : 0) + openTodos.length + planningEntries.length + (debts.length > 1 ? debts.length - 1 : 0);
 
     return <_PlanBlock>[
       _PlanBlock('Morning', first),
@@ -5077,6 +6763,37 @@ extension _DailySetupPriorityLabel on _DailySetupPriority {
   }
 }
 
+_DailySetupItemKind _dailySetupKindFromName(String name) {
+  switch (name) {
+    case 'plannedWork':
+      return _DailySetupItemKind.plannedWork;
+    case 'planPressure':
+      return _DailySetupItemKind.planPressure;
+    case 'deadline':
+      return _DailySetupItemKind.deadline;
+    case 'availableTodo':
+      return _DailySetupItemKind.availableTodo;
+    case 'manualReminder':
+    default:
+      return _DailySetupItemKind.manualReminder;
+  }
+}
+
+_DailySetupPriority _dailySetupPriorityFromName(String name) {
+  switch (name) {
+    case 'must':
+      return _DailySetupPriority.must;
+    case 'should':
+      return _DailySetupPriority.should;
+    case 'extra':
+      return _DailySetupPriority.extra;
+    case 'notToday':
+      return _DailySetupPriority.notToday;
+    default:
+      return _DailySetupPriority.should;
+  }
+}
+
 class _DailySetupSnapshot {
   const _DailySetupSnapshot({required this.date, required this.createdAt, required this.updatedAt, required this.items});
 
@@ -5121,6 +6838,27 @@ class _DailySetupItemVm {
   final Future<void> Function()? onComplete;
   final String completeLabel;
   final bool manual;
+
+  _DailySetupItemVm copyWith({
+    bool? included,
+    _DailySetupPriority? priority,
+  }) {
+    return _DailySetupItemVm(
+      id: id,
+      kind: kind,
+      title: title,
+      detail: detail,
+      reason: reason,
+      included: included ?? this.included,
+      priority: priority ?? this.priority,
+      sourceLabel: sourceLabel,
+      sourceIcon: sourceIcon,
+      onOpenSource: onOpenSource,
+      onComplete: onComplete,
+      completeLabel: completeLabel,
+      manual: manual,
+    );
+  }
 
   static List<_DailySetupItemVm> fromWorkSections(List<_TodayWorkSectionVm> sections) {
     final items = <_DailySetupItemVm>[];
@@ -5516,6 +7254,8 @@ class _DateText {
   }
 
   static String monthDay(DateTime date) => '${date.day} ${shortMonth(date.month)}';
+
+  static String fullDate(DateTime date) => '${weekday(date.weekday)}, ${date.day} ${month(date.month)}';
 
   static bool sameDate(DateTime a, DateTime b) {
     return a.year == b.year && a.month == b.month && a.day == b.day;

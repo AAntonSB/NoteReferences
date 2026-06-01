@@ -107,6 +107,42 @@ class PlanningItem {
     );
   }
 
+
+
+  factory PlanningItem.fromPlanningEntry(PlanningEntry entry, {String? projectLabel}) {
+    final calendarDate = entry.calendarDate == null
+        ? PlanningDateUtils.dateOnly(DateTime.now())
+        : PlanningDateUtils.dateOnly(entry.calendarDate!);
+    final type = entry.isDeadline
+        ? PlanningItemType.deadline
+        : entry.isEvent
+            ? PlanningItemType.event
+            : PlanningItemType.task;
+    return PlanningItem(
+      id: 'entry-${entry.id}',
+      source: PlanningItemSource.manual,
+      type: type,
+      title: entry.title,
+      body: entry.notes,
+      projectId: entry.projectId,
+      projectLabel: projectLabel ?? 'Inbox',
+      detailLabel: PlanningEntryKind.label(entry.kind),
+      date: calendarDate,
+      dueAt: entry.dueAt,
+      startAt: entry.startAt,
+      endAt: entry.endAt,
+      allDay: entry.allDay,
+      estimateMinutes: entry.estimateMinutes,
+      priority: _priorityFromPlanningEntry(entry.priority),
+      status: entry.isDone ? PlanningStatus.done : PlanningStatus.open,
+      sourceRef: PlanningSourceRef(
+        source: PlanningItemSource.manual,
+        sourceId: entry.id,
+        projectId: entry.projectId,
+      ),
+    );
+  }
+
   factory PlanningItem.fromCanvasEvent(CanvasCalendarEvent event) {
     final date = PlanningDateUtils.dateOnly(event.startAt);
     return PlanningItem(
@@ -220,4 +256,17 @@ String _bodyForPlanRequirement(StudyPlanRequirement requirement) {
     return 'Recurring plan. If missed, it becomes visible study debt.';
   }
   return 'Generated from plan. If missed, the remaining pace is recalculated.';
+}
+
+
+PlanningPriority _priorityFromPlanningEntry(String priority) {
+  switch (PlanningEntryPriority.normalize(priority)) {
+    case PlanningEntryPriority.high:
+      return PlanningPriority.high;
+    case PlanningEntryPriority.low:
+      return PlanningPriority.low;
+    case PlanningEntryPriority.normal:
+    default:
+      return PlanningPriority.normal;
+  }
 }

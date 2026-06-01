@@ -4,6 +4,7 @@ import '../../../infrastructure/database/app_database.dart';
 import '../data/study_planning_repository.dart';
 import '../domain/planning_intent.dart';
 import 'create_project_screen.dart';
+import 'planning_entry_dialog.dart';
 import 'work_composer_screen.dart';
 
 class PlanningCreateHubScreen extends StatefulWidget {
@@ -61,6 +62,8 @@ class _PlanningCreateHubScreenState extends State<PlanningCreateHubScreen> {
                   ),
                   const SizedBox(height: 16),
                   if (widget.initialProject == null) ...[
+                    _QuickInboxCard(onQuickAdd: _quickAddEntry),
+                    const SizedBox(height: 16),
                     _ProjectPickerCard(
                       projects: projects,
                       selectedProjectId: _selectedProjectId ?? (projects.length == 1 ? projects.first.id : null),
@@ -113,10 +116,35 @@ class _PlanningCreateHubScreenState extends State<PlanningCreateHubScreen> {
     setState(() => _selectedProjectId = project.id);
   }
 
+  Future<void> _quickAddEntry() async {
+    final entry = await showPlanningEntryDialog(
+      context: context,
+      planningRepository: widget.planningRepository,
+      projectId: null,
+    );
+    if (!mounted || entry == null) return;
+    Navigator.of(context).pop(entry);
+  }
+
   Future<void> _openComposerForIntent(PlanningIntentType intent) async {
     var project = _selectedProject(widget.planningRepository.projects);
+    final projectRequired = intent != PlanningIntentType.addTask &&
+        intent != PlanningIntentType.rememberDeadline;
 
-    if (project == null && widget.planningRepository.projects.isEmpty) {
+    if (!projectRequired && project == null) {
+      final entry = await showPlanningEntryDialog(
+        context: context,
+        planningRepository: widget.planningRepository,
+        initialKind: intent == PlanningIntentType.rememberDeadline
+            ? PlanningEntryKind.deadline
+            : PlanningEntryKind.task,
+      );
+      if (!mounted || entry == null) return;
+      Navigator.of(context).pop(entry);
+      return;
+    }
+
+    if (project == null && projectRequired && widget.planningRepository.projects.isEmpty) {
       project = await Navigator.of(context).push<StudyProject>(
         MaterialPageRoute(
           builder: (_) => CreateProjectScreen(
@@ -127,14 +155,15 @@ class _PlanningCreateHubScreenState extends State<PlanningCreateHubScreen> {
         ),
       );
       if (!mounted || project == null) return;
-      setState(() => _selectedProjectId = project!.id);
+      final createdProjectId = project.id;
+      setState(() => _selectedProjectId = createdProjectId);
     }
 
     project ??= _selectedProject(widget.planningRepository.projects);
     if (project == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Choose a project first, or create a new one.'),
+          content: Text('Choose a project for structured study plans, or use Quick inbox for unassigned tasks.'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -173,8 +202,8 @@ class _PlanningHubHero extends StatelessWidget {
     final theme = Theme.of(context);
     final targetText = selectedProject == null
         ? projectCount == 0
-            ? 'Create a project, then choose the kind of work you want to plan.'
-            : 'Pick a project, then choose the kind of work you want to plan.'
+            ? 'Add a quick inbox item, or create a project for structured study plans.'
+            : 'Add a quick inbox item, or pick a project for structured study plans.'
         : lockedToProject
             ? 'You are adding work to ${selectedProject!.title}.'
             : 'Selected project: ${selectedProject!.title}.';
@@ -238,6 +267,63 @@ class _PlanningHubHero extends StatelessWidget {
   }
 }
 
+
+class _QuickInboxCard extends StatelessWidget {
+  final VoidCallback onQuickAdd;
+
+  const _QuickInboxCard({required this.onQuickAdd});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      elevation: 0,
+      color: theme.colorScheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(24),
+        side: BorderSide(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.tertiaryContainer,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Icon(Icons.inbox_rounded, color: theme.colorScheme.onTertiaryContainer),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Quick inbox', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 5),
+                  Text(
+                    'Capture a task, reminder, event, or deadline without deciding project structure first.',
+                    style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant, height: 1.35),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            FilledButton.tonalIcon(
+              onPressed: onQuickAdd,
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('Add item'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ProjectPickerCard extends StatelessWidget {
   final List<StudyProject> projects;
   final String? selectedProjectId;
@@ -273,7 +359,7 @@ class _ProjectPickerCard extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              'Projects keep planned work, deadlines, documents, PDFs, and session handoffs together.',
+              'Projects keep planned work, deadlines, documents, PDFs, and session handoffs together. Quick tasks can stay in the planning inbox.',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
                 height: 1.35,
@@ -409,7 +495,7 @@ class _PlanningShapeGrid extends StatelessWidget {
                         width: width,
                         child: _PlanningShapeCard(
                           data: card,
-                          enabled: selectedProject != null || !hasAnyProject,
+                          enabled: selectedProject != null || !hasAnyProject || card.projectOptional,
                           onTap: () => onChoose(card.intent),
                         ),
                       ),
@@ -559,6 +645,7 @@ class _PlanningShapeCardData {
   final String examples;
   final IconData icon;
   final Color Function(ThemeData theme) color;
+  final bool projectOptional;
 
   const _PlanningShapeCardData({
     required this.intent,
@@ -567,6 +654,7 @@ class _PlanningShapeCardData {
     required this.examples,
     required this.icon,
     required this.color,
+    this.projectOptional = false,
   });
 
   static final values = <_PlanningShapeCardData>[
@@ -601,6 +689,7 @@ class _PlanningShapeCardData {
       examples: 'Submit assignment · Email supervisor',
       icon: Icons.task_alt_rounded,
       color: (theme) => Colors.green.shade700,
+      projectOptional: true,
     ),
     _PlanningShapeCardData(
       intent: PlanningIntentType.rememberDeadline,
@@ -609,6 +698,7 @@ class _PlanningShapeCardData {
       examples: 'Exam · Presentation · Canvas due date',
       icon: Icons.flag_rounded,
       color: (theme) => theme.colorScheme.error,
+      projectOptional: true,
     ),
     _PlanningShapeCardData(
       intent: PlanningIntentType.reviewTopics,
